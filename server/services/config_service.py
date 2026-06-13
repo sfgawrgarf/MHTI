@@ -12,6 +12,7 @@ from server.models.config import LanguageConfig, ProxyConfig, ProxyType, ApiToke
 from server.models.emby import EmbyConfig
 from server.models.organize import OrganizeConfig, OrganizeMode
 from server.models.download import DownloadConfig
+from server.models.template import NamingTemplate
 from server.models.watcher import WatcherConfig, WatcherMode
 from server.models.nfo import NfoConfig
 from server.models.system import SystemConfig
@@ -31,6 +32,7 @@ WATCHER_CONFIG_KEY = "watcher_config"
 NFO_CONFIG_KEY = "nfo_config"
 SYSTEM_CONFIG_KEY = "system_config"
 EMBY_CONFIG_KEY = "emby_config"
+NAMING_CONFIG_KEY = "naming_config"
 
 
 class ConfigService:
@@ -323,6 +325,23 @@ class ConfigService:
             return DownloadConfig(**data)
         except (json.JSONDecodeError, ValueError):
             return DownloadConfig()
+
+    # Naming config methods
+    async def save_naming_config(self, config: NamingTemplate) -> None:
+        """Save naming template configuration."""
+        data = config.model_dump()
+        await self.set(NAMING_CONFIG_KEY, json.dumps(data))
+
+    async def get_naming_config(self) -> NamingTemplate:
+        """Get naming template configuration."""
+        value = await self.get(NAMING_CONFIG_KEY)
+        if value is None:
+            return NamingTemplate()
+        try:
+            data = json.loads(value)
+            return NamingTemplate(**data)
+        except (json.JSONDecodeError, ValueError):
+            return NamingTemplate()
 
     # Watcher config methods
     async def save_watcher_config(self, config: WatcherConfig) -> None:

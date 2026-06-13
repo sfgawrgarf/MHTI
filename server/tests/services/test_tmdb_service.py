@@ -124,7 +124,7 @@ class TestTMDBServiceAPIToken:
 
             status = await tmdb_service.save_and_verify_api_token("invalid_token")
 
-            assert status.is_configured is True
+            assert status.is_configured is False
             assert status.is_valid is False
             assert "Invalid" in status.error_message
 
@@ -142,6 +142,15 @@ class TestTMDBServiceAPIToken:
 
             assert is_valid is False
             assert "超时" in error
+
+    @pytest.mark.asyncio
+    async def test_test_proxy_socks5_missing_support(self, tmdb_service):
+        """Test SOCKS5 proxy reports missing runtime support clearly."""
+        success, message, latency = await tmdb_service.test_proxy("socks5://127.0.0.1:1080")
+
+        assert success is False
+        assert latency is None
+        assert message == "测试失败: SOCKS5 代理缺少运行依赖，请安装 httpx[socks]"
 
 
 class TestTMDBServiceSearch:

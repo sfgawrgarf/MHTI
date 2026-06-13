@@ -2,7 +2,51 @@
 """Server startup script with configurable host and port."""
 
 import argparse
-import uvicorn
+import sys
+from pathlib import Path
+
+
+def _candidate_package_dirs() -> list[Path]:
+    """返回支持的本地依赖目录，优先使用新的目录名。"""
+    root_dir = Path(__file__).resolve().parent
+    return [
+        root_dir / ".local_packages",
+        root_dir / ".python_packages",
+    ]
+
+
+def _is_usable_uvicorn(module) -> bool:
+    """校验导入结果是否为可运行的 uvicorn 模块。"""
+    return hasattr(module, "run")
+
+
+def _load_uvicorn():
+    """优先使用当前 Python 环境，缺依赖时再回退到仓库本地依赖目录。"""
+    try:
+        import uvicorn as current_uvicorn
+        if _is_usable_uvicorn(current_uvicorn):
+            return current_uvicorn
+    except ModuleNotFoundError:
+        pass
+
+    for package_dir in _candidate_package_dirs():
+        if package_dir.is_dir():
+            sys.path.insert(0, str(package_dir))
+            try:
+                import uvicorn as local_uvicorn
+                if _is_usable_uvicorn(local_uvicorn):
+                    return local_uvicorn
+            except ModuleNotFoundError:
+                pass
+
+    print("Missing Python dependency: uvicorn")
+    print("You can install backend dependencies in either of these ways:")
+    print("1. python -m pip install -r requirements.txt")
+    print("2. python -m pip install --target .local_packages -r requirements.txt")
+    raise SystemExit(1)
+
+
+uvicorn = _load_uvicorn()
 
 
 def main():

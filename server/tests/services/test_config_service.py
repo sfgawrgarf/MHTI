@@ -3,9 +3,9 @@
 import pytest
 from pathlib import Path
 import tempfile
-import os
 
 from server.services.config_service import ConfigService
+from server.models.template import NamingTemplate
 
 
 @pytest.fixture
@@ -123,3 +123,17 @@ class TestConfigService:
 
         assert is_valid is False
         assert verified_at is not None
+
+    @pytest.mark.asyncio
+    async def test_save_and_get_naming_config(self, config_service):
+        """Test saving and reading naming template configuration."""
+        config = NamingTemplate(
+            series_folder="{title}",
+            season_folder="S{season:02d}",
+            episode_file="{title}.S{season:02d}E{episode:02d}",
+        )
+
+        await config_service.save_naming_config(config)
+        result = await config_service.get_naming_config()
+
+        assert result == config

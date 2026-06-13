@@ -1,8 +1,13 @@
 """Template service for file naming."""
 
+import json
 import re
+import sqlite3
+from pathlib import Path
 from typing import Any
 
+from server.core.database import DATABASE_PATH
+from server.services.config_service import NAMING_CONFIG_KEY
 from server.models.template import (
     NamingTemplate,
     TemplatePreviewResponse,
@@ -32,9 +37,10 @@ VALID_VARIABLES = {v.value for v in TemplateVariable}
 class TemplateService:
     """Service for template parsing, validation, and preview."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: Path | None = None) -> None:
         """Initialize the template service."""
         self._default_template = NamingTemplate()
+        self._db_path = db_path or DATABASE_PATH
 
     def get_default_template(self) -> NamingTemplate:
         """Get the default naming template.
@@ -43,6 +49,34 @@ class TemplateService:
             Default naming template configuration.
         """
         return self._default_template
+
+    def get_active_template(self) -> NamingTemplate:
+        """Get the current naming template, falling back to defaults."""
+        if not self._db_path.exists():
+            return self._default_template
+
+        db = None
+        try:
+            db = sqlite3.connect(self._db_path)
+            cursor = db.execute(
+                "SELECT value FROM config WHERE key = ?",
+                (NAMING_CONFIG_KEY,),
+            )
+            row = cursor.fetchone()
+        except sqlite3.Error:
+            return self._default_template
+        finally:
+            if db is not None:
+                db.close()
+
+        if row is None or not row[0]:
+            return self._default_template
+
+        try:
+            data = json.loads(row[0])
+            return NamingTemplate(**data)
+        except (json.JSONDecodeError, ValueError):
+            return self._default_template
 
     def validate_template(self, template: str) -> TemplateValidationResult:
         """Validate a template string.

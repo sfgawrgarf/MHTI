@@ -20,6 +20,7 @@ from server.models.config import (
 )
 from server.models.organize import OrganizeConfig
 from server.models.download import DownloadConfig
+from server.models.template import NamingTemplate
 from server.models.watcher import (
     WatcherConfig,
     WatcherConfigRequest,
@@ -85,10 +86,21 @@ async def delete_proxy_config(
 
 @router.post("/proxy/test", response_model=ProxyTestResponse)
 async def test_proxy(
+    request: ProxyConfigRequest | None = None,
     tmdb_service: TMDBService = Depends(get_tmdb_service),
 ) -> ProxyTestResponse:
     """Test proxy connection to TMDB."""
-    success, message, latency = await tmdb_service.test_proxy()
+    proxy_url = None
+    if request is not None:
+        proxy_url = ProxyConfig(
+            type=request.type,
+            host=request.host,
+            port=request.port,
+            username=request.username,
+            password=request.password,
+        ).get_url()
+
+    success, message, latency = await tmdb_service.test_proxy(proxy_url)
     return ProxyTestResponse(
         success=success,
         message=message,
@@ -216,6 +228,27 @@ async def save_download_config(
 ) -> DownloadConfig:
     """Save download configuration."""
     await config_service.save_download_config(request)
+    return request
+
+
+# ========== Naming Configuration ==========
+
+
+@router.get("/naming", response_model=NamingTemplate)
+async def get_naming_config(
+    config_service: ConfigService = Depends(get_config_service),
+) -> NamingTemplate:
+    """Get current naming template configuration."""
+    return await config_service.get_naming_config()
+
+
+@router.put("/naming", response_model=NamingTemplate)
+async def save_naming_config(
+    request: NamingTemplate,
+    config_service: ConfigService = Depends(get_config_service),
+) -> NamingTemplate:
+    """Save naming template configuration."""
+    await config_service.save_naming_config(request)
     return request
 
 

@@ -6,12 +6,22 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from server.main import app
+from server.core.container import get_rename_service
+from server.services.rename_service import RenameService
+from server.services.template_service import TemplateService
 
 
 @pytest.fixture
-def client():
+def client(temp_db):
     """Provide a test client."""
-    return TestClient(app)
+    rename_service = RenameService(template_service=TemplateService(db_path=temp_db))
+
+    def override_rename_service():
+        return rename_service
+
+    app.dependency_overrides[get_rename_service] = override_rename_service
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture

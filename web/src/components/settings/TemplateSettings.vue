@@ -4,14 +4,18 @@ import {
   NCard,
   NSpace,
   NInput,
+  NButton,
   NDescriptions,
   NDescriptionsItem,
   NText,
+  useMessage,
 } from 'naive-ui'
 import { configApi } from '@/api/config'
 import type { NamingTemplate } from '@/api/types'
 
+const message = useMessage()
 const loading = ref(false)
+const saving = ref(false)
 const template = ref<NamingTemplate>({
   series_folder: '{title}',
   season_folder: 'Season {season}',
@@ -23,14 +27,29 @@ const previews = ref({
   episode_file: '',
 })
 
-// 加载默认模板
-const loadDefaultTemplate = async () => {
+// 加载当前配置
+const loadTemplateConfig = async () => {
+  loading.value = true
+  try {
+    template.value = await configApi.getNamingConfig()
+    await updatePreviews()
+  } catch (error) {
+    console.error(error)
+    message.error('加载命名模板失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const resetToDefaultTemplate = async () => {
   loading.value = true
   try {
     template.value = await configApi.getDefaultTemplate()
     await updatePreviews()
+    message.success('已恢复默认模板，可按需保存')
   } catch (error) {
     console.error(error)
+    message.error('加载默认模板失败')
   } finally {
     loading.value = false
   }
@@ -64,6 +83,20 @@ const updatePreviews = async () => {
   }
 }
 
+const saveTemplateConfig = async () => {
+  saving.value = true
+  try {
+    await configApi.saveNamingConfig(template.value)
+    await updatePreviews()
+    message.success('命名模板已保存')
+  } catch (error) {
+    console.error(error)
+    message.error('保存命名模板失败')
+  } finally {
+    saving.value = false
+  }
+}
+
 // 防抖更新预览
 let debounceTimer: ReturnType<typeof setTimeout>
 const debouncedUpdatePreviews = () => {
@@ -73,11 +106,11 @@ const debouncedUpdatePreviews = () => {
 
 watch(template, debouncedUpdatePreviews, { deep: true })
 
-onMounted(loadDefaultTemplate)
+onMounted(loadTemplateConfig)
 </script>
 
 <template>
-  <NCard title="命名模板配置" size="small">
+  <NCard title="命名模板配置" size="small" :loading="loading">
     <NSpace vertical>
       <!-- 剧集文件夹 -->
       <div>
@@ -109,6 +142,15 @@ onMounted(loadDefaultTemplate)
         <NDescriptionsItem label="{episode}">集编号</NDescriptionsItem>
         <NDescriptionsItem label="{episode_title}">集标题</NDescriptionsItem>
       </NDescriptions>
+
+      <NSpace>
+        <NButton type="primary" :loading="saving" @click="saveTemplateConfig">
+          保存配置
+        </NButton>
+        <NButton :disabled="loading || saving" @click="resetToDefaultTemplate">
+          恢复默认模板
+        </NButton>
+      </NSpace>
     </NSpace>
   </NCard>
 </template>

@@ -21,10 +21,9 @@ logger = logging.getLogger(__name__)
 class RenameService:
     """Service for renaming and organizing video files."""
 
-    def __init__(self) -> None:
+    def __init__(self, template_service: TemplateService | None = None) -> None:
         """Initialize the rename service."""
-        self._template_service = TemplateService()
-        self._default_template = self._template_service.get_default_template()
+        self._template_service = template_service or TemplateService()
 
     def preview_rename(self, request: RenameRequest) -> RenamePreview:
         """Preview a rename operation without executing it.
@@ -37,26 +36,27 @@ class RenameService:
         """
         source_path = Path(request.source_path)
         extension = source_path.suffix
+        active_template = self._template_service.get_active_template()
 
         # Build template data
         data = self._build_template_data(request)
 
         # Generate new filename
-        episode_template = self._default_template.episode_file
+        episode_template = active_template.episode_file
         new_filename = self._template_service.format_filename(episode_template, data)
         new_filename = self._template_service.sanitize_filename(new_filename)
         new_filename = f"{new_filename}{extension}"
 
         # Generate folder structure
         series_folder = self._template_service.format_filename(
-            self._default_template.series_folder, data
+            active_template.series_folder, data
         )
         series_folder = self._template_service.sanitize_filename(series_folder)
         # 如果没有年份，移除空括号
         series_folder = series_folder.replace(" ()", "")
 
         season_folder = self._template_service.format_filename(
-            self._default_template.season_folder, data
+            active_template.season_folder, data
         )
         season_folder = self._template_service.sanitize_filename(season_folder)
 

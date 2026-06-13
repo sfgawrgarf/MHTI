@@ -70,7 +70,7 @@ export const useSettingsStore = defineStore('settings', () => {
   async function fetchTemplateConfig() {
     templateLoading.value = true
     try {
-      templateConfig.value = await configApi.getDefaultTemplate()
+      templateConfig.value = await configApi.getNamingConfig()
     } finally {
       templateLoading.value = false
     }

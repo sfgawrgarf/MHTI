@@ -341,18 +341,32 @@ services:
 ### 开发模式
 
 ```bash
-# 后端开发
-cd server
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python run_server.py --host 0.0.0.0 --port 8000
+# 后端开发（方案 A：虚拟环境）
+python -m venv .venv
+# Windows
+.\.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python run_server.py --host 0.0.0.0 --port 8000 --reload
+
+# 后端开发（方案 B：不使用虚拟环境）
+python -m pip install --target .local_packages -r requirements.txt
+python run_server.py --host 0.0.0.0 --port 8000 --reload
 
 # 前端开发
 cd web
-pnpm install
-pnpm dev
+npm install
+npm run dev
 ```
+
+说明：
+
+- 方案 A 使用当前激活的虚拟环境。
+- 方案 B 会把后端依赖安装到仓库根目录 `.local_packages/`，不需要创建或激活虚拟环境。
+- `run_server.py` 会优先使用当前 Python 环境；若当前环境缺依赖，再回退到 `.local_packages/`。
+- 为兼容早期说明，若仓库里已经存在 `.python_packages/`，启动脚本也会继续尝试它。
+- 若只需本机访问，后端可改用 `--host 127.0.0.1`。
 
 ---
 
@@ -563,13 +577,13 @@ erDiagram
 
 ```bash
 # 运行所有测试
-pytest
+python -m pytest
 
 # 运行覆盖率测试
-pytest --cov=server --cov-report=html
+python -m pytest --cov=server --cov-report=html
 
 # 运行特定测试
-pytest server/tests/services/test_parser_service.py -v
+python -m pytest server/tests/services/test_parser_service.py -v
 ```
 
 ---

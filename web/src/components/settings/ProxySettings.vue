@@ -88,7 +88,13 @@ const testConnection = async () => {
   testing.value = true
   testResult.value = null
   try {
-    const result = await configApi.testProxy()
+    const result = await configApi.testProxy({
+      type: proxyType.value,
+      host: host.value,
+      port: port.value || 0,
+      username: username.value || null,
+      password: password.value || null,
+    })
     testResult.value = {
       success: result.success,
       message: result.message,

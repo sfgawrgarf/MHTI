@@ -109,7 +109,7 @@ class TestProxyAPI:
         ) as mock_test:
             mock_test.return_value = (True, "连接成功", 150)
 
-            response = config_client.post("/api/config/proxy/test", json={})
+            response = config_client.post("/api/config/proxy/test")
 
             assert response.status_code == 200
             data = response.json()
@@ -123,11 +123,30 @@ class TestProxyAPI:
         ) as mock_test:
             mock_test.return_value = (False, "连接超时", None)
 
-            response = config_client.post("/api/config/proxy/test", json={})
+            response = config_client.post("/api/config/proxy/test")
 
             assert response.status_code == 200
             data = response.json()
             assert data["success"] is False
+
+    def test_proxy_test_uses_request_config(self, config_client):
+        """Test proxy connection uses the current request config instead of only saved config."""
+        with patch.object(
+            TMDBService, "test_proxy", new_callable=AsyncMock
+        ) as mock_test:
+            mock_test.return_value = (True, "连接成功", 88)
+
+            response = config_client.post(
+                "/api/config/proxy/test",
+                json={
+                    "type": "http",
+                    "host": "127.0.0.1",
+                    "port": 7890,
+                },
+            )
+
+            assert response.status_code == 200
+            mock_test.assert_awaited_once_with("http://127.0.0.1:7890")
 
 
 class TestAPITokenAPI:
@@ -233,6 +252,35 @@ class TestOrganizeAPI:
         data = response.json()
         # 检查实际存在的字段
         assert "organize_mode" in data or "organize_dir" in data
+
+
+class TestNamingAPI:
+    """Tests for /api/config/naming endpoints."""
+
+    def test_get_naming_default(self, config_client):
+        """Test getting default naming configuration."""
+        response = config_client.get("/api/config/naming")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["series_folder"] == "{title} ({year})"
+        assert data["season_folder"] == "Season {season}"
+
+    def test_save_naming_config(self, config_client):
+        """Test saving naming configuration."""
+        payload = {
+            "series_folder": "{title}",
+            "season_folder": "S{season:02d}",
+            "episode_file": "{title}.S{season:02d}E{episode:02d}",
+        }
+
+        save_response = config_client.put("/api/config/naming", json=payload)
+        get_response = config_client.get("/api/config/naming")
+
+        assert save_response.status_code == 200
+        assert save_response.json() == payload
+        assert get_response.status_code == 200
+        assert get_response.json() == payload
 
 
 class TestNfoAPI:

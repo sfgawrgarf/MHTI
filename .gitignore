@@ -31,6 +31,9 @@ venv/
 .venv/
 ENV/
 env/
+.local_packages/
+.python_packages/
+.pip-cache/
 
 # 测试和覆盖率
 .pytest_cache/
@@ -58,6 +61,7 @@ dmypy.json
 node_modules/
 .npm
 .pnpm-store/
+web/.npm-cache/
 
 # 构建产物
 web/dist/

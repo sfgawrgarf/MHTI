@@ -23,10 +23,26 @@ import type {
  */
 export const configApi = {
   /**
-   * 获取默认模板
+   * 获取命名模板配置
    */
   async getDefaultTemplate(): Promise<NamingTemplate> {
     const response = await api.get<NamingTemplate>('/templates/default')
+    return response.data
+  },
+
+  /**
+   * 获取当前命名模板配置
+   */
+  async getNamingConfig(): Promise<NamingTemplate> {
+    const response = await api.get<NamingTemplate>('/config/naming')
+    return response.data
+  },
+
+  /**
+   * 保存命名模板配置
+   */
+  async saveNamingConfig(config: NamingTemplate): Promise<NamingTemplate> {
+    const response = await api.put<NamingTemplate>('/config/naming', config)
     return response.data
   },
 
@@ -66,8 +82,8 @@ export const configApi = {
   /**
    * 测试代理连接
    */
-  async testProxy(): Promise<ProxyTestResponse> {
-    const response = await api.post<ProxyTestResponse>('/config/proxy/test')
+  async testProxy(config?: ProxyConfigRequest): Promise<ProxyTestResponse> {
+    const response = await api.post<ProxyTestResponse>('/config/proxy/test', config)
     return response.data
   },
 

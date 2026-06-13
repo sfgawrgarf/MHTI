@@ -4,14 +4,17 @@ import pytest
 import tempfile
 from pathlib import Path
 
+from server.models.template import NamingTemplate
+from server.services.config_service import ConfigService
 from server.services.rename_service import RenameService
+from server.services.template_service import TemplateService
 from server.models.rename import RenameRequest, BatchRenameRequest
 
 
 @pytest.fixture
-def rename_service():
+def rename_service(temp_db):
     """Provide a RenameService instance."""
-    return RenameService()
+    return RenameService(template_service=TemplateService(db_path=temp_db))
 
 
 @pytest.fixture
@@ -97,6 +100,33 @@ class TestRenameServicePreview:
 
         assert "S02E05" in preview.new_filename
         assert ".mp4" in preview.new_filename
+
+    @pytest.mark.asyncio
+    async def test_preview_uses_saved_naming_template(self, temp_dir, sample_video):
+        """Test preview uses persisted naming template configuration."""
+        db_path = Path(temp_dir) / "config.db"
+        config_service = ConfigService(db_path=db_path)
+        await config_service.save_naming_config(
+            NamingTemplate(
+                series_folder="{title}",
+                season_folder="S{season:02d}",
+                episode_file="{title}.S{season:02d}E{episode:02d}",
+            )
+        )
+        rename_service = RenameService(template_service=TemplateService(db_path=db_path))
+
+        request = RenameRequest(
+            source_path=sample_video,
+            title="Test Show",
+            season=2,
+            episode=5,
+            output_dir=temp_dir,
+        )
+
+        preview = rename_service.preview_rename(request)
+
+        assert preview.dest_folder.endswith(str(Path("Test Show") / "S02"))
+        assert preview.new_filename == "Test Show.S02E05.mp4"
 
 
 class TestRenameServiceExecute:

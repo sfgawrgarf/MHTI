@@ -55,6 +55,13 @@ class TMDBService:
         """Check if token is a Bearer token (JWT format) or API Key."""
         return token.startswith("eyJ")
 
+    def _format_proxy_error(self, error: Exception) -> str:
+        """Format proxy-related runtime errors for user-facing responses."""
+        message = str(error)
+        if isinstance(error, ImportError) and "socksio" in message:
+            return "SOCKS5 代理缺少运行依赖，请安装 httpx[socks]"
+        return message
+
     async def _make_api_request(
         self,
         endpoint: str,
@@ -139,6 +146,8 @@ class TMDBService:
             return False, f"代理错误: {str(e)}", None
         except httpx.RequestError as e:
             return False, f"连接错误: {str(e)}", None
+        except ImportError as e:
+            return False, f"测试失败: {self._format_proxy_error(e)}", None
         except Exception as e:
             return False, f"测试失败: {str(e)}", None
 
@@ -225,6 +234,8 @@ class TMDBService:
             return False, "连接超时 - 请检查网络或代理设置"
         except httpx.RequestError as e:
             return False, f"连接错误: {str(e)}"
+        except ImportError as e:
+            return False, self._format_proxy_error(e)
         except Exception as e:
             return False, f"验证失败: {str(e)}"
 
