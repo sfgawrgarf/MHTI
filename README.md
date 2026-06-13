@@ -630,3 +630,7 @@ pytest server/tests/services/test_parser_service.py -v
 **Made with ❤️ for media enthusiasts**
 
 </div>
+
+
+## 赞助作者
+![](https://i.imgs.ovh/2026/06/13/099f7aaed235aa63f1e1a3398f87c27d.jpg)
