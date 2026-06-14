@@ -75,23 +75,23 @@ jobs:
     needs: prepare
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 设置 QEMU (多架构支持)
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: 设置 Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: 登录 Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 提取 Docker 元数据
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.DOCKER_IMAGE }}
           tags: |
@@ -141,7 +141,7 @@ jobs:
             platform: linux/arm64
     steps:
       - name: 设置 QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: 拉取镜像
         run: |
@@ -156,7 +156,7 @@ jobs:
           echo "✅ 镜像导出成功: $FILENAME"
 
       - name: 上传镜像文件
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: docker-image-${{ matrix.arch }}
           path: mhti-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz
@@ -172,12 +172,12 @@ jobs:
     needs: prepare
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 设置 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
@@ -194,7 +194,7 @@ jobs:
           ls -lh ../mhti-frontend-*.zip
 
       - name: 上传前端包
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: frontend-zip
           path: mhti-frontend-${{ needs.prepare.outputs.version }}.zip
@@ -211,24 +211,24 @@ jobs:
       contents: write
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: 下载 Docker 镜像 (amd64)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: docker-image-amd64
           path: artifacts/docker-image-amd64
 
       - name: 下载 Docker 镜像 (arm64)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: docker-image-arm64
           path: artifacts/docker-image-arm64
 
       - name: 下载前端包
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: frontend-zip
           path: artifacts/frontend-zip
