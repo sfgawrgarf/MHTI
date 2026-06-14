@@ -19,7 +19,7 @@ import {
   SwapHorizontalOutline,
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
-import type { ScannedFile } from '@/api/types'
+import type { ScannedFile, StorageLocator } from '@/api/types'
 import FolderBrowser from '@/components/scan/FolderBrowser.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ManualJobCreateModal from '@/components/scan/ManualJobCreateModal.vue'
@@ -28,6 +28,7 @@ const message = useMessage()
 
 const loading = ref(false)
 const scanPath = ref('')
+const scanLocator = ref<StorageLocator | null>(null)
 const scannedFiles = ref<ScannedFile[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -127,7 +128,7 @@ const handleScan = async () => {
   page.value = 1
 
   try {
-    const response = await filesApi.scan(scanPath.value, true)
+    const response = await filesApi.scan(scanPath.value, true, scanLocator.value)
     scannedFiles.value = response.files
     total.value = response.total_files
 
@@ -148,6 +149,11 @@ const handleScan = async () => {
 const handleFolderSelect = (path: string) => {
   scanPath.value = path
   showFolderBrowser.value = false
+}
+
+// 接收文件夹选择器的 locator（115 等云端目录）
+const handleFolderLocator = (locator: StorageLocator) => {
+  scanLocator.value = locator
 }
 
 // 分页变化
@@ -271,6 +277,7 @@ const handleCreateSuccess = () => {
       v-model="scanPath"
       title="选择文件夹"
       @select="handleFolderSelect"
+      @select-locator="handleFolderLocator"
     />
 
     <!-- 创建任务弹窗 -->

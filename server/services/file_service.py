@@ -1,7 +1,9 @@
 """File scanning service for video file discovery."""
 
+import asyncio
 import os
 from pathlib import Path
+from typing import Any
 
 from server.core.exceptions import (
     FolderNotFoundError,
@@ -9,6 +11,7 @@ from server.core.exceptions import (
     PermissionDeniedError,
 )
 from server.models.file import DirectoryEntry, ScannedFile
+from server.models.storage import StorageLocator, StorageProvider
 
 # Supported video file extensions
 SUPPORTED_VIDEO_EXTENSIONS: set[str] = {
@@ -35,6 +38,9 @@ BLOCKED_PATHS = {
     "/etc", "/var", "/usr", "/bin", "/sbin", "/boot", "/root", "/proc", "/sys",
     "C:\Windows", "C:\Program Files", "C:\Program Files (x86)",
 }
+VIRTUAL_115_ROOT_NAME = "115网盘"
+VIRTUAL_115_ROOT_PATH = f"/{VIRTUAL_115_ROOT_NAME}"
+VIRTUAL_115_ROOT_ID = "0"
 
 
 def _sanitize_path(path_str: str) -> Path:
@@ -75,12 +81,24 @@ def _sanitize_path(path_str: str) -> Path:
 class FileService:
     """Service for scanning folders and discovering video files."""
 
-    def scan_folder(self, folder_path: str) -> list[ScannedFile]:
+    def _get_115_service(self):
+        """Return the current 115 service for provider-aware browsing."""
+        from server.core.container import get_p115_service
+
+        return get_p115_service()
+
+    def scan_folder(
+        self,
+        folder_path: str,
+        locator: StorageLocator | None = None,
+    ) -> list[ScannedFile]:
         """
         Scan a folder recursively for video files.
 
         Args:
             folder_path: Path to the folder to scan.
+            locator: Optional storage locator. When provider is P115 the scan
+                is delegated to the 115 cloud service.
 
         Returns:
             List of ScannedFile objects representing discovered video files.
@@ -90,6 +108,9 @@ class FileService:
             InvalidFolderError: If the path is not a directory.
             PermissionDeniedError: If access to the folder is denied.
         """
+        if locator is not None and locator.provider == StorageProvider.P115:
+            return self._scan_provider_p115(folder_path, locator)
+
         # 路径安全验证
         path = _sanitize_path(folder_path)
 
@@ -106,6 +127,68 @@ class FileService:
             return self._scan_recursive(path)
         except PermissionError as e:
             raise PermissionDeniedError(folder_path) from e
+
+    def _scan_provider_p115(
+        self,
+        folder_path: str,
+        locator: StorageLocator,
+    ) -> list[ScannedFile]:
+        """Scan a 115 cloud directory via the async provider service (sync wrapper)."""
+        import asyncio
+
+        service = self._get_115_service()
+        scan_method = getattr(service, "scan_folder", None)
+        if scan_method is None:
+            raise InvalidFolderError("115 provider 扫描不可用")
+
+        coro = scan_method(
+            path=locator.path or folder_path,
+            file_id=locator.file_id,
+        )
+        # Sync path only valid when no loop is running; otherwise use scan_folder_async.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            entries = asyncio.run(coro)
+        else:
+            raise InvalidFolderError(
+                folder_path,
+                reason="115 provider 扫描仅支持同步调用，请在事件循环外调用或使用 scan_folder_async",
+            )
+        return [self._p115_entry_to_scanned_file(entry) for entry in entries]
+
+    async def scan_folder_async(
+        self,
+        folder_path: str,
+        locator: StorageLocator | None = None,
+    ) -> list[ScannedFile]:
+        """Async variant of :meth:`scan_folder` for provider-backed sources."""
+        if locator is not None and locator.provider == StorageProvider.P115:
+            service = self._get_115_service()
+            scan_method = getattr(service, "scan_folder", None)
+            if scan_method is None:
+                raise InvalidFolderError("115 provider 扫描不可用")
+            entries = await scan_method(
+                path=locator.path or folder_path,
+                file_id=locator.file_id,
+            )
+            return [self._p115_entry_to_scanned_file(entry) for entry in entries]
+        return self.scan_folder(folder_path, locator=locator)
+
+    @staticmethod
+    def _p115_entry_to_scanned_file(entry: dict[str, Any]) -> ScannedFile:
+        """Convert a 115 scan entry dict into a ScannedFile model."""
+        name = entry.get("name") or ""
+        suffix = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+        return ScannedFile(
+            filename=name,
+            path=entry.get("path") or name,
+            size=int(entry["size"]) if entry.get("size") is not None else 0,
+            extension=suffix,
+            mtime=entry.get("mtime"),
+            file_id=entry.get("file_id"),
+            parent_id=entry.get("parent_id"),
+        )
 
     def _scan_recursive(self, folder: Path) -> list[ScannedFile]:
         """
@@ -137,53 +220,159 @@ class FileService:
 
         return video_files
 
-    def browse_directory(
-        self, path: str = "", page: int = 1, page_size: int = 20
+    def _build_virtual_115_entry(self) -> DirectoryEntry:
+        """Create the virtual root entry for 115 cloud storage."""
+        return DirectoryEntry(
+            name=VIRTUAL_115_ROOT_NAME,
+            path=VIRTUAL_115_ROOT_PATH,
+            is_dir=True,
+            provider=StorageProvider.P115,
+            file_id=VIRTUAL_115_ROOT_ID,
+            is_virtual=True,
+        )
+
+    def _build_root_entries(self) -> list[DirectoryEntry]:
+        """Build root entries for local storage plus the virtual 115 entry."""
+        import platform
+
+        entries = [self._build_virtual_115_entry()]
+        if platform.system() != "Windows":
+            return entries
+
+        import string
+
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            if Path(drive).exists():
+                entries.append(
+                    DirectoryEntry(
+                        name=f"{letter}:",
+                        path=drive,
+                        is_dir=True,
+                    )
+                )
+        return entries
+
+    def _coerce_directory_entry(
+        self,
+        row: DirectoryEntry | dict[str, Any],
+        provider: StorageProvider,
+    ) -> DirectoryEntry:
+        """Normalize provider rows into DirectoryEntry models."""
+        if isinstance(row, DirectoryEntry):
+            return row
+
+        data = dict(row)
+        data.setdefault("provider", provider)
+        data.setdefault("file_id", None)
+        data.setdefault("parent_id", None)
+        data.setdefault("is_virtual", False)
+        return DirectoryEntry(**data)
+
+    def _coerce_provider_browse_result(
+        self,
+        result: tuple[str, str | None, list[DirectoryEntry], int] | dict[str, Any],
+        fallback_path: str,
+    ) -> tuple[str, str | None, list[DirectoryEntry], int, str | None, str | None]:
+        """Normalize provider browse results into a shared tuple structure.
+
+        Returns ``(current_path, parent_path, entries, total, current_file_id,
+        parent_file_id)``. The file ids are None for local storage and only
+        populated by provider backends (e.g. 115) so callers can navigate
+        back to the parent directory.
+        """
+        if isinstance(result, tuple):
+            current_path, parent_path, rows, total = result
+            current_file_id = None
+            parent_file_id = None
+        else:
+            current_path = result.get("current_path", fallback_path or VIRTUAL_115_ROOT_PATH)
+            parent_path = result.get("parent_path")
+            rows = result.get("entries", [])
+            total = result.get("total", len(rows))
+            current_file_id = result.get("current_file_id")
+            parent_file_id = result.get("parent_file_id")
+
+        entries = [
+            self._coerce_directory_entry(row, StorageProvider.P115)
+            for row in rows
+        ]
+        return current_path, parent_path, entries, total, current_file_id, parent_file_id
+
+    def _browse_provider_115(
+        self,
+        path: str,
+        file_id: str | None,
+        page: int,
+        page_size: int,
     ) -> tuple[str, str | None, list[DirectoryEntry], int]:
-        """
-        Browse a directory and list its contents.
+        """Delegate sync browse requests to the async 115 provider service."""
+        service = self._get_115_service()
+        browse_method = getattr(service, "browse", None)
+        if browse_method is None:
+            raise InvalidFolderError("115 provider browsing is not available")
 
-        Args:
-            path: Path to browse. Empty string returns root/drives.
-            page: Page number (1-based).
-            page_size: Number of items per page.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            result = asyncio.run(
+                browse_method(
+                    path=path or VIRTUAL_115_ROOT_PATH,
+                    file_id=file_id,
+                    page=page,
+                    page_size=page_size,
+                )
+            )
+            return self._coerce_provider_browse_result(result, path)
 
-        Returns:
-            Tuple of (current_path, parent_path, entries, total).
+        raise InvalidFolderError(
+            path or VIRTUAL_115_ROOT_PATH,
+            reason="115 provider 浏览仅支持异步调用",
+        )
 
-        Raises:
-            FolderNotFoundError: If the path does not exist.
-            InvalidFolderError: If the path is not a directory.
-            PermissionDeniedError: If access is denied.
-        """
+    async def _browse_provider_115_async(
+        self,
+        path: str,
+        file_id: str | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[str, str | None, list[DirectoryEntry], int]:
+        """Delegate async browse requests to the 115 provider service."""
+        service = self._get_115_service()
+        browse_method = getattr(service, "browse", None)
+        if browse_method is None:
+            raise InvalidFolderError("115 provider browsing is not available")
+
+        result = await browse_method(
+            path=path or VIRTUAL_115_ROOT_PATH,
+            file_id=file_id,
+            page=page,
+            page_size=page_size,
+        )
+        return self._coerce_provider_browse_result(result, path)
+
+    def _browse_local_root(
+        self,
+        page: int,
+        page_size: int,
+    ) -> tuple[str, None, list[DirectoryEntry], int, None, None]:
+        """Browse the synthetic root entry list."""
+        entries = self._build_root_entries()
+        total = len(entries)
+        start = (page - 1) * page_size
+        end = start + page_size
+        return "", None, entries[start:end], total, None, None
+
+    def _browse_local_path(
+        self,
+        path: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[str, str | None, list[DirectoryEntry], int, None, None]:
+        """Browse a local filesystem directory."""
         import platform
         from datetime import datetime
 
-        # Handle empty path - return drives on Windows, root on Unix
-        if not path:
-            if platform.system() == "Windows":
-                # List available drives
-                import string
-                entries = []
-                for letter in string.ascii_uppercase:
-                    drive = f"{letter}:\\"
-                    if Path(drive).exists():
-                        entries.append(DirectoryEntry(
-                            name=f"{letter}:",
-                            path=drive,
-                            is_dir=True,
-                            size=None,
-                            mtime=None,
-                        ))
-                total = len(entries)
-                # 分页
-                start = (page - 1) * page_size
-                end = start + page_size
-                return "", None, entries[start:end], total
-            else:
-                path = "/"
-
-        # 路径安全验证
         folder = _sanitize_path(path)
 
         if not folder.exists():
@@ -195,43 +384,109 @@ class FileService:
         try:
             all_entries: list[DirectoryEntry] = []
 
+            if str(folder.absolute()) == "/":
+                all_entries.append(self._build_virtual_115_entry())
+
             for item in sorted(folder.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
                 try:
                     stat = item.stat()
                     mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
                     size = stat.st_size if item.is_file() else None
 
-                    all_entries.append(DirectoryEntry(
-                        name=item.name,
-                        path=str(item.absolute()),
-                        is_dir=item.is_dir(),
-                        size=size,
-                        mtime=mtime,
-                    ))
+                    all_entries.append(
+                        DirectoryEntry(
+                            name=item.name,
+                            path=str(item.absolute()),
+                            is_dir=item.is_dir(),
+                            size=size,
+                            mtime=mtime,
+                        )
+                    )
                 except PermissionError:
-                    # Skip items we can't access
                     continue
 
             total = len(all_entries)
-
-            # 分页
             start = (page - 1) * page_size
             end = start + page_size
             entries = all_entries[start:end]
 
-            # Calculate parent path
             parent = folder.parent
             parent_path = str(parent.absolute()) if parent != folder else None
 
-            # On Windows, if parent is the drive root, keep it
             if platform.system() == "Windows" and parent_path and len(parent_path) == 3:
-                # e.g., "C:\\" - keep as is
                 pass
             elif platform.system() == "Windows" and str(folder.absolute()).endswith(":\\"):
-                # At drive root, parent is the drive list
                 parent_path = ""
 
-            return str(folder.absolute()), parent_path, entries, total
+            return str(folder.absolute()), parent_path, entries, total, None, None
 
         except PermissionError as e:
             raise PermissionDeniedError(path) from e
+
+    def _normalize_provider(self, provider: str | StorageProvider) -> str:
+        """Normalize provider enum/string input to a string value."""
+        if isinstance(provider, StorageProvider):
+            return provider.value
+        return provider or StorageProvider.LOCAL.value
+
+    def browse_directory(
+        self,
+        path: str = "",
+        page: int = 1,
+        page_size: int = 20,
+        provider: str | StorageProvider = StorageProvider.LOCAL,
+        file_id: str | None = None,
+    ) -> tuple[str, str | None, list[DirectoryEntry], int, str | None, str | None]:
+        """
+        Browse a directory and list its contents.
+
+        Args:
+            path: Path to browse. Empty string returns root/drives.
+            page: Page number (1-based).
+            page_size: Number of items per page.
+
+        Returns:
+            Tuple of (current_path, parent_path, entries, total,
+            current_file_id, parent_file_id). The file ids are None for local
+            storage and populated by provider backends (e.g. 115) so callers
+            can navigate back to the parent directory.
+
+        Raises:
+            FolderNotFoundError: If the path does not exist.
+            InvalidFolderError: If the path is not a directory.
+            PermissionDeniedError: If access is denied.
+        """
+        import platform
+        provider_value = self._normalize_provider(provider)
+
+        if provider_value == StorageProvider.P115.value:
+            return self._browse_provider_115(path, file_id, page, page_size)
+
+        if not path:
+            if platform.system() == "Windows":
+                return self._browse_local_root(page, page_size)
+            path = "/"
+
+        return self._browse_local_path(path, page, page_size)
+
+    async def browse_directory_async(
+        self,
+        path: str = "",
+        page: int = 1,
+        page_size: int = 20,
+        provider: str | StorageProvider = StorageProvider.LOCAL,
+        file_id: str | None = None,
+    ) -> tuple[str, str | None, list[DirectoryEntry], int, str | None, str | None]:
+        """Browse provider-aware directories without blocking the event loop."""
+        provider_value = self._normalize_provider(provider)
+
+        if provider_value == StorageProvider.P115.value:
+            return await self._browse_provider_115_async(path, file_id, page, page_size)
+
+        return self.browse_directory(
+            path=path,
+            page=page,
+            page_size=page_size,
+            provider=provider,
+            file_id=file_id,
+        )

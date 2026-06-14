@@ -8,6 +8,7 @@ import {
   NSpace,
   NIcon,
   NSpin,
+  NTag,
 } from 'naive-ui'
 import {
   FolderOutline,
@@ -15,9 +16,10 @@ import {
   SearchOutline,
   CloseOutline,
   CheckmarkOutline,
+  CloudOutline,
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
-import type { DirectoryEntry } from '@/api/types'
+import type { DirectoryEntry, StorageLocator, StorageProvider } from '@/api/types'
 
 const props = defineProps<{
   show: boolean
@@ -27,6 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:show', value: boolean): void
   (e: 'confirm', path: string): void
+  (e: 'confirmLocator', locator: StorageLocator): void
 }>()
 
 const loading = ref(false)
@@ -35,6 +38,11 @@ const parentPath = ref<string | null>(null)
 const entries = ref<DirectoryEntry[]>([])
 const filter = ref('')
 const selectedPath = ref('')
+// 存储提供方跟踪
+const currentProvider = ref<StorageProvider>('local')
+const currentFileId = ref<string | null>(null)
+// 父目录的 file_id（来自后端响应），返回上级时直接使用
+const parentFileId = ref<string | null>(null)
 
 // 过滤后的目录列表
 const filteredDirs = computed(() => {
@@ -57,15 +65,31 @@ const pathSegments = computed(() => {
   return segments
 })
 
+// 当前 provider 标签
+const providerTag = computed(() => {
+  if (currentProvider.value === '115') return { label: '115 网盘', type: 'info' as const }
+  return { label: '本地', type: 'default' as const }
+})
+
 // 加载目录
-const loadDirectory = async (path: string = '') => {
+const loadDirectory = async (
+  path: string = '',
+  provider?: StorageProvider,
+  fileId?: string | null,
+) => {
   loading.value = true
+  const effectiveProvider = provider ?? currentProvider.value
+  const effectiveFileId = fileId !== undefined ? fileId : currentFileId.value
   try {
-    const response = await filesApi.browse(path)
+    const response = await filesApi.browse(path, 1, 20, effectiveProvider, effectiveFileId)
     currentPath.value = response.current_path
     parentPath.value = response.parent_path
     entries.value = response.entries
     selectedPath.value = response.current_path
+    currentProvider.value = effectiveProvider
+    // 优先用后端返回的 file_id（115 子目录必须），fallback 到请求时的值
+    currentFileId.value = response.current_file_id ?? effectiveFileId ?? null
+    parentFileId.value = response.parent_file_id ?? null
   } catch (error) {
     console.error('加载目录失败:', error)
   } finally {
@@ -75,21 +99,46 @@ const loadDirectory = async (path: string = '') => {
 
 // 进入目录
 const enterDirectory = (entry: DirectoryEntry) => {
-  if (entry.is_dir) {
-    loadDirectory(entry.path)
+  if (!entry.is_dir) return
+  // 点击虚拟 115 根入口 → 切到 115 provider
+  if (entry.is_virtual && entry.provider === '115') {
+    loadDirectory(entry.path, '115', entry.file_id ?? '0')
+    return
+  }
+  if (currentProvider.value === '115') {
+    loadDirectory(entry.path, '115', entry.file_id ?? null)
+  } else {
+    loadDirectory(entry.path, 'local', null)
   }
 }
 
 // 返回上级
 const goUp = () => {
-  if (parentPath.value !== null) {
-    loadDirectory(parentPath.value)
+  if (parentPath.value === null) {
+    // 115 根的上级 → 回到本地根
+    if (currentProvider.value === '115') {
+      loadDirectory('', 'local', null)
+    }
+    return
   }
+  // 用后端响应里的父目录 file_id（115 必须），本地为 null 走 path
+  loadDirectory(parentPath.value, currentProvider.value, parentFileId.value)
 }
 
-// 跳转到指定路径
+// 跳转到指定路径（面包屑用）
 const goToPath = (path: string) => {
-  loadDirectory(path)
+  // "根目录"面包屑 → 回到本地根（最顶层，含盘符 + 115 入口），无论当前 provider
+  if (path === '') {
+    loadDirectory('', 'local', null)
+    return
+  }
+  // 115 根层级（/115网盘）→ file_id 固定为 '0'
+  if (path === '/115网盘') {
+    loadDirectory('/115网盘', '115', '0')
+    return
+  }
+  // 本地其他层级：直接按 path 加载
+  loadDirectory(path, currentProvider.value, currentFileId.value)
 }
 
 // 关闭弹窗
@@ -97,10 +146,28 @@ const handleClose = () => {
   emit('update:show', false)
 }
 
+// 构造当前目录的 StorageLocator
+const buildLocator = (): StorageLocator => {
+  if (currentProvider.value === '115') {
+    return {
+      provider: '115',
+      path: currentPath.value,
+      file_id: currentFileId.value,
+      is_dir: true,
+    }
+  }
+  return {
+    provider: 'local',
+    path: currentPath.value,
+    is_dir: true,
+  }
+}
+
 // 确认选择
 const handleConfirm = () => {
   if (selectedPath.value) {
     emit('confirm', selectedPath.value)
+    emit('confirmLocator', buildLocator())
     handleClose()
   }
 }
@@ -111,7 +178,10 @@ watch(
   (show) => {
     if (show) {
       filter.value = ''
-      loadDirectory('')
+      currentProvider.value = 'local'
+      currentFileId.value = null
+      parentFileId.value = null
+      loadDirectory('', 'local', null)
     }
   }
 )
@@ -127,7 +197,10 @@ watch(
     <NCard class="browser-modal" :bordered="false">
       <!-- 头部 -->
       <template #header>
-        <span class="header-title">{{ title || '选择文件夹' }}</span>
+        <NSpace align="center" size="small">
+          <span class="header-title">{{ title || '选择文件夹' }}</span>
+          <NTag size="small" :type="providerTag.type">{{ providerTag.label }}</NTag>
+        </NSpace>
       </template>
       <template #header-extra>
         <NButton quaternary circle size="small" @click="handleClose">
@@ -173,7 +246,11 @@ watch(
         <NSpin :show="loading">
           <div class="folder-list">
             <!-- 返回上级 -->
-            <div v-if="parentPath !== null" class="folder-item back" @click="goUp">
+            <div
+              v-if="parentPath !== null || currentProvider === '115'"
+              class="folder-item back"
+              @click="goUp"
+            >
               <div class="folder-icon back-icon">
                 <NIcon :component="ArrowUpOutline" :size="18" />
               </div>
@@ -193,8 +270,8 @@ watch(
               class="folder-item"
               @click="enterDirectory(entry)"
             >
-              <div class="folder-icon">
-                <NIcon :component="FolderOutline" :size="18" />
+              <div class="folder-icon" :class="{ 'cloud-icon': entry.is_virtual }">
+                <NIcon :component="entry.is_virtual ? CloudOutline : FolderOutline" :size="18" />
               </div>
               <span class="folder-name">{{ entry.name }}</span>
               <NIcon :component="CheckmarkOutline" class="enter-icon" :size="16" />
@@ -332,6 +409,11 @@ watch(
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.folder-icon.cloud-icon {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
 }
 
 .folder-icon.back-icon {

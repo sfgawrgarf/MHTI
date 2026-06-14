@@ -231,6 +231,8 @@ class TestJapaneseEpisodeParser:
         result = parser_service.parse(filename)
         assert result.episode == expected_episode
         assert result.is_parsed is True
+        # 无显式季号时应默认 season=1（避免记录页季/集列空白）
+        assert result.season == 1
 
     # ===== 前編/後編 测试 =====
     @pytest.mark.parametrize(

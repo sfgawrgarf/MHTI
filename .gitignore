@@ -110,6 +110,9 @@ data/*.db-wal
 # 密钥文件
 data/.secret_key
 
+# 115 网盘客户端缓存（含 pickcode/userkey 等敏感数据）
+data/p115-home/
+
 # 日志文件
 data/logs/
 
@@ -130,6 +133,17 @@ data/logs/
 # 日志文件
 *.log
 logs/
+
+# 调试/临时脚本（开发时用，不应提交）
+_debug_*.py
+_debug_*.js
+_tmp_*
+
+# 115 网盘凭据/缓存（高危：含 cookies/pickcode/userkey）
+*.p115client
+p115client.cache/
+.p115client/
+115_cookies.txt
 
 # -----------------------------------
 # AI/开发工具工作目录

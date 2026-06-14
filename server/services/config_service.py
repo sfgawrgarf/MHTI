@@ -9,6 +9,7 @@ import aiosqlite
 from server.core.database import DATABASE_PATH
 from server.core.security import decrypt, encrypt
 from server.models.config import LanguageConfig, ProxyConfig, ProxyType, ApiTokenStatus
+from server.models.cloud_115 import Cloud115Config
 from server.models.emby import EmbyConfig
 from server.models.organize import OrganizeConfig, OrganizeMode
 from server.models.download import DownloadConfig
@@ -33,6 +34,7 @@ NFO_CONFIG_KEY = "nfo_config"
 SYSTEM_CONFIG_KEY = "system_config"
 EMBY_CONFIG_KEY = "emby_config"
 NAMING_CONFIG_KEY = "naming_config"
+CLOUD_115_CONFIG_KEY = "cloud_115_config"
 
 
 class ConfigService:
@@ -437,3 +439,22 @@ class ConfigService:
             return EmbyConfig(**data)
         except (json.JSONDecodeError, ValueError):
             return EmbyConfig()
+
+    # 115 cloud config methods
+    async def save_115_config(self, config: Cloud115Config) -> None:
+        """Save 115 cloud configuration."""
+        await self.set(CLOUD_115_CONFIG_KEY, config.model_dump_json(), encrypted=True)
+
+    async def get_115_config(self) -> Cloud115Config:
+        """Get 115 cloud configuration."""
+        value = await self.get(CLOUD_115_CONFIG_KEY, encrypted=True)
+        if value is None:
+            return Cloud115Config()
+        try:
+            return Cloud115Config.model_validate_json(value)
+        except ValueError:
+            return Cloud115Config()
+
+    async def delete_115_config(self) -> bool:
+        """Delete 115 cloud configuration."""
+        return await self.delete(CLOUD_115_CONFIG_KEY)

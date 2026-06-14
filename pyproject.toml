@@ -6,7 +6,7 @@ authors = ["Developer"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.12"
 fastapi = "^0.109.0"
 uvicorn = {extras = ["standard"], version = "^0.27.0"}
 pydantic = "^2.6.0"
@@ -17,6 +17,7 @@ croniter = "^2.0.0"
 sse-starlette = "^2.0.0"
 watchdog = "^4.0.0"
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+p115client = "0.0.8.6.6"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
@@ -41,7 +42,7 @@ line-length = 100
 select = ["E", "F", "W", "I"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 ignore_missing_imports = true
 

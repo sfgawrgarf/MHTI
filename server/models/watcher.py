@@ -8,8 +8,9 @@ from pydantic import BaseModel
 class WatcherMode(str, Enum):
     """监控模式枚举"""
 
-    REALTIME = "realtime"  # 实时模式：监听文件系统事件
-    COMPAT = "compat"  # 兼容模式：定时轮询
+    REALTIME = "realtime"  # 实时模式：监听文件系统事件（本地）
+    COMPAT = "compat"  # 兼容模式：定时轮询（本地）
+    EVENT = "event"  # 事件模式：115 生活事件 API（仅 115）
 
 
 class WatcherConfig(BaseModel):
@@ -58,6 +59,9 @@ class WatchedFolder(BaseModel):
     scan_interval_seconds: int = 60
     file_stable_seconds: int = 30
     auto_scrape: bool = True
+    output_dir: str | None = None  # 独立整理目录（留空则用全局配置）
+    provider: str = "local"  # 存储提供方：local / 115
+    file_id: str | None = None  # 115 目录的 file_id（provider=115 时用）
     last_scan: datetime | None = None
     created_at: datetime | None = None
 
@@ -71,6 +75,9 @@ class WatchedFolderCreate(BaseModel):
     scan_interval_seconds: int = 60
     file_stable_seconds: int = 30
     auto_scrape: bool = True
+    output_dir: str | None = None
+    provider: str = "local"
+    file_id: str | None = None
 
 
 class WatchedFolderUpdate(BaseModel):
@@ -82,6 +89,9 @@ class WatchedFolderUpdate(BaseModel):
     scan_interval_seconds: int | None = None
     file_stable_seconds: int | None = None
     auto_scrape: bool | None = None
+    output_dir: str | None = None
+    provider: str | None = None
+    file_id: str | None = None
 
 
 class WatchedFolderResponse(BaseModel):
@@ -94,6 +104,9 @@ class WatchedFolderResponse(BaseModel):
     scan_interval_seconds: int
     file_stable_seconds: int
     auto_scrape: bool
+    output_dir: str | None = None
+    provider: str = "local"
+    file_id: str | None = None
     last_scan: datetime | None
     created_at: datetime | None
 
@@ -121,6 +134,9 @@ class DetectedFile(BaseModel):
     detected_at: datetime
     file_size: int
     stable: bool = False
+    # 115 网盘文件的标识（provider=115 时填充，用于构造 file_locator）
+    file_id: str | None = None
+    parent_id: str | None = None
 
 
 class WatcherNotification(BaseModel):

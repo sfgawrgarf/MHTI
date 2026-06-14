@@ -2,13 +2,19 @@
 
 import pytest
 import tempfile
+from datetime import date
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from server.models.template import NamingTemplate
 from server.services.config_service import ConfigService
 from server.services.rename_service import RenameService
 from server.services.template_service import TemplateService
+from server.models.organize import OrganizeMode
 from server.models.rename import RenameRequest, BatchRenameRequest
+from server.models.scraper import ScrapeByIdRequest, ScrapeStatus
+from server.models.storage import StorageLocator, StorageProvider
+from server.models.tmdb import TMDBEpisode, TMDBSeason, TMDBSeries
 
 
 @pytest.fixture
@@ -359,3 +365,260 @@ class TestRenameServiceHelpers:
         assert ":" not in created_path.name
         assert "/" not in created_path.name
         assert "?" not in created_path.name
+
+
+class Test115OutputBranches:
+    """Tests for provider-aware 115 output handling."""
+
+    @staticmethod
+    def _build_locator(
+        *,
+        provider: StorageProvider,
+        path: str,
+        file_id: str | None = None,
+        parent_id: str | None = None,
+        is_dir: bool,
+    ) -> StorageLocator:
+        return StorageLocator(
+            provider=provider,
+            path=path,
+            file_id=file_id,
+            parent_id=parent_id,
+            is_dir=is_dir,
+        )
+
+    @pytest.mark.asyncio
+    async def test_scraper_115_to_115_uses_provider_move(self, monkeypatch, temp_db):
+        """115 source and 115 target should use provider-native move/copy path."""
+        from server.services.scraper_service import ScraperService
+
+        class FakeProvider:
+            def __init__(self):
+                self.ensure_calls = []
+                self.rename_calls = []
+                self.copy_calls = []
+
+            async def ensure_directory(self, locator, relative_path):
+                self.ensure_calls.append((locator, relative_path))
+                return {"id": "season-dir", "parent_id": locator.file_id}
+
+            async def rename(self, locator, target_name, target_parent_id):
+                self.rename_calls.append((locator, target_name, target_parent_id))
+                return {"state": True}
+
+            async def copy(self, locator, target_name, target_parent_id):
+                self.copy_calls.append((locator, target_name, target_parent_id))
+                return {"state": True}
+
+        provider = FakeProvider()
+
+        service = ScraperService(
+            config_service=ConfigService(db_path=temp_db),
+            tmdb_service=None,
+            parser_service=None,
+            nfo_service=None,
+            rename_service=RenameService(template_service=TemplateService(db_path=temp_db)),
+            image_service=None,
+            subtitle_service=None,
+            emby_service=None,
+        )
+        monkeypatch.setattr(service, "_get_storage_provider", lambda provider_name: provider)
+
+        file_locator = self._build_locator(
+            provider=StorageProvider.P115,
+            path="/115网盘/待整理/episode.mp4",
+            file_id="file-001",
+            parent_id="scan-root",
+            is_dir=False,
+        )
+        output_locator = self._build_locator(
+            provider=StorageProvider.P115,
+            path="/115网盘/已整理",
+            file_id="target-root",
+            parent_id="0",
+            is_dir=True,
+        )
+
+        result = await service._finalize_storage_output(
+            file_locator=file_locator,
+            output_locator=output_locator,
+            metadata_locator=None,
+            link_mode=OrganizeMode.MOVE,
+            title="Test Show",
+            season=1,
+            episode=1,
+            source_path=file_locator.path,
+        )
+
+        assert result.provider == StorageProvider.P115
+        assert provider.ensure_calls
+        assert provider.rename_calls
+        assert not provider.copy_calls
+
+    @pytest.mark.asyncio
+    async def test_scraper_115_to_local_downloads_before_organize(
+        self,
+        monkeypatch,
+        temp_db,
+        tmp_path: Path,
+    ):
+        """115 source to local target should download the file before local organize."""
+        from server.services.scraper_service import ScraperService
+
+        downloaded_file = tmp_path / "downloaded.mp4"
+        downloaded_file.write_bytes(b"downloaded")
+
+        class FakeProvider:
+            def __init__(self):
+                self.download = AsyncMock(return_value=downloaded_file)
+
+        provider = FakeProvider()
+
+        service = ScraperService(
+            config_service=ConfigService(db_path=temp_db),
+            tmdb_service=None,
+            parser_service=None,
+            nfo_service=None,
+            rename_service=RenameService(template_service=TemplateService(db_path=temp_db)),
+            image_service=None,
+            subtitle_service=None,
+            emby_service=None,
+        )
+        monkeypatch.setattr(service, "_get_storage_provider", lambda provider_name: provider)
+
+        file_locator = self._build_locator(
+            provider=StorageProvider.P115,
+            path="/115网盘/待整理/episode.mp4",
+            file_id="file-001",
+            parent_id="scan-root",
+            is_dir=False,
+        )
+        output_locator = self._build_locator(
+            provider=StorageProvider.LOCAL,
+            path=str(tmp_path / "library"),
+            is_dir=True,
+        )
+
+        result = await service._finalize_storage_output(
+            file_locator=file_locator,
+            output_locator=output_locator,
+            metadata_locator=None,
+            link_mode=OrganizeMode.COPY,
+            title="Test Show",
+            season=1,
+            episode=1,
+            source_path=file_locator.path,
+        )
+
+        provider.download.assert_awaited_once()
+        assert result.provider == StorageProvider.LOCAL
+        assert Path(result.path) == Path(output_locator.path)
+
+    @pytest.mark.asyncio
+    async def test_scrape_by_id_115_to_local_organizes_download_once(
+        self,
+        monkeypatch,
+        temp_db,
+        tmp_path: Path,
+    ):
+        """scrape_by_id for 115->local should download once and organize exactly once."""
+        from server.services.scraper_service import ScraperService
+
+        downloaded_file = tmp_path / "downloaded.mp4"
+        downloaded_file.write_bytes(b"downloaded")
+
+        class FakeProvider:
+            def __init__(self):
+                self.download = AsyncMock(return_value=downloaded_file)
+
+        class FakeTMDBService:
+            def __init__(self):
+                self.get_series_by_api = AsyncMock(
+                    return_value=TMDBSeries(
+                        id=123,
+                        name="Test Show",
+                        original_name="Test Show",
+                        first_air_date=date(2024, 1, 1),
+                        number_of_seasons=1,
+                        number_of_episodes=1,
+                        seasons=[TMDBSeason(season_number=1, name="Season 1")],
+                    )
+                )
+                self.get_season_by_api = AsyncMock(
+                    return_value=TMDBSeason(
+                        season_number=1,
+                        name="Season 1",
+                        episodes=[
+                            TMDBEpisode(
+                                episode_number=1,
+                                name="Episode 1",
+                            )
+                        ],
+                    )
+                )
+
+        provider = FakeProvider()
+        tmdb_service = FakeTMDBService()
+
+        service = ScraperService(
+            config_service=ConfigService(db_path=temp_db),
+            tmdb_service=tmdb_service,
+            parser_service=None,
+            nfo_service=None,
+            rename_service=RenameService(template_service=TemplateService(db_path=temp_db)),
+            image_service=None,
+            subtitle_service=None,
+            emby_service=None,
+        )
+        monkeypatch.setattr(service, "_get_storage_provider", lambda provider_name: provider)
+        monkeypatch.setattr(service, "_generate_episode_nfo", lambda *args, **kwargs: "<episode />")
+        monkeypatch.setattr(
+            service,
+            "_get_effective_nfo_config",
+            AsyncMock(return_value={"nfo_enabled": False}),
+        )
+        monkeypatch.setattr(
+            service,
+            "_get_effective_download_config",
+            AsyncMock(
+                return_value={
+                    "download_poster": False,
+                    "download_fanart": False,
+                    "download_thumb": False,
+                }
+            ),
+        )
+        monkeypatch.setattr(service, "_process_subtitles", lambda *args, **kwargs: [])
+
+        file_locator = self._build_locator(
+            provider=StorageProvider.P115,
+            path="/115网盘/待整理/episode.mp4",
+            file_id="file-001",
+            parent_id="scan-root",
+            is_dir=False,
+        )
+        output_locator = self._build_locator(
+            provider=StorageProvider.LOCAL,
+            path=str(tmp_path / "library"),
+            is_dir=True,
+        )
+
+        result = await service.scrape_by_id(
+            ScrapeByIdRequest(
+                file_path=file_locator.path,
+                tmdb_id=123,
+                season=1,
+                episode=1,
+                file_locator=file_locator,
+                output_locator=output_locator,
+                link_mode=OrganizeMode.COPY,
+            )
+        )
+
+        expected_folder = Path(output_locator.path) / "Test Show (2024)" / "Season 1"
+
+        provider.download.assert_awaited_once()
+        assert result.status == ScrapeStatus.SUCCESS
+        assert result.dest_path is not None
+        assert Path(result.dest_path).parent == expected_folder
+        assert Path(result.dest_path).exists()

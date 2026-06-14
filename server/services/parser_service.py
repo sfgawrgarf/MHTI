@@ -43,6 +43,11 @@ class ParserService:
             if not plugin.should_skip(ctx):
                 ctx = plugin.parse(ctx)
 
+        # 兜底：所有解析器跑完后，若已解析出集数但没有季号，默认 season=1
+        # （普通剧集惯例：无显式季号视为第 1 季，避免记录页季/集列空白）
+        if ctx.episode is not None and ctx.season is None:
+            ctx.season = 1
+
         # 转换为 ParsedInfo
         return ParsedInfo(
             original_filename=filename,

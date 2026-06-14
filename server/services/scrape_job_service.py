@@ -18,6 +18,7 @@ from server.models.scrape_job import (
     ScrapeJobStatus,
 )
 from server.models.organize import OrganizeMode
+from server.models.storage import StorageLocator
 from server.services.websocket_manager import get_notifier
 from server.services.fingerprint_service import calculate_fingerprint
 
@@ -28,6 +29,23 @@ _scrape_queue: asyncio.Queue[str] = asyncio.Queue()
 _worker_tasks: list[asyncio.Task] = []
 _semaphore: asyncio.Semaphore | None = None
 _current_threads: int = 0
+
+
+def _serialize_locator(locator: StorageLocator | None) -> str | None:
+    """序列化存储定位信息。"""
+    if locator is None:
+        return None
+    return json.dumps(locator.model_dump(mode="json"))
+
+
+def _deserialize_locator(payload: str | None) -> StorageLocator | None:
+    """反序列化存储定位信息。"""
+    if not payload:
+        return None
+    try:
+        return StorageLocator(**json.loads(payload))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
 
 
 class ScrapeJobService:
@@ -52,10 +70,29 @@ class ScrapeJobService:
                 await db.execute("ALTER TABLE scrape_jobs ADD COLUMN advanced_settings TEXT")
             except Exception:
                 pass  # 列已存在
+            try:
+                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN file_locator TEXT")
+            except Exception:
+                pass  # 列已存在
+            try:
+                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN output_locator TEXT")
+            except Exception:
+                pass  # 列已存在
+            try:
+                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN metadata_locator TEXT")
+            except Exception:
+                pass  # 列已存在
+            try:
+                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN allow_local_output INTEGER DEFAULT 0")
+            except Exception:
+                pass  # 列已存在
             await db.commit()
 
     async def get_pending_job_by_path(self, file_path: str) -> ScrapeJob | None:
-        """根据文件路径获取待处理或已成功的任务（pending/running/pending_action/success）"""
+        """根据文件路径获取仍在处理中的任务（pending/running/pending_action）。
+
+        注意：不拦截 ``success`` 状态——用户应能重新整理已成功刮削的文件。
+        """
         await self._ensure_db()
 
         async with aiosqlite.connect(self.db_path) as db:
@@ -63,7 +100,7 @@ class ScrapeJobService:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """SELECT * FROM scrape_jobs
-                WHERE file_path = ? AND status IN ('pending', 'running', 'pending_action', 'success')
+                WHERE file_path = ? AND status IN ('pending', 'running', 'pending_action')
                 ORDER BY created_at DESC LIMIT 1""",
                 (file_path,),
             )
@@ -102,14 +139,19 @@ class ScrapeJobService:
         advanced_settings_json = None
         if job.advanced_settings is not None:
             advanced_settings_json = json.dumps(job.advanced_settings.model_dump())
+        file_locator_json = _serialize_locator(job.file_locator)
+        output_locator_json = _serialize_locator(job.output_locator)
+        metadata_locator_json = _serialize_locator(job.metadata_locator)
 
         async with aiosqlite.connect(self.db_path) as db:
             await _configure_connection(db)
             await db.execute(
                 """
                 INSERT INTO scrape_jobs
-                (id, file_path, output_dir, metadata_dir, link_mode, source, source_id, advanced_settings, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, file_path, output_dir, metadata_dir, link_mode, source, source_id,
+                 advanced_settings, file_locator, output_locator, metadata_locator,
+                 allow_local_output, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -120,6 +162,10 @@ class ScrapeJobService:
                     job.source.value,
                     job.source_id,
                     advanced_settings_json,
+                    file_locator_json,
+                    output_locator_json,
+                    metadata_locator_json,
+                    1 if job.allow_local_output else 0,
                     ScrapeJobStatus.PENDING.value,
                     now.isoformat(),
                 ),
@@ -131,6 +177,10 @@ class ScrapeJobService:
             file_path=job.file_path,
             output_dir=job.output_dir,
             metadata_dir=job.metadata_dir,
+            file_locator=job.file_locator,
+            output_locator=job.output_locator,
+            metadata_locator=job.metadata_locator,
+            allow_local_output=job.allow_local_output,
             link_mode=job.link_mode,
             source=job.source,
             source_id=job.source_id,
@@ -290,12 +340,28 @@ class ScrapeJobService:
                 advanced_settings = ManualJobAdvancedSettings(**settings_data)
             except (json.JSONDecodeError, ValueError):
                 pass  # 解析失败则使用 None
+        file_locator = _deserialize_locator(
+            row["file_locator"] if "file_locator" in row.keys() else None
+        )
+        output_locator = _deserialize_locator(
+            row["output_locator"] if "output_locator" in row.keys() else None
+        )
+        metadata_locator = _deserialize_locator(
+            row["metadata_locator"] if "metadata_locator" in row.keys() else None
+        )
+        allow_local_output = bool(
+            row["allow_local_output"] if "allow_local_output" in row.keys() else 0
+        )
 
         return ScrapeJob(
             id=row["id"],
             file_path=row["file_path"],
             output_dir=row["output_dir"],
             metadata_dir=row["metadata_dir"],
+            file_locator=file_locator,
+            output_locator=output_locator,
+            metadata_locator=metadata_locator,
+            allow_local_output=allow_local_output,
             link_mode=OrganizeMode(link_mode_value) if link_mode_value else None,
             source=ScrapeJobSource(row["source"]),
             source_id=row["source_id"],
@@ -418,6 +484,8 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
         failed_count=0,
         duration_seconds=0,
         scrape_job_id=job_id,
+        # 关联手动任务 ID，便于按任务聚合查询历史记录
+        manual_job_id=job.source_id if job.source == ScrapeJobSource.MANUAL else None,
         file_fingerprint=file_fingerprint,
     ))
     record_id = history_record.id
@@ -434,6 +502,10 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
             file_path=job.file_path,
             output_dir=job.output_dir,
             metadata_dir=job.metadata_dir,
+            file_locator=job.file_locator,
+            output_locator=job.output_locator,
+            metadata_locator=job.metadata_locator,
+            allow_local_output=job.allow_local_output,
             link_mode=job.link_mode,
             auto_select=True,
             advanced_settings=job.advanced_settings,
@@ -667,3 +739,20 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
         history_service.clear_log_cache(record_id)
 
     logger.info(f"ScrapeJob {job_id} completed with status: {job.status}")
+
+
+async def shutdown_workers() -> None:
+    """取消所有刮削 worker 任务，避免进程退出时卡顿。
+
+    worker 阻塞在队列 ``get()`` 上，进程退出前必须显式取消，否则
+    uvorn 会在 lifespan shutdown 阶段等待它们直到超时。
+    """
+    global _worker_tasks
+    if not _worker_tasks:
+        return
+    for task in _worker_tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*_worker_tasks, return_exceptions=True)
+    _worker_tasks = []
+    logger.info("Scrape workers cancelled")

@@ -10,6 +10,7 @@ import {
   NPagination,
   NBreadcrumb,
   NBreadcrumbItem,
+  NTag,
   useMessage,
   type DataTableColumns,
   type DataTableRowKey,
@@ -22,9 +23,10 @@ import {
   ArrowBackOutline,
   SwapHorizontalOutline,
   ChevronForwardOutline,
+  CloudOutline,
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
-import type { DirectoryEntry } from '@/api/types'
+import type { DirectoryEntry, StorageProvider, StorageLocator } from '@/api/types'
 import EmptyState from '@/components/common/EmptyState.vue'
 import TouchCard from '@/components/common/TouchCard.vue'
 import PageSkeleton from '@/components/common/PageSkeleton.vue'
@@ -45,10 +47,16 @@ const page = ref(1)
 const pageSize = ref(20)
 const search = ref('')
 const checkedRowKeys = ref<DataTableRowKey[]>([])
+// 存储提供方跟踪：本地浏览 vs 115 网盘
+const currentProvider = ref<StorageProvider>('local')
+const currentFileId = ref<string | null>(null)
+// 父目录的 file_id（来自后端响应），返回上级时直接使用
+const parentFileId = ref<string | null>(null)
 
 // 创建任务弹窗
 const showCreateModal = ref(false)
 const createTaskPath = ref('')
+const createTaskLocator = ref<StorageLocator | null>(null)
 
 // 从 URL 获取初始路径
 const initPath = computed(() => (route.query.root as string) || '')
@@ -167,25 +175,38 @@ const columns: DataTableColumns<DirectoryEntry> = [
 ]
 
 // 加载目录
-const loadDirectory = async (path: string = '', p: number = 1) => {
+const loadDirectory = async (
+  path: string = '',
+  p: number = 1,
+  provider?: StorageProvider,
+  fileId?: string | null,
+) => {
   loading.value = true
+  const effectiveProvider = provider ?? currentProvider.value
+  const effectiveFileId = fileId !== undefined ? fileId : currentFileId.value
   try {
-    const response = await filesApi.browse(path, p, pageSize.value)
+    const response = await filesApi.browse(path, p, pageSize.value, effectiveProvider, effectiveFileId)
     entries.value = response.entries
     currentPath.value = response.current_path
     parentPath.value = response.parent_path
     total.value = response.total
     page.value = response.page
+    currentProvider.value = effectiveProvider
+    // 优先用后端返回的 file_id（115 子目录必须），fallback 到请求时的值
+    currentFileId.value = response.current_file_id ?? effectiveFileId ?? null
+    parentFileId.value = response.parent_file_id ?? null
 
-    // 更新 URL
-    router.replace({
-      query: {
-        ...(response.current_path ? { root: response.current_path } : {}),
-        ...(p > 1 ? { page: p.toString() } : {}),
-      },
-    })
-  } catch (error) {
-    message.error('加载目录失败')
+    // 更新 URL（仅本地路径写 URL，115 路径不持久化到 URL）
+    if (currentProvider.value === 'local') {
+      router.replace({
+        query: {
+          ...(response.current_path ? { root: response.current_path } : {}),
+          ...(p > 1 ? { page: p.toString() } : {}),
+        },
+      })
+    }
+  } catch (error: any) {
+    message.error(error?.response?.data?.error?.message || '加载目录失败')
     console.error(error)
   } finally {
     loading.value = false
@@ -194,22 +215,37 @@ const loadDirectory = async (path: string = '', p: number = 1) => {
 
 // 进入目录
 const enterDirectory = (entry: DirectoryEntry) => {
-  if (entry.is_dir) {
-    page.value = 1
-    search.value = ''
-    checkedRowKeys.value = []
-    loadDirectory(entry.path, 1)
+  if (!entry.is_dir) return
+  page.value = 1
+  search.value = ''
+  checkedRowKeys.value = []
+  // 点击虚拟 115 根入口 → 切到 115 provider
+  if (entry.is_virtual && entry.provider === '115') {
+    loadDirectory(entry.path, 1, '115', entry.file_id ?? '0')
+    return
+  }
+  // 同 provider 内进入子目录：115 用 file_id，本地用 path
+  if (currentProvider.value === '115') {
+    loadDirectory(entry.path, 1, '115', entry.file_id ?? null)
+  } else {
+    loadDirectory(entry.path, 1, 'local', null)
   }
 }
 
 // 返回上级
 const goUp = () => {
-  if (parentPath.value !== null) {
-    page.value = 1
-    search.value = ''
-    checkedRowKeys.value = []
-    loadDirectory(parentPath.value, 1)
+  page.value = 1
+  search.value = ''
+  checkedRowKeys.value = []
+  if (parentPath.value === null) {
+    // 115 根的上级 → 回到本地根
+    if (currentProvider.value === '115') {
+      loadDirectory('', 1, 'local', null)
+    }
+    return
   }
+  // 用后端响应里的父目录 file_id（115 必须），本地为 null 走 path
+  loadDirectory(parentPath.value, 1, currentProvider.value, parentFileId.value)
 }
 
 // 跳转到路径
@@ -217,7 +253,18 @@ const goToPath = (path: string) => {
   page.value = 1
   search.value = ''
   checkedRowKeys.value = []
-  loadDirectory(path, 1)
+  // "根目录"面包屑 → 回到本地根（最顶层，含盘符 + 115 入口），无论当前 provider
+  if (path === '') {
+    loadDirectory('', 1, 'local', null)
+    return
+  }
+  // 115 根层级（/115网盘）→ file_id 固定为 '0'
+  if (path === '/115网盘') {
+    loadDirectory('/115网盘', 1, '115', '0')
+    return
+  }
+  // 本地其他层级：直接按 path 加载
+  loadDirectory(path, 1, currentProvider.value, currentFileId.value)
 }
 
 // 返回根目录
@@ -237,15 +284,25 @@ const handleCheckedRowKeysChange = (keys: DataTableRowKey[]) => {
   checkedRowKeys.value = keys
 }
 
+// 构造当前 provider 的 StorageLocator
+const buildLocatorFor = (path: string, fileId: string | null | undefined): StorageLocator => {
+  if (currentProvider.value === '115') {
+    return { provider: '115', path, file_id: fileId ?? currentFileId.value, is_dir: true }
+  }
+  return { provider: 'local', path, is_dir: true }
+}
+
 // 为文件夹创建任务
 const createTaskForFolder = (entry: DirectoryEntry) => {
   createTaskPath.value = entry.path
+  createTaskLocator.value = buildLocatorFor(entry.path, entry.file_id)
   showCreateModal.value = true
 }
 
 // 批量创建任务（使用当前路径）
 const createTaskForSelected = () => {
   createTaskPath.value = currentPath.value
+  createTaskLocator.value = buildLocatorFor(currentPath.value, currentFileId.value)
   showCreateModal.value = true
 }
 
@@ -260,21 +317,21 @@ const rowProps = (row: DirectoryEntry) => ({
   onDblclick: () => row.is_dir && enterDirectory(row),
 })
 
-// 监听路由变化
+// 监听路由变化（URL 仅记录本地路径，触发时强制回到本地 provider）
 watch(
   () => route.query,
   () => {
     const path = (route.query.root as string) || ''
     const p = parseInt(route.query.page as string) || 1
     if (path !== currentPath.value || p !== page.value) {
-      loadDirectory(path, p)
+      loadDirectory(path, p, 'local', null)
     }
   },
   { immediate: false }
 )
 
-// 初始加载
-loadDirectory(initPath.value, initPage.value)
+// 初始加载（默认本地）
+loadDirectory(initPath.value, initPage.value, 'local', null)
 </script>
 
 <template>
@@ -295,7 +352,7 @@ loadDirectory(initPath.value, initPage.value)
           quaternary
           circle
           size="small"
-          :disabled="parentPath === null && !currentPath"
+          :disabled="parentPath === null && !currentPath && currentProvider !== '115'"
           @click="goUp"
         >
           <template #icon>
@@ -314,6 +371,17 @@ loadDirectory(initPath.value, initPage.value)
             {{ segment.name }}
           </NBreadcrumbItem>
         </NBreadcrumb>
+        <NTag
+          v-if="currentProvider === '115'"
+          size="small"
+          type="info"
+          class="provider-tag"
+        >
+          <template #icon>
+            <NIcon :component="CloudOutline" />
+          </template>
+          115 网盘
+        </NTag>
       </div>
 
       <!-- 工具栏 -->
@@ -429,6 +497,7 @@ loadDirectory(initPath.value, initPage.value)
     <ManualJobCreateModal
       v-model:show="showCreateModal"
       :initial-scan-path="createTaskPath"
+      :initial-scan-locator="createTaskLocator"
       @success="handleCreateSuccess"
     />
   </div>
@@ -491,6 +560,11 @@ loadDirectory(initPath.value, initPage.value)
   padding: 8px 12px;
   background: var(--n-color-modal);
   border-radius: 8px;
+}
+
+.provider-tag {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .breadcrumb-root {

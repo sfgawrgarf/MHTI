@@ -7,11 +7,15 @@ export interface ScannedFile {
   size: number
   extension: string
   mtime: string | null  // 修改时间 ISO 格式
+  // 115 网盘等 provider 文件的标识，本地文件为 null
+  file_id?: string | null
+  parent_id?: string | null
 }
 
 export interface ScanRequest {
   folder_path: string
   exclude_scraped?: boolean  // 是否排除已刮削的文件，默认 true
+  locator?: StorageLocator | null
 }
 
 export interface ScanResponse {
@@ -27,6 +31,10 @@ export interface DirectoryEntry {
   is_dir: boolean
   size: number | null  // 文件大小（字节），目录为 null
   mtime: string | null  // 修改时间 ISO 格式
+  provider?: StorageProvider
+  file_id?: string | null
+  parent_id?: string | null
+  is_virtual?: boolean
 }
 
 export interface BrowseResponse {
@@ -36,6 +44,48 @@ export interface BrowseResponse {
   total: number  // 总条目数
   page: number
   page_size: number
+  // 115 网盘等 provider 的目录 file_id，用于返回上级时定位父目录
+  current_file_id?: string | null
+  parent_file_id?: string | null
+}
+
+// 存储定位相关
+export type StorageProvider = 'local' | '115'
+
+export interface StorageLocator {
+  provider: StorageProvider
+  path: string
+  file_id?: string | null
+  parent_id?: string | null
+  is_dir?: boolean
+}
+
+// 115 网盘登录相关
+export interface Cloud115Status {
+  enabled: boolean
+  app: string
+  is_logged_in: boolean
+  updated_at: string | null
+}
+
+export interface Cloud115DeviceOption {
+  value: string
+  label: string
+  group: 'standard' | 'alias'
+}
+
+export interface Cloud115QrSession {
+  uid: string
+  qrcode_url: string
+  app: string
+}
+
+export interface Cloud115QrStatus {
+  uid: string
+  app: string
+  status: string
+  message: string
+  is_logged_in: boolean
 }
 
 // 解析相关
@@ -297,7 +347,7 @@ export interface HistoryListResponse {
 
 // 文件夹监控相关
 export type WatcherStatus = 'idle' | 'running' | 'stopped' | 'error'
-export type WatcherMode = 'realtime' | 'compat'
+export type WatcherMode = 'realtime' | 'compat' | 'event'
 
 export interface WatchedFolder {
   id: string
@@ -472,6 +522,10 @@ export interface ManualJobCreate {
   scan_path: string
   target_folder: string
   metadata_dir?: string
+  scan_locator?: StorageLocator | null
+  target_locator?: StorageLocator | null
+  metadata_locator?: StorageLocator | null
+  allow_local_output?: boolean
   link_mode?: LinkMode
   delete_empty_parent?: boolean
   config_reuse_id?: number | null

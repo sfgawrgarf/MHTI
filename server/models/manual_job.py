@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel
+from server.models.storage import StorageLocator
 
 
 class ManualJobStatus(str, Enum):
@@ -79,6 +80,10 @@ class ManualJob(BaseModel):
     scan_path: str
     target_folder: str
     metadata_dir: str = ""  # 元数据目录
+    scan_locator: StorageLocator | None = None
+    target_locator: StorageLocator | None = None
+    metadata_locator: StorageLocator | None = None
+    allow_local_output: bool = False
     link_mode: LinkMode
     delete_empty_parent: bool = True
     config_reuse_id: int | None = None
@@ -101,6 +106,10 @@ class ManualJobCreate(BaseModel):
     scan_path: str
     target_folder: str
     metadata_dir: str = ""  # 元数据目录
+    scan_locator: StorageLocator | None = None
+    target_locator: StorageLocator | None = None
+    metadata_locator: StorageLocator | None = None
+    allow_local_output: bool = False
     link_mode: LinkMode = LinkMode.MOVE
     delete_empty_parent: bool = True
     config_reuse_id: int | None = None

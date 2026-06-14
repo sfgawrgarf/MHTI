@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import {
   NCard,
   NSpace,
@@ -28,6 +28,23 @@ const enabled = ref(false)
 const mode = ref<WatcherMode>('realtime')
 const performanceMode = ref(false)
 const watchDirs = ref<string[]>([])
+
+// 是否含 115 网盘目录（决定是否显示事件模式选项）
+const hasP115Dir = computed(() =>
+  watchDirs.value.some((d) => d.startsWith('/115网盘'))
+)
+
+// 115 目录变化时自动调整模式
+watch(hasP115Dir, (val) => {
+  // 移除所有 115 目录：event 模式回退到 compat
+  if (!val && mode.value === 'event') {
+    mode.value = 'compat'
+  }
+  // 含 115 目录：realtime 不可用，回退到 compat
+  if (val && mode.value === 'realtime') {
+    mode.value = 'compat'
+  }
+})
 
 // 文件夹浏览器状态
 const showFolderBrowser = ref(false)
@@ -91,13 +108,18 @@ onMounted(loadConfig)
       <NFormItem label="监控模式">
         <NRadioGroup v-model:value="mode">
           <NSpace vertical>
-            <NRadio value="realtime">
+            <NRadio value="realtime" :disabled="hasP115Dir">
               <span>实时模式</span>
               <span style="color: #999; margin-left: 8px">实时监听文件系统事件，响应及时</span>
+              <span v-if="hasP115Dir" style="color: var(--n-text-color-disabled); margin-left: 4px">（115 目录不支持实时）</span>
             </NRadio>
             <NRadio value="compat">
               <span>兼容模式</span>
               <span style="color: #999; margin-left: 8px">定时扫描检查变动，兼容性强</span>
+            </NRadio>
+            <NRadio v-if="hasP115Dir" value="event">
+              <span>事件模式</span>
+              <span style="color: #999; margin-left: 8px">115 生活事件 API 增量监控，轻量快速（仅 115 目录）</span>
             </NRadio>
           </NSpace>
         </NRadioGroup>
@@ -105,6 +127,10 @@ onMounted(loadConfig)
 
       <NAlert v-if="mode === 'compat'" type="info" style="margin-bottom: 12px">
         群晖系统、SMB/NFS 等远程文件系统挂载、以及出现监控不工作问题时，请使用兼容模式
+      </NAlert>
+
+      <NAlert v-if="mode === 'event'" type="info" style="margin-bottom: 12px">
+        事件模式通过 115 生活事件 API 拉取文件操作记录。115 网盘目录使用事件监控，本地目录自动使用兼容模式。
       </NAlert>
 
       <NFormItem label="性能模式" label-placement="left">

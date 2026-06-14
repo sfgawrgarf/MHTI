@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
+from server.models.storage import StorageLocator
 
 
 class ScrapeJobSource(str, Enum):
@@ -34,6 +35,10 @@ class ScrapeJob(BaseModel):
     file_path: str  # 源文件路径
     output_dir: str  # 输出目录
     metadata_dir: str | None = None  # 元数据目录
+    file_locator: StorageLocator | None = None
+    output_locator: StorageLocator | None = None
+    metadata_locator: StorageLocator | None = None
+    allow_local_output: bool = False
     link_mode: OrganizeMode | None = None  # 整理模式
     source: ScrapeJobSource  # 来源
     source_id: int | None = None  # 来源任务ID (ManualJob.id)
@@ -52,6 +57,10 @@ class ScrapeJobCreate(BaseModel):
     file_path: str
     output_dir: str
     metadata_dir: str | None = None
+    file_locator: StorageLocator | None = None
+    output_locator: StorageLocator | None = None
+    metadata_locator: StorageLocator | None = None
+    allow_local_output: bool = False
     link_mode: OrganizeMode | None = None  # 整理模式
     source: ScrapeJobSource = ScrapeJobSource.MANUAL
     source_id: int | None = None

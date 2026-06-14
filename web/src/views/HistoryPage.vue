@@ -51,6 +51,7 @@ const { isMobile } = useMobileLayout()
 // 处理弹窗相关
 const showResolveModal = ref(false)
 const resolveRecord = ref<HistoryRecordDetail | null>(null)
+const resolveMode = ref<'resolve' | 'retry'>('resolve')
 const resolveLoading = ref(false)
 
 // 从 URL 获取 manual_job_id
@@ -231,7 +232,7 @@ const columns: DataTableColumns<HistoryRecord> = [
     key: 'season_episode',
     width: 80,
     render: (row) => {
-      if (row.season_number && row.episode_number) {
+      if (row.season_number != null && row.episode_number != null) {
         return `S${row.season_number.toString().padStart(2, '0')}E${row.episode_number.toString().padStart(2, '0')}`
       }
       return '-'
@@ -277,14 +278,23 @@ const columns: DataTableColumns<HistoryRecord> = [
   {
     title: '操作',
     key: 'actions',
-    width: 110,
+    width: 120,
     render: (row) =>
       h(NSpace, { size: 'small' }, {
         default: () => [
-          // 待处理状态显示处理按钮
+          // 待处理状态显示处理按钮（打开冲突处理弹窗）
           row.status === 'pending_action' && h(NButton, {
             size: 'small',
             type: 'primary',
+            onClick: (e: Event) => {
+              e.stopPropagation()
+              openResolveModal(row)
+            }
+          }, { default: () => '处理' }),
+          // 失败/超时状态显示处理按钮（直接弹窗重试）
+          (row.status === 'failed' || row.status === 'timeout') && h(NButton, {
+            size: 'small',
+            type: 'warning',
             onClick: (e: Event) => {
               e.stopPropagation()
               openResolveModal(row)
@@ -306,8 +316,10 @@ const columns: DataTableColumns<HistoryRecord> = [
 ]
 
 // 打开处理弹窗
+// pending_action → resolve（冲突处理）；failed/timeout → retry（重试刮削）
 const openResolveModal = async (row: HistoryRecord) => {
   resolveLoading.value = true
+  resolveMode.value = row.status === 'pending_action' ? 'resolve' : 'retry'
   try {
     resolveRecord.value = await historyApi.getRecord(row.id)
     showResolveModal.value = true
@@ -473,7 +485,7 @@ watch(manualJobId, () => {
               </div>
               <div class="record-title">{{ record.title || '未知标题' }}</div>
               <div class="record-meta">
-                <span v-if="record.season_number && record.episode_number" class="record-episode">
+                <span v-if="record.season_number != null && record.episode_number != null" class="record-episode">
                   S{{ record.season_number.toString().padStart(2, '0') }}E{{ record.episode_number.toString().padStart(2, '0') }}
                 </span>
                 <span class="record-time">{{ formatTime(record.executed_at) }}</span>
@@ -488,6 +500,14 @@ watch(manualJobId, () => {
                     v-if="record.status === 'pending_action'"
                     size="tiny"
                     type="primary"
+                    @click.stop="openResolveModal(record)"
+                  >
+                    处理
+                  </NButton>
+                  <NButton
+                    v-if="record.status === 'failed' || record.status === 'timeout'"
+                    size="tiny"
+                    type="warning"
                     @click.stop="openResolveModal(record)"
                   >
                     处理
@@ -547,6 +567,7 @@ watch(manualJobId, () => {
     <ResolveConflictModal
       v-model:show="showResolveModal"
       :record="resolveRecord"
+      :mode="resolveMode"
       @success="onResolveSuccess"
     />
   </div>

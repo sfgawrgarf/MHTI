@@ -1,9 +1,12 @@
 """Unit tests for ConfigService."""
 
+import aiosqlite
 import pytest
 from pathlib import Path
 import tempfile
 
+from server.models.cloud_115 import Cloud115Config
+from server.models.storage import StorageLocator, StorageProvider
 from server.services.config_service import ConfigService
 from server.models.template import NamingTemplate
 
@@ -137,3 +140,113 @@ class TestConfigService:
         result = await config_service.get_naming_config()
 
         assert result == config
+
+
+class TestConfigService115:
+    """Tests for 115 cloud config support."""
+
+    @pytest.mark.asyncio
+    async def test_save_and_get_115_config(self, config_service):
+        """Test saving and reading 115 cloud configuration."""
+        config = Cloud115Config(
+            enabled=True,
+            app="alipaymini",
+            cookies="UID=1; CID=2; SEID=3",
+            is_logged_in=True,
+        )
+
+        await config_service.save_115_config(config)
+        result = await config_service.get_115_config()
+
+        assert result.enabled is True
+        assert result.app == "alipaymini"
+        assert result.cookies == "UID=1; CID=2; SEID=3"
+        assert result.is_logged_in is True
+
+    @pytest.mark.asyncio
+    async def test_save_115_config_stores_encrypted_value(self, config_service):
+        """Test 115 cloud configuration is stored encrypted in the database."""
+        config = Cloud115Config(
+            enabled=True,
+            app="alipaymini",
+            cookies="UID=1; CID=2; SEID=3",
+            is_logged_in=True,
+        )
+
+        await config_service.save_115_config(config)
+
+        async with aiosqlite.connect(config_service.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT value, encrypted FROM config WHERE key = ?",
+                ("cloud_115_config",),
+            )
+            row = await cursor.fetchone()
+
+        assert row is not None
+        assert row["encrypted"] == 1
+        assert row["value"] != config.model_dump_json()
+        assert config.cookies not in row["value"]
+
+    @pytest.mark.asyncio
+    async def test_delete_115_config_restores_defaults(self, config_service):
+        """Test deleting 115 cloud configuration falls back to defaults."""
+        config = Cloud115Config(
+            enabled=True,
+            app="alipaymini",
+            cookies="UID=1; CID=2; SEID=3",
+            is_logged_in=True,
+        )
+
+        await config_service.save_115_config(config)
+
+        deleted = await config_service.delete_115_config()
+        result = await config_service.get_115_config()
+
+        assert deleted is True
+        assert result == Cloud115Config()
+
+    @pytest.mark.asyncio
+    async def test_get_115_config_invalid_data_falls_back_to_defaults(self, config_service):
+        """Test invalid 115 cloud configuration falls back to defaults."""
+        await config_service.set("cloud_115_config", "not-json", encrypted=True)
+
+        result = await config_service.get_115_config()
+
+        assert result == Cloud115Config()
+
+    def test_storage_locator_defaults(self):
+        """Test 115 storage locator structure."""
+        locator = StorageLocator(
+            provider=StorageProvider.P115,
+            path="/115网盘/示例目录",
+        )
+
+        assert locator.provider == StorageProvider.P115
+        assert locator.path == "/115网盘/示例目录"
+        assert locator.file_id is None
+        assert locator.parent_id is None
+        assert locator.is_dir is True
+
+    @pytest.mark.asyncio
+    async def test_get_115_config_bad_ciphertext_falls_back_to_defaults(self, config_service):
+        """Test undecryptable 115 cloud configuration falls back to defaults."""
+        await config_service._ensure_db()
+
+        async with aiosqlite.connect(config_service.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO config (key, value, encrypted, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    encrypted = excluded.encrypted,
+                    updated_at = excluded.updated_at
+                """,
+                ("cloud_115_config", "not-a-valid-fernet-token", 1),
+            )
+            await db.commit()
+
+        result = await config_service.get_115_config()
+
+        assert result == Cloud115Config()

@@ -435,14 +435,14 @@ onUnmounted(() => {
 
             <div class="detail-sections">
               <!-- 剧集信息 -->
-              <div v-if="record.season_number || record.episode_number" class="detail-section">
+              <div v-if="record.season_number != null || record.episode_number != null" class="detail-section">
                 <div class="section-header">
                   <NIcon :component="TvOutline" :size="16" />
                   <span>剧集信息</span>
                 </div>
                 <div class="section-content">
                   <div class="info-row">
-                    <span v-if="record.season_number" class="info-badge season">
+                    <span v-if="record.season_number != null" class="info-badge season">
                       第 {{ record.season_number }} 季
                     </span>
                     <span v-if="record.episode_number" class="info-badge episode">

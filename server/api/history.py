@@ -23,6 +23,32 @@ from server.services.history_service import HistoryService
 router = APIRouter(prefix="/api/history", tags=["history"], dependencies=[Depends(require_auth)])
 
 
+async def _restore_locators_from_scrape_job(record: HistoryRecord) -> dict:
+    """从关联的 scrape_job 恢复 locator，用于重试/处理时定位 115 等云端文件。
+
+    conflict_data 里没有保存 locator，但 scrape_jobs 表保留了完整的 locator。
+    通过 record.scrape_job_id 查表恢复。
+    """
+    if not record.scrape_job_id:
+        return {}
+    try:
+        from server.services.scrape_job_service import ScrapeJobService
+        service = ScrapeJobService()
+        job = await service.get_job(record.scrape_job_id)
+        if job is None:
+            return {}
+        result = {
+            "file_locator": job.file_locator,
+            "output_locator": job.output_locator,
+            "metadata_locator": job.metadata_locator,
+            "allow_local_output": job.allow_local_output,
+        }
+        # 只保留非空值
+        return {k: v for k, v in result.items() if v is not None and v is not False}
+    except Exception:
+        return {}
+
+
 @router.get("", response_model=HistoryListResponse)
 async def list_records(
     limit: int = Query(50, ge=1, le=500),
@@ -267,6 +293,9 @@ async def resolve_conflict(
     from server.models.organize import OrganizeMode
     link_mode = OrganizeMode(link_mode_value) if link_mode_value else None
 
+    # 恢复 locator（支持 115 等云端文件重试）
+    locators = await _restore_locators_from_scrape_job(record)
+
     # 根据冲突类型处理
     if request.conflict_type == ConflictType.NEED_SELECTION:
         if request.tmdb_id is None:
@@ -292,6 +321,7 @@ async def resolve_conflict(
             output_dir=output_dir,
             metadata_dir=metadata_dir,
             link_mode=link_mode,
+            **locators,
         )
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
 
@@ -313,6 +343,7 @@ async def resolve_conflict(
             output_dir=output_dir,
             metadata_dir=metadata_dir,
             link_mode=link_mode,
+            **locators,
         )
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
 
@@ -341,6 +372,7 @@ async def resolve_conflict(
             output_dir=output_dir,
             metadata_dir=metadata_dir,
             link_mode=link_mode,
+            **locators,
         )
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
 
@@ -361,6 +393,7 @@ async def resolve_conflict(
             output_dir=output_dir,
             metadata_dir=metadata_dir,
             link_mode=link_mode,
+            **locators,
         )
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
 
@@ -441,8 +474,9 @@ async def retry_scrape(
     link_mode_value = conflict_data.get("link_mode")
     link_mode = OrganizeMode(link_mode_value) if link_mode_value else None
 
-    # 4. 构建刮削请求
+    # 4. 构建刮削请求（恢复 locator 以支持 115 等云端文件）
     user_log = f"用户手动重试: TMDB ID {request.tmdb_id}, S{request.season:02d}E{request.episode:02d}"
+    locators = await _restore_locators_from_scrape_job(record)
 
     scrape_request = ScrapeByIdRequest(
         file_path=record.folder_path,
@@ -452,6 +486,7 @@ async def retry_scrape(
         output_dir=output_dir,
         metadata_dir=metadata_dir,
         link_mode=link_mode,
+        **locators,
     )
 
     # 5. 执行刮削

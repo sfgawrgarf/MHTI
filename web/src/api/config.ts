@@ -16,6 +16,10 @@ import type {
   WatcherConfig,
   NfoConfig,
   SystemConfig,
+  Cloud115Status,
+  Cloud115DeviceOption,
+  Cloud115QrSession,
+  Cloud115QrStatus,
 } from './types'
 
 /**
@@ -211,6 +215,40 @@ export const configApi = {
 
   async saveSystemConfig(config: SystemConfig): Promise<SystemConfig> {
     const response = await api.put<SystemConfig>('/config/system', config)
+    return response.data
+  },
+
+  // ========== 115 网盘登录 ==========
+
+  /** 获取 115 登录状态 */
+  async get115Status(): Promise<Cloud115Status> {
+    const response = await api.get<Cloud115Status>('/config/115')
+    return response.data
+  },
+
+  /** 获取支持的 115 登录设备列表 */
+  async get115Devices(): Promise<Cloud115DeviceOption[]> {
+    const response = await api.get<{ items: Cloud115DeviceOption[] }>('/config/115/devices')
+    return response.data.items
+  },
+
+  /** 创建 115 扫码登录会话 */
+  async start115QrLogin(app: string): Promise<Cloud115QrSession> {
+    const response = await api.post<Cloud115QrSession>('/config/115/login/qrcode', { app })
+    return response.data
+  },
+
+  /** 轮询 115 扫码登录状态 */
+  async poll115QrLogin(uid: string, app: string): Promise<Cloud115QrStatus> {
+    const response = await api.get<Cloud115QrStatus>('/config/115/login/status', {
+      params: { uid, app },
+    })
+    return response.data
+  },
+
+  /** 清除 115 登录信息 */
+  async clear115Login(): Promise<{ success: boolean; message: string }> {
+    const response = await api.delete<{ success: boolean; message: string }>('/config/115/login')
     return response.data
   },
 }

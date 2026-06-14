@@ -10,6 +10,7 @@ import NfoSettings from '@/components/settings/NfoSettings.vue'
 import SystemSettings from '@/components/settings/SystemSettings.vue'
 import EmbySettings from '@/components/settings/EmbySettings.vue'
 import ScrapedFilesSettings from '@/components/settings/ScrapedFilesSettings.vue'
+import Cloud115Settings from '@/components/settings/Cloud115Settings.vue'
 </script>
 
 <template>
@@ -45,6 +46,11 @@ import ScrapedFilesSettings from '@/components/settings/ScrapedFilesSettings.vue
         <NTabPane name="nfo" tab="NFO">
           <div class="tab-content">
             <NfoSettings />
+          </div>
+        </NTabPane>
+        <NTabPane name="cloud115" tab="115网盘">
+          <div class="tab-content">
+            <Cloud115Settings />
           </div>
         </NTabPane>
         <NTabPane name="emby" tab="Emby">

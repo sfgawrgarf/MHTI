@@ -3,6 +3,8 @@
 import pytest
 
 from server.core.exceptions import FolderNotFoundError, InvalidFolderError
+from server.models.file import DirectoryEntry, ScanRequest
+from server.models.storage import StorageLocator, StorageProvider
 from server.services.file_service import SUPPORTED_VIDEO_EXTENSIONS, FileService
 
 
@@ -106,3 +108,195 @@ class TestFileService:
             ".3gp", ".mpg", ".mpeg", ".vob", ".iso",
         }
         assert SUPPORTED_VIDEO_EXTENSIONS == expected
+
+
+class TestProviderAwareModels:
+    """Tests for provider-aware file models."""
+
+    def test_directory_entry_supports_provider_metadata(self):
+        """DirectoryEntry should expose provider-specific metadata fields."""
+        entry = DirectoryEntry(
+            name="115网盘",
+            path="/115网盘",
+            is_dir=True,
+            provider="115",
+            file_id="0",
+            parent_id=None,
+            is_virtual=True,
+        )
+
+        assert entry.provider == "115"
+        assert entry.file_id == "0"
+        assert entry.parent_id is None
+        assert entry.is_virtual is True
+
+    def test_scan_request_supports_locator(self):
+        """ScanRequest should accept a provider-aware locator payload."""
+        request = ScanRequest(
+            locator=StorageLocator(
+                provider=StorageProvider.P115,
+                path="/115网盘",
+                file_id="0",
+            ),
+        )
+
+        assert request.folder_path == ""
+        assert request.locator is not None
+        assert request.locator.provider == StorageProvider.P115
+        assert request.locator.file_id == "0"
+
+
+class TestProviderAwareBrowse:
+    """Tests for provider-aware directory browsing."""
+
+    def test_browse_directory_root_contains_115_virtual_entry(self, file_service: FileService):
+        """Root browse should inject the virtual 115 cloud entry."""
+        current_path, parent_path, entries, total, _cfid, _pfid = file_service.browse_directory(
+            "", page=1, page_size=100
+        )
+
+        virtual_entry = next(
+            entry for entry in entries if entry.name == "115网盘"
+        )
+
+        assert current_path in {"", "/"}
+        assert parent_path is None
+        assert virtual_entry.path == "/115网盘"
+        assert virtual_entry.provider == "115"
+        assert virtual_entry.file_id == "0"
+        assert virtual_entry.is_virtual is True
+        assert total >= 1
+
+    @pytest.mark.asyncio
+    async def test_browse_directory_async_provider_115_uses_provider_service(
+        self,
+        file_service: FileService,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """115 provider browse should delegate through the async provider path."""
+
+        class Fake115Service:
+            def __init__(self):
+                self.calls = []
+
+            async def browse(
+                self,
+                *,
+                path: str,
+                file_id: str | None,
+                page: int,
+                page_size: int,
+            ):
+                self.calls.append(
+                    {
+                        "path": path,
+                        "file_id": file_id,
+                        "page": page,
+                        "page_size": page_size,
+                    }
+                )
+                return {
+                    "current_path": "/115网盘/电影",
+                    "parent_path": "/115网盘",
+                    "total": 1,
+                    "entries": [
+                        {
+                            "name": "电影",
+                            "path": "/115网盘/电影",
+                            "is_dir": True,
+                            "provider": "115",
+                            "file_id": "100",
+                            "parent_id": "0",
+                            "is_virtual": False,
+                            "size": None,
+                            "mtime": None,
+                        }
+                    ],
+                }
+
+        fake_service = Fake115Service()
+        monkeypatch.setattr(file_service, "_get_115_service", lambda: fake_service)
+
+        current_path, parent_path, entries, total, _cfid, _pfid = await file_service.browse_directory_async(
+            path="/115网盘",
+            provider="115",
+            file_id="0",
+            page=2,
+            page_size=10,
+        )
+
+        assert fake_service.calls == [
+            {
+                "path": "/115网盘",
+                "file_id": "0",
+                "page": 2,
+                "page_size": 10,
+            }
+        ]
+        assert current_path == "/115网盘/电影"
+        assert parent_path == "/115网盘"
+        assert total == 1
+        assert len(entries) == 1
+        assert entries[0].provider == "115"
+        assert entries[0].file_id == "100"
+        assert entries[0].parent_id == "0"
+        assert entries[0].is_virtual is False
+
+    @pytest.mark.asyncio
+    async def test_browse_directory_async_provider_115_forwards_virtual_path_without_file_id(
+        self,
+        file_service: FileService,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """115 async browse should preserve the requested path when file_id is missing."""
+
+        class Fake115Service:
+            def __init__(self):
+                self.calls = []
+
+            async def browse(
+                self,
+                *,
+                path: str,
+                file_id: str | None,
+                page: int,
+                page_size: int,
+            ):
+                self.calls.append(
+                    {
+                        "path": path,
+                        "file_id": file_id,
+                        "page": page,
+                        "page_size": page_size,
+                    }
+                )
+                return {
+                    "current_path": "/115网盘/电影",
+                    "parent_path": "/115网盘",
+                    "total": 0,
+                    "entries": [],
+                }
+
+        fake_service = Fake115Service()
+        monkeypatch.setattr(file_service, "_get_115_service", lambda: fake_service)
+
+        current_path, parent_path, entries, total, _cfid, _pfid = await file_service.browse_directory_async(
+            path="/115网盘/电影",
+            provider="115",
+            file_id=None,
+            page=1,
+            page_size=10,
+        )
+
+        assert fake_service.calls == [
+            {
+                "path": "/115网盘/电影",
+                "file_id": None,
+                "page": 1,
+                "page_size": 10,
+            }
+        ]
+        assert current_path == "/115网盘/电影"
+        assert parent_path == "/115网盘"
+        assert entries == []
+        assert total == 0

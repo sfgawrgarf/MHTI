@@ -140,6 +140,12 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down application...")
 
+    # 取消后台 worker（刮削 + 手动任务），避免它们阻塞在队列上导致退出卡顿
+    from server.services.scrape_job_service import shutdown_workers as shutdown_scrape_workers
+    from server.services.manual_job_service import shutdown_workers as shutdown_manual_workers
+    await shutdown_scrape_workers()
+    await shutdown_manual_workers()
+
     # Stop watcher service
     if watcher._running:
         await watcher.stop()

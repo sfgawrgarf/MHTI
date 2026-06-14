@@ -199,6 +199,7 @@ class Services:
     SESSION = "session_service"
     HISTORY = "history_service"
     FILE = "file_service"
+    P115 = "p115_service"
     SCRAPED_FILE = "scraped_file_service"
     MANUAL_JOB = "manual_job_service"
     SCRAPE_JOB = "scrape_job_service"
@@ -307,6 +308,9 @@ def get_service(service_name: str) -> Any:
 
     if container.has(service_name):
         return container.get(service_name)
+
+    if service_name == Services.P115:
+        return get_p115_service()
 
     if service_name not in _SERVICE_REGISTRY:
         raise KeyError(f"Unknown service: {service_name}")
@@ -439,6 +443,19 @@ def get_file_service():
         "server.services.file_service",
         "FileService"
     )
+
+
+def get_p115_service():
+    """FastAPI dependency for P115Service."""
+    from server.services.p115_service import P115Service
+
+    container = get_container()
+    if not container.has(Services.P115):
+        container.register_instance(
+            Services.P115,
+            P115Service(config_service=get_config_service())
+        )
+    return container.get(Services.P115)
 
 
 def get_history_service():

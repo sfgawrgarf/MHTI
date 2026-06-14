@@ -8,6 +8,7 @@ from server.models.emby import ConflictCheckResult
 from server.models.history import ScrapeLogStep
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
+from server.models.storage import StorageLocator
 from server.models.tmdb import TMDBSearchResult, TMDBSeries, TMDBEpisode
 
 
@@ -32,6 +33,10 @@ class ScrapeRequest(BaseModel):
     file_path: str
     output_dir: str | None = None  # 视频输出目录
     metadata_dir: str | None = None  # 元数据输出目录（NFO、图片）
+    file_locator: StorageLocator | None = None
+    output_locator: StorageLocator | None = None
+    metadata_locator: StorageLocator | None = None
+    allow_local_output: bool = False
     link_mode: OrganizeMode | None = None  # 整理模式
     auto_select: bool = True  # 自动选择最佳匹配
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
@@ -46,6 +51,10 @@ class ScrapeByIdRequest(BaseModel):
     episode: int
     output_dir: str | None = None  # 视频输出目录
     metadata_dir: str | None = None  # 元数据输出目录（NFO、图片）
+    file_locator: StorageLocator | None = None
+    output_locator: StorageLocator | None = None
+    metadata_locator: StorageLocator | None = None
+    allow_local_output: bool = False
     link_mode: OrganizeMode | None = None  # 整理模式
     skip_emby_check: bool = False  # 跳过 Emby 冲突检查
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置

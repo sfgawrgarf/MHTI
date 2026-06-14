@@ -8,7 +8,9 @@ from fastapi import APIRouter, Depends, Query
 
 from server.core.auth import require_auth
 from server.core.container import get_file_service, get_history_service
+from server.core.exceptions import validation_error
 from server.models.file import BrowseResponse, ScanRequest, ScanResponse
+from server.models.storage import StorageProvider
 from server.services.file_service import FileService
 from server.services.fingerprint_service import calculate_fingerprint
 from server.services.history_service import HistoryService
@@ -38,6 +40,23 @@ async def scan_folder(
         InvalidFolderError: 无效文件夹路径 (400)
         PermissionDeniedError: 权限被拒绝 (403)
     """
+    is_p115 = bool(request.locator and request.locator.provider == StorageProvider.P115)
+
+    if not request.folder_path.strip() and not is_p115:
+        raise validation_error("folder_path 不能为空", field="folder_path")
+
+    if is_p115:
+        files = await file_service.scan_folder_async(
+            request.locator.path or request.folder_path,
+            locator=request.locator,
+        )
+        # 115 文件没有本地指纹，直接返回
+        return ScanResponse(
+            folder_path=request.locator.path or request.folder_path,
+            total_files=len(files),
+            files=files,
+        )
+
     files = file_service.scan_folder(request.folder_path)
 
     # 计算文件指纹并过滤已刮削的文件
@@ -68,6 +87,11 @@ async def scan_folder(
 @router.get("/files/browse", response_model=BrowseResponse)
 async def browse_directory(
     path: str = Query(default="", description="Directory path to browse"),
+    provider: StorageProvider = Query(
+        default=StorageProvider.LOCAL,
+        description="Storage provider to browse",
+    ),
+    file_id: str | None = Query(default=None, description="Provider file id"),
     page: int = Query(default=1, ge=1, description="Page number"),
     page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
     file_service: FileService = Depends(get_file_service),
@@ -89,9 +113,36 @@ async def browse_directory(
         InvalidFolderError: 无效文件夹路径 (400)
         PermissionDeniedError: 权限被拒绝 (403)
     """
-    current_path, parent_path, entries, total = file_service.browse_directory(
-        path, page, page_size
-    )
+    if provider == StorageProvider.P115:
+        (
+            current_path,
+            parent_path,
+            entries,
+            total,
+            current_file_id,
+            parent_file_id,
+        ) = await file_service.browse_directory_async(
+            path=path,
+            provider=provider,
+            file_id=file_id,
+            page=page,
+            page_size=page_size,
+        )
+    else:
+        (
+            current_path,
+            parent_path,
+            entries,
+            total,
+            current_file_id,
+            parent_file_id,
+        ) = file_service.browse_directory(
+            path=path,
+            provider=provider,
+            file_id=file_id,
+            page=page,
+            page_size=page_size,
+        )
     return BrowseResponse(
         current_path=current_path,
         parent_path=parent_path,
@@ -99,4 +150,6 @@ async def browse_directory(
         total=total,
         page=page,
         page_size=page_size,
+        current_file_id=current_file_id,
+        parent_file_id=parent_file_id,
     )

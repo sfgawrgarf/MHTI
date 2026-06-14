@@ -23,7 +23,7 @@ import { watcherApi } from '@/api/watcher'
 import { configApi } from '@/api/config'
 import { filesApi } from '@/api/files'
 import { LinkMode } from '@/api/types'
-import type { WatchedFolder, ManualJobAdvancedSettings, OrganizeConfig, DirectoryEntry } from '@/api/types'
+import type { WatchedFolder, ManualJobAdvancedSettings, OrganizeConfig, DirectoryEntry, StorageLocator } from '@/api/types'
 import PathSelectStep from './wizard/PathSelectStep.vue'
 import OptionsStep from './wizard/OptionsStep.vue'
 import PreviewStep from './wizard/PreviewStep.vue'
@@ -55,6 +55,12 @@ const globalOrganizeConfig = ref<OrganizeConfig | null>(null)
 
 // 高级设置
 const advancedSettings = ref<ManualJobAdvancedSettings | null>(null)
+
+// 存储定位信息（115 等云端目录）
+const scanLocator = ref<StorageLocator | null>(null)
+const targetLocator = ref<StorageLocator | null>(null)
+const metadataLocator = ref<StorageLocator | null>(null)
+const allowLocalOutput = ref(false)
 
 // 表单数据
 const formData = ref({
@@ -121,7 +127,9 @@ const loadPreviewFiles = async () => {
 
   previewLoading.value = true
   try {
-    const response = await filesApi.browse(formData.value.scan_path, 1, 10)
+    const provider = scanLocator.value?.provider
+    const fileId = scanLocator.value?.file_id
+    const response = await filesApi.browse(formData.value.scan_path, 1, 10, provider, fileId)
     // 过滤出视频文件
     previewFiles.value = response.entries.filter(entry => {
       if (entry.is_dir) return true
@@ -158,6 +166,10 @@ const resetForm = () => {
   advancedSettings.value = null
   previewFiles.value = []
   previewTotal.value = 0
+  scanLocator.value = null
+  targetLocator.value = null
+  metadataLocator.value = null
+  allowLocalOutput.value = false
 }
 
 // 关闭弹窗
@@ -201,6 +213,10 @@ const handleSubmit = async () => {
       scan_path: formData.value.scan_path.trim(),
       target_folder: formData.value.target_folder.trim(),
       metadata_dir: formData.value.metadata_dir.trim(),
+      scan_locator: scanLocator.value,
+      target_locator: targetLocator.value,
+      metadata_locator: metadataLocator.value,
+      allow_local_output: allowLocalOutput.value,
       link_mode: formData.value.link_mode,
       delete_empty_parent: formData.value.delete_empty_parent,
       config_reuse_id: formData.value.config_reuse_id,
@@ -282,6 +298,11 @@ onMounted(() => {
           v-model:scan-path="formData.scan_path"
           v-model:target-folder="formData.target_folder"
           v-model:metadata-dir="formData.metadata_dir"
+          v-model:scan-locator="scanLocator"
+          v-model:target-locator="targetLocator"
+          v-model:metadata-locator="metadataLocator"
+          :allow-local-output="allowLocalOutput"
+          @update:allow-local-output="allowLocalOutput = $event"
           :watched-folders="watchedFolders"
           :global-config="globalOrganizeConfig"
         />

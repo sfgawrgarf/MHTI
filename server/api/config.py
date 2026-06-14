@@ -1,9 +1,11 @@
 """Configuration API routes."""
 
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends
 
 from server.core.auth import require_auth
-from server.core.container import get_config_service, get_tmdb_service
+from server.core.container import get_config_service, get_p115_service, get_tmdb_service
+from server.models.cloud_115 import Cloud115QrSession, Cloud115QrStatus, Cloud115Status
 from server.models.config import (
     ApiTokenSaveRequest,
     ApiTokenSaveResponse,
@@ -30,10 +32,17 @@ from server.models.watcher import (
 from server.models.nfo import NfoConfig
 from server.models.system import SystemConfig
 from server.services.config_service import ConfigService
+from server.services.p115_service import P115Service
 from server.services.tmdb_service import TMDBService
 from server.api.watcher import get_watcher_service
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
+
+
+class Cloud115LoginRequest(BaseModel):
+    """115 QR login request payload."""
+
+    app: str = "alipaymini"
 
 
 # ========== Proxy Configuration ==========
@@ -291,13 +300,31 @@ async def save_watcher_config(
         existing_folders, _ = await watcher_service.list_folders()
         existing_paths = {f.path for f in existing_folders}
 
-        # 添加新目录
+        # 添加新目录（自动识别 115 路径）
         for dir_path in request.watch_dirs:
             if dir_path not in existing_paths:
-                await watcher_service.create_folder(WatchedFolderCreate(
+                create_req = WatchedFolderCreate(
                     path=dir_path,
                     enabled=True,
-                ))
+                    mode=request.mode,
+                )
+                # 路径以 /115网盘/ 开头 → 自动设为 115 provider + 解析 file_id
+                if dir_path.startswith("/115网盘"):
+                    create_req.provider = "115"
+                    try:
+                        from server.services.p115_service import P115Service
+                        p115_svc = P115Service(config_service)
+                        cfg = await config_service.get_115_config()
+                        if cfg.is_logged_in:
+                            client = await p115_svc._load_p115_client_with_config(cfg)
+                            normalized = p115_svc._normalize_virtual_path(dir_path)
+                            dir_id = await p115_svc._resolve_directory_id(
+                                client=client, path=normalized, file_id=None,
+                            )
+                            create_req.file_id = str(dir_id)
+                    except Exception:
+                        pass  # 解析失败仍创建（后续轮询时会用路径扫描）
+                await watcher_service.create_folder(create_req)
 
         # 删除不在列表中的目录
         for folder in existing_folders:
@@ -358,3 +385,50 @@ async def save_system_config(
     """Save system configuration."""
     await config_service.save_system_config(request)
     return request
+
+
+# ========== 115 Cloud Login ==========
+
+
+@router.get("/115", response_model=Cloud115Status)
+async def get_115_status(
+    p115_service: P115Service = Depends(get_p115_service),
+) -> Cloud115Status:
+    """Get current 115 login status."""
+    return await p115_service.get_status()
+
+
+@router.get("/115/devices")
+async def get_115_devices(
+    p115_service: P115Service = Depends(get_p115_service),
+) -> dict:
+    """List supported 115 login devices."""
+    return {"items": [item.model_dump() for item in p115_service.list_login_devices()]}
+
+
+@router.post("/115/login/qrcode", response_model=Cloud115QrSession)
+async def start_115_qrcode_login(
+    request: Cloud115LoginRequest,
+    p115_service: P115Service = Depends(get_p115_service),
+) -> Cloud115QrSession:
+    """Create a 115 QR login session."""
+    return await p115_service.start_qr_login(request.app)
+
+
+@router.get("/115/login/status", response_model=Cloud115QrStatus)
+async def get_115_qrcode_login_status(
+    uid: str,
+    app: str = "alipaymini",
+    p115_service: P115Service = Depends(get_p115_service),
+) -> Cloud115QrStatus:
+    """Poll current 115 QR login status."""
+    return await p115_service.poll_qr_login(uid, app)
+
+
+@router.delete("/115/login")
+async def delete_115_login(
+    p115_service: P115Service = Depends(get_p115_service),
+) -> dict:
+    """Clear stored 115 login information."""
+    await p115_service.clear_login_state()
+    return {"success": True, "message": "115 登录信息已清除"}

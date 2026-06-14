@@ -23,13 +23,14 @@ import { manualJobApi } from '@/api/manual-job'
 import { watcherApi } from '@/api/watcher'
 import { configApi } from '@/api/config'
 import { LinkMode } from '@/api/types'
-import type { WatchedFolder, ManualJobAdvancedSettings, OrganizeConfig } from '@/api/types'
+import type { WatchedFolder, ManualJobAdvancedSettings, OrganizeConfig, StorageLocator } from '@/api/types'
 import FolderBrowserModal from './FolderBrowserModal.vue'
 import AdvancedSettingsModal from './AdvancedSettingsModal.vue'
 
 const props = defineProps<{
   show: boolean
   initialScanPath?: string  // 初始扫描路径
+  initialScanLocator?: StorageLocator | null  // 初始扫描 locator（115 等）
 }>()
 
 const emit = defineEmits<{
@@ -60,6 +61,19 @@ const formData = ref({
   delete_empty_parent: true,
   config_reuse_id: null as number | null,
 })
+
+// 存储定位信息（115 等云端目录）
+const scanLocator = ref<StorageLocator | null>(null)
+const targetLocator = ref<StorageLocator | null>(null)
+const metadataLocator = ref<StorageLocator | null>(null)
+const allowLocalOutput = ref(false)
+
+// 是否涉及 115（任一 locator 为 115 时显示额外选项）
+const involvesP115 = computed(
+  () =>
+    scanLocator.value?.provider === '115' ||
+    targetLocator.value?.provider === '115',
+)
 
 // 整理模式选项
 const linkModeOptions = [
@@ -111,6 +125,10 @@ const resetForm = () => {
     config_reuse_id: null,
   }
   advancedSettings.value = null
+  scanLocator.value = null
+  targetLocator.value = null
+  metadataLocator.value = null
+  allowLocalOutput.value = false
 }
 
 // 关闭弹窗
@@ -136,6 +154,10 @@ const handleSubmit = async () => {
       scan_path: formData.value.scan_path.trim(),
       target_folder: formData.value.target_folder.trim(),
       metadata_dir: formData.value.metadata_dir.trim(),
+      scan_locator: scanLocator.value,
+      target_locator: targetLocator.value,
+      metadata_locator: metadataLocator.value,
+      allow_local_output: allowLocalOutput.value,
       link_mode: formData.value.link_mode,
       delete_empty_parent: formData.value.delete_empty_parent,
       config_reuse_id: formData.value.config_reuse_id,
@@ -184,10 +206,15 @@ onMounted(() => {
   loadGlobalConfig()
 })
 
-// 监听弹窗打开，设置初始扫描路径
+// 监听弹窗打开，设置初始扫描路径与 locator
 watch(() => props.show, (newVal) => {
-  if (newVal && props.initialScanPath) {
-    formData.value.scan_path = props.initialScanPath
+  if (newVal) {
+    if (props.initialScanPath) {
+      formData.value.scan_path = props.initialScanPath
+    }
+    if (props.initialScanLocator) {
+      scanLocator.value = props.initialScanLocator
+    }
   }
 })
 
@@ -196,14 +223,26 @@ const handleScanPathConfirm = (path: string) => {
   formData.value.scan_path = path
 }
 
+const handleScanPathLocator = (locator: StorageLocator) => {
+  scanLocator.value = locator
+}
+
 // 处理整理目录选择
 const handleTargetFolderConfirm = (path: string) => {
   formData.value.target_folder = path
 }
 
+const handleTargetFolderLocator = (locator: StorageLocator) => {
+  targetLocator.value = locator
+}
+
 // 处理元数据目录选择
 const handleMetadataDirConfirm = (path: string) => {
   formData.value.metadata_dir = path
+}
+
+const handleMetadataDirLocator = (locator: StorageLocator) => {
+  metadataLocator.value = locator
 }
 
 // 处理高级设置确认
@@ -328,6 +367,16 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
                 placeholder="从监控目录复制配置"
               />
             </NFormItem>
+
+            <NFormItem v-if="involvesP115" label="本地输出">
+              <div class="switch-row">
+                <NSwitch v-model:value="allowLocalOutput" />
+                <span class="switch-label">允许下载 115 文件到本地输出</span>
+              </div>
+              <template #feedback>
+                <span class="form-hint">115 源文件默认在线处理；开启后下载到本地整理</span>
+              </template>
+            </NFormItem>
           </div>
         </NForm>
       </div>
@@ -358,6 +407,7 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
     v-model:show="showScanPathBrowser"
     title="选择刮削路径"
     @confirm="handleScanPathConfirm"
+    @confirm-locator="handleScanPathLocator"
   />
 
   <!-- 整理目录选择弹窗 -->
@@ -365,6 +415,7 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
     v-model:show="showTargetFolderBrowser"
     title="选择整理目录"
     @confirm="handleTargetFolderConfirm"
+    @confirm-locator="handleTargetFolderLocator"
   />
 
   <!-- 元数据目录选择弹窗 -->
@@ -372,6 +423,7 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
     v-model:show="showMetadataDirBrowser"
     title="选择元数据目录"
     @confirm="handleMetadataDirConfirm"
+    @confirm-locator="handleMetadataDirLocator"
   />
 
   <!-- 高级设置弹窗 -->

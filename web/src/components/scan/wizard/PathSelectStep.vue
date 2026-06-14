@@ -9,12 +9,13 @@ import {
   NSelect,
   NTooltip,
   NAlert,
+  NSwitch,
 } from 'naive-ui'
 import {
   FolderOpenOutline,
   InformationCircleOutline,
 } from '@vicons/ionicons5'
-import type { WatchedFolder, OrganizeConfig } from '@/api/types'
+import type { WatchedFolder, OrganizeConfig, StorageLocator } from '@/api/types'
 import FolderBrowser from '../FolderBrowser.vue'
 import { ref } from 'vue'
 
@@ -22,15 +23,29 @@ const props = defineProps<{
   scanPath: string
   targetFolder: string
   metadataDir: string
+  scanLocator: StorageLocator | null
+  targetLocator: StorageLocator | null
   watchedFolders: WatchedFolder[]
   globalConfig: OrganizeConfig | null
+  allowLocalOutput: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:scanPath', value: string): void
   (e: 'update:targetFolder', value: string): void
   (e: 'update:metadataDir', value: string): void
+  (e: 'update:scanLocator', value: StorageLocator | null): void
+  (e: 'update:targetLocator', value: StorageLocator | null): void
+  (e: 'update:metadataLocator', value: StorageLocator | null): void
+  (e: 'update:allowLocalOutput', value: boolean): void
 }>()
+
+// 是否涉及 115（显示本地输出开关）
+const involvesP115 = computed(
+  () =>
+    props.scanLocator?.provider === '115' ||
+    props.targetLocator?.provider === '115',
+)
 
 // 文件夹浏览器状态
 const showBrowser = ref(false)
@@ -61,6 +76,17 @@ const handleFolderSelect = (path: string) => {
     emit('update:metadataDir', path)
   }
   showBrowser.value = false
+}
+
+// 接收文件夹选择器的 locator（115 等云端目录）
+const handleFolderLocator = (locator: StorageLocator) => {
+  if (browserMode.value === 'scan') {
+    emit('update:scanLocator', locator)
+  } else if (browserMode.value === 'target') {
+    emit('update:targetLocator', locator)
+  } else {
+    emit('update:metadataLocator', locator)
+  }
 }
 
 // 从监控目录快速填充
@@ -166,11 +192,26 @@ const useGlobalTargetFolder = () => {
       </NInputGroup>
     </NFormItem>
 
+    <!-- 本地输出开关（仅 115 场景） -->
+    <NFormItem v-if="involvesP115" label="本地输出">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <NSwitch
+          :value="allowLocalOutput"
+          @update:value="emit('update:allowLocalOutput', $event)"
+        />
+        <span style="font-size: 13px; color: var(--n-text-color-2);">允许下载 115 文件到本地输出</span>
+      </div>
+      <template #feedback>
+        <span style="font-size: 12px; color: var(--n-text-color-3);">115 源文件默认在线处理；开启后下载到本地整理</span>
+      </template>
+    </NFormItem>
+
     <!-- 文件夹浏览器 -->
     <FolderBrowser
       v-model:show="showBrowser"
       :title="browserMode === 'scan' ? '选择刮削路径' : browserMode === 'target' ? '选择整理目录' : '选择元数据目录'"
       @select="handleFolderSelect"
+      @select-locator="handleFolderLocator"
     />
   </div>
 </template>

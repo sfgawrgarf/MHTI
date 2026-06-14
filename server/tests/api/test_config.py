@@ -4,14 +4,25 @@
 使用 conftest.py 中的 override_auth fixture 绕过认证。
 """
 
-import pytest
+import asyncio
+import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 from server.main import app
-from server.core.container import get_config_service, get_tmdb_service
+from server.core.container import get_config_service, get_p115_service, get_tmdb_service
+from server.models.cloud_115 import (
+    Cloud115Config,
+    Cloud115DeviceOption,
+    Cloud115QrSession,
+    Cloud115QrStatus,
+    Cloud115Status,
+)
 from server.services.config_service import ConfigService
+from server.services.p115_service import P115Service
 from server.services.tmdb_service import TMDBService
 
 
@@ -29,6 +40,44 @@ def config_client(temp_db: Path, override_auth) -> TestClient:
     """
     config_service = ConfigService(db_path=temp_db)
     tmdb_service = TMDBService(config_service=config_service)
+    p115_service = Mock(spec=P115Service)
+    p115_service.get_status = AsyncMock(
+        return_value=Cloud115Status(
+            enabled=True,
+            app="alipaymini",
+            is_logged_in=True,
+        )
+    )
+    p115_service.list_login_devices = Mock(
+        return_value=[
+            Cloud115DeviceOption(value="web", label="115生活_网页端", group="standard"),
+            Cloud115DeviceOption(value="desktop", label="115浏览器", group="alias"),
+            Cloud115DeviceOption(value="bios", label="未知: ios", group="alias"),
+            Cloud115DeviceOption(value="bandroid", label="未知: android", group="alias"),
+            Cloud115DeviceOption(value="bipad", label="未知: ipad", group="alias"),
+            Cloud115DeviceOption(value="windows", label="Windows 别名", group="alias"),
+            Cloud115DeviceOption(value="mac", label="macOS 别名", group="alias"),
+            Cloud115DeviceOption(value="linux", label="Linux 别名", group="alias"),
+            Cloud115DeviceOption(value="alipaymini", label="115生活_支付宝小程序", group="standard"),
+        ]
+    )
+    p115_service.start_qr_login = AsyncMock(
+        return_value=Cloud115QrSession(
+            uid="uid-123",
+            qrcode_url="https://115.com/scan/dg-uid-123",
+            app="alipaymini",
+        )
+    )
+    p115_service.poll_qr_login = AsyncMock(
+        return_value=Cloud115QrStatus(
+            uid="uid-123",
+            app="alipaymini",
+            status="success",
+            message="登录成功",
+            is_logged_in=True,
+        )
+    )
+    p115_service.clear_login_state = AsyncMock()
 
     def override_config_service():
         return config_service
@@ -36,9 +85,17 @@ def config_client(temp_db: Path, override_auth) -> TestClient:
     def override_tmdb_service():
         return tmdb_service
 
+    def override_p115_service():
+        return p115_service
+
     app.dependency_overrides[get_config_service] = override_config_service
     app.dependency_overrides[get_tmdb_service] = override_tmdb_service
-    yield TestClient(app)
+    app.dependency_overrides[get_p115_service] = override_p115_service
+
+    client = TestClient(app)
+    client.config_service = config_service
+    client.p115_service = p115_service
+    yield client
     app.dependency_overrides.clear()
 
 
@@ -301,3 +358,113 @@ class TestSystemAPI:
         response = config_client.get("/api/config/system")
 
         assert response.status_code == 200
+
+
+class TestCloud115API:
+    """Tests for /api/config/115 endpoints."""
+
+    def test_get_115_status(self, config_client):
+        """Test getting current 115 login status."""
+        response = config_client.get("/api/config/115")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "enabled": True,
+            "app": "alipaymini",
+            "is_logged_in": True,
+            "updated_at": None,
+        }
+        config_client.p115_service.get_status.assert_awaited_once()
+
+    def test_get_115_devices(self, config_client):
+        """Test listing supported 115 login devices."""
+        response = config_client.get("/api/config/115/devices")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert {item["value"] for item in data["items"]} >= {
+            "web",
+            "desktop",
+            "bios",
+            "bandroid",
+            "bipad",
+            "windows",
+            "mac",
+            "linux",
+            "alipaymini",
+        }
+        config_client.p115_service.list_login_devices.assert_called_once_with()
+
+    def test_start_115_qrcode_login(self, config_client):
+        """Test creating a QR login session."""
+        response = config_client.post(
+            "/api/config/115/login/qrcode",
+            json={"app": "alipaymini"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "uid": "uid-123",
+            "qrcode_url": "https://115.com/scan/dg-uid-123",
+            "app": "alipaymini",
+        }
+        config_client.p115_service.start_qr_login.assert_awaited_once_with("alipaymini")
+
+    def test_get_115_qrcode_login_status(self, config_client):
+        """Test polling a QR login session status."""
+        response = config_client.get(
+            "/api/config/115/login/status",
+            params={"uid": "uid-123", "app": "alipaymini"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "uid": "uid-123",
+            "app": "alipaymini",
+            "status": "success",
+            "message": "登录成功",
+            "is_logged_in": True,
+        }
+        config_client.p115_service.poll_qr_login.assert_awaited_once_with(
+            "uid-123",
+            "alipaymini",
+        )
+
+    def test_delete_115_login(self, config_client):
+        """Test clearing stored 115 login information."""
+        real_p115_service = P115Service(config_service=config_client.config_service)
+        app.dependency_overrides[get_p115_service] = lambda: real_p115_service
+        payload_key = real_p115_service._qr_payload_key("uid-123")
+
+        asyncio.run(
+            config_client.config_service.save_115_config(
+                Cloud115Config(
+                    enabled=True,
+                    app="alipaymini",
+                    cookies="UID=1; CID=2; SEID=3",
+                    is_logged_in=True,
+                )
+            )
+        )
+        asyncio.run(
+            config_client.config_service.set(
+                payload_key,
+                json.dumps(
+                    {
+                        "uid": "uid-123",
+                        "time": 1710000000,
+                        "sign": "sign-123",
+                        "app": "os_windows",
+                    }
+                ),
+            )
+        )
+
+        response = config_client.delete("/api/config/115/login")
+        saved_config = asyncio.run(config_client.config_service.get_115_config())
+        saved_payload = asyncio.run(config_client.config_service.get(payload_key))
+
+        assert response.status_code == 200
+        assert response.json() == {"success": True, "message": "115 登录信息已清除"}
+        assert saved_config == Cloud115Config()
+        assert saved_payload is None
