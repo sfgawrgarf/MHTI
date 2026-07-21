@@ -11,6 +11,7 @@ import SystemSettings from '@/components/settings/SystemSettings.vue'
 import EmbySettings from '@/components/settings/EmbySettings.vue'
 import ScrapedFilesSettings from '@/components/settings/ScrapedFilesSettings.vue'
 import Cloud115Settings from '@/components/settings/Cloud115Settings.vue'
+import AiSettings from '@/components/settings/AiSettings.vue'
 </script>
 
 <template>
@@ -56,6 +57,11 @@ import Cloud115Settings from '@/components/settings/Cloud115Settings.vue'
         <NTabPane name="emby" tab="Emby">
           <div class="tab-content">
             <EmbySettings />
+          </div>
+        </NTabPane>
+        <NTabPane name="ai" tab="AI 识别">
+          <div class="tab-content">
+            <AiSettings />
           </div>
         </NTabPane>
         <NTabPane name="system" tab="系统">
