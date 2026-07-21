@@ -10,6 +10,7 @@ async def create_all_tables(db: aiosqlite.Connection) -> None:
     await _create_job_tables(db)
     await _create_watcher_tables(db)
     await _create_log_tables(db)
+    await _create_media_identity_tables(db)
 
 
 async def _create_core_tables(db: aiosqlite.Connection) -> None:
@@ -282,3 +283,34 @@ async def _create_log_tables(db: aiosqlite.Connection) -> None:
     await db.execute("""
         INSERT OR IGNORE INTO log_config (id) VALUES (1)
     """)
+
+
+async def _create_media_identity_tables(db: aiosqlite.Connection) -> None:
+    """Create AI recognition and media version tables."""
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS media_identities (
+            identity_key TEXT PRIMARY KEY,
+            tmdb_id INTEGER NOT NULL,
+            season INTEGER NOT NULL,
+            episode INTEGER NOT NULL,
+            title TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS media_versions (
+            source_fingerprint TEXT PRIMARY KEY,
+            identity_key TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            target_path TEXT,
+            quality_score INTEGER NOT NULL DEFAULT 0,
+            quality_labels TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(identity_key) REFERENCES media_identities(identity_key)
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_media_versions_identity ON media_versions(identity_key)"
+    )

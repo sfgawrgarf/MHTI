@@ -64,6 +64,7 @@ if extra_origins := os.getenv("CORS_ORIGINS"):
     CORS_ORIGINS.extend(extra_origins.split(","))
 
 # API Routers
+from server.api.ai import router as ai_router
 from server.api.auth import router as auth_router
 from server.api.config import router as config_router
 from server.api.emby import router as emby_router
@@ -202,6 +203,7 @@ app.add_middleware(
 
 # Include API routers (each router defines its own /api/* prefix)
 app.include_router(auth_router)
+app.include_router(ai_router)
 app.include_router(files_router)
 app.include_router(parser_router)
 app.include_router(config_router)
