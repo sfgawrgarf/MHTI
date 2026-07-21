@@ -677,3 +677,17 @@ python -m pytest server/tests/services/test_parser_service.py -v
 
 ## 赞助作者
 ![](https://i.imgs.ovh/2026/06/13/099f7aaed235aa63f1e1a3398f87c27d.jpg)
+
+
+## AI 辅助识别与多版本管理
+
+MHTI 可选支持 OpenAI 兼容接口，用于在 TMDB 候选中辅助识别标题、季和集。该功能默认关闭，模型只返回结构化建议；低置信度结果仍需人工确认，AI 不会自行删除、覆盖或移动媒体文件。
+
+在“设置 → AI 识别”中配置兼容接口、模型与 API Key。系统会记录已成功整理文件的逻辑媒体身份（TMDB + 季 + 集）与版本质量信息，并提供以下版本策略预览：
+
+- 多版本共存；
+- 优先最高质量（只生成替换候选，需确认）；
+- 已有版本则跳过；
+- 归档新版本。
+
+API：`GET/PUT /api/ai/config`、`POST /api/ai/recognize`、`POST /api/ai/versions/preview`、`POST /api/ai/versions/record`。
