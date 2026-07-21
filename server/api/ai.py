@@ -93,7 +93,7 @@ async def recognize(
                     id=item.id,
                     title=item.name,
                     original_title=item.original_name,
-                    year=int(item.first_air_date[:4]) if item.first_air_date else None,
+                    year=item.first_air_date.year if item.first_air_date else None,
                     overview=item.overview,
                 )
                 for item in response.results[:10]
