@@ -670,6 +670,32 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
         return series_folder, season_folder
 
+    async def _record_media_version(
+        self,
+        *,
+        file_path: str,
+        target_path: str | None,
+        tmdb_id: int | None,
+        season: int,
+        episode: int,
+        title: str | None,
+    ) -> None:
+        """Persist a successful local scrape as a media version without deleting anything."""
+        if tmdb_id is None or not target_path:
+            return
+        try:
+            from server.services.media_identity_service import MediaIdentityService
+            await MediaIdentityService().record(
+                file_path=file_path,
+                target_path=target_path,
+                tmdb_id=tmdb_id,
+                season=season,
+                episode=episode,
+                title=title,
+            )
+        except Exception as exc:
+            logger.warning("Unable to record media version: %s", exc)
+
     async def preview(self, file_path: str) -> ScrapePreview:
         """Preview scrape operation without executing.
 
@@ -1240,6 +1266,14 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     result.episode_info = ep
                     break
 
+        await self._record_media_version(
+            file_path=file_path,
+            target_path=result.dest_path,
+            tmdb_id=result.selected_id,
+            season=season_num,
+            episode=episode_num,
+            title=series.name,
+        )
         result.status = ScrapeStatus.SUCCESS
         result.message = "刮削完成"
         result.scrape_logs = scrape_logs
@@ -1586,6 +1620,14 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     result.episode_info = ep
                     break
 
+        await self._record_media_version(
+            file_path=file_path,
+            target_path=result.dest_path,
+            tmdb_id=request.tmdb_id,
+            season=request.season,
+            episode=request.episode,
+            title=series.name,
+        )
         result.status = ScrapeStatus.SUCCESS
         result.message = "刮削完成"
         result.scrape_logs = scrape_logs
