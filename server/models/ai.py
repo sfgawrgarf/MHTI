@@ -59,6 +59,7 @@ class AIRecognitionRequest(BaseModel):
 
 class AIRecognitionResult(BaseModel):
     title: str | None = None
+    search_titles: list[str] = Field(default_factory=list)
     season: int | None = None
     episode: int | None = None
     selected_candidate_id: int | str | None = None

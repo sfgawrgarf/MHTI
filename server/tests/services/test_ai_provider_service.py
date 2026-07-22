@@ -1,5 +1,6 @@
 import pytest
 
+from server.models.ai import AIRecognitionResult
 from server.services.ai_provider_service import AIProviderError, AIProviderService
 
 
@@ -11,3 +12,11 @@ def test_ai_response_json_accepts_markdown_fence() -> None:
 def test_ai_response_json_rejects_non_json() -> None:
     with pytest.raises(AIProviderError):
         AIProviderService._json_from_response("not-json")
+
+
+def test_ai_recognition_result_preserves_search_titles() -> None:
+    result = AIRecognitionResult.model_validate(
+        {"title": "作品名", "search_titles": ["作品名", "Romaji title"]}
+    )
+
+    assert result.search_titles == ["作品名", "Romaji title"]
