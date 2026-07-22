@@ -8,16 +8,12 @@ from server.models.config import ProxyConfig, LanguageConfig
 class IConfigService(Protocol):
     """Interface for configuration service."""
 
-    async def get_tmdb_cookie(self) -> str | None:
+    async def get_cookie(self) -> str | None:
         """Get TMDB cookie."""
         ...
 
-    async def get_tmdb_api_token(self) -> str | None:
-        """Get TMDB API token."""
-        ...
-
     async def get_api_token(self) -> str | None:
-        """Get API token."""
+        """Get TMDB API token."""
         ...
 
     async def get_proxy_config(self) -> ProxyConfig:

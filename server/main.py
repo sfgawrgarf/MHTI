@@ -260,7 +260,7 @@ async def health_check() -> dict:
     try:
         from server.core.container import get_config_service
         config_service = get_config_service()
-        tmdb_cookie = await config_service.get_tmdb_cookie()
+        tmdb_cookie = await config_service.get_cookie()
         # ConfigService exposes the TMDB token through get_api_token().
         # Calling the old, non-existent name made a configured instance report
         # a misleading check_failed health status.
