@@ -185,6 +185,25 @@ class TestFilesAPI:
 class TestHealthCheck:
     """Tests for health check endpoint."""
 
+    def test_health_check_reports_tmdb_configuration(self, monkeypatch):
+        """Health check reads TMDB credentials from ConfigService's public API."""
+        class StubConfigService:
+            async def get_cookie(self):
+                return "tmdb-cookie"
+
+            async def get_api_token(self):
+                return "tmdb-token"
+
+        from server.core import container
+
+        monkeypatch.setattr(container, "get_config_service", lambda: StubConfigService())
+
+        client = TestClient(app)
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json()["checks"]["tmdb_configured"] == "configured"
+
     def test_health_check(self):
         """Test health check endpoint (no auth required)."""
         # Health check 不需要认证
