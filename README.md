@@ -333,8 +333,9 @@ cd MHTI
 # 创建本地持久化、源媒体和整理输出目录
 mkdir -p data media output
 
-# 构建并启动服务（Docker Compose v2）
-docker compose up -d --build
+# 拉取已发布镜像并启动服务（Docker Compose v2）
+docker compose pull
+docker compose up -d
 
 # 查看日志
 docker compose logs -f mhti
@@ -351,9 +352,7 @@ docker compose logs -f mhti
 ```yaml
 services:
   mhti:
-    build:
-      context: .
-    image: mhti:local
+    image: ghcr.io/sfgawrgarf/mhti:latest
     container_name: mhti
     restart: unless-stopped
     ports:
@@ -368,6 +367,16 @@ services:
 ```
 
 生产环境可将 `./media` 和 `./output` 替换为宿主机绝对路径，例如 `/srv/media:/media:ro` 与 `/srv/mhti-output:/output`。不要把 API Key 写入 Compose 文件，请在网页“设置 → AI 识别”中保存。
+
+默认配置引用 GitHub Container Registry（GHCR）镜像，其他用户可直接执行 `docker compose pull && docker compose up -d`。若要固定版本，将 `latest` 改为对应发布版本号，例如 `ghcr.io/sfgawrgarf/mhti:1.2.3`。
+
+当前开发中的 AI 辅助代码尚未发布时，使用本地构建覆盖文件测试：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+推送 `v*.*.*` 发布标签后，仓库的 Release 工作流会把包含 AI 辅助功能的镜像推送至 GHCR；其他用户即可拉取该版本。
 
 ### 开发模式
 

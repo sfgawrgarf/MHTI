@@ -36,7 +36,7 @@ git push origin v1.0.0
 
 1. ✅ 构建前端 (Vue.js)
 2. ✅ 构建 Docker 多架构镜像 (amd64, arm64)
-3. ✅ 推送到 Docker Hub (`xiyan520/mhti:latest` 和版本标签)
+3. ✅ 推送到 GitHub Container Registry（`ghcr.io/sfgawrgarf/mhti:latest` 和版本标签）
 4. ✅ 创建 GitHub Release
 
 ### 3. 手动触发发布
@@ -63,26 +63,16 @@ git push origin v1.0.0
 
 | 标签 | 说明 |
 |------|------|
-| `xiyan520/mhti:1.2.3` | 完整版本号 |
-| `xiyan520/mhti:1.2` | 主次版本号 |
-| `xiyan520/mhti:1` | 主版本号 |
-| `xiyan520/mhti:latest` | 最新稳定版（非预发布） |
+| `ghcr.io/sfgawrgarf/mhti:1.2.3` | 完整版本号 |
+| `ghcr.io/sfgawrgarf/mhti:1.2` | 主次版本号 |
+| `ghcr.io/sfgawrgarf/mhti:1` | 主版本号 |
+| `ghcr.io/sfgawrgarf/mhti:latest` | 最新稳定版（非预发布） |
 
-## 必需的 Secrets 配置
+## 必需的 GitHub 配置
 
-在 GitHub 仓库设置中配置以下 Secrets：
+无需配置 Docker Hub 用户名或访问令牌。发布工作流使用仓库内置的 `GITHUB_TOKEN` 推送至 GHCR；工作流已授予 `packages: write` 权限。
 
-| Secret 名称 | 说明 |
-|------------|------|
-| `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
-| `DOCKERHUB_TOKEN` | Docker Hub 访问令牌 |
-
-### 获取 Docker Hub Token
-
-1. 登录 [Docker Hub](https://hub.docker.com/)
-2. 进入 Account Settings → Security
-3. 创建 Access Token（选择 Read & Write 权限）
-4. 复制 Token 到 GitHub Secrets
+首次发布后，请在 GitHub 的 **Packages** 页面将 `mhti` 容器包可见性设为 **Public**，这样其他用户无需登录 GitHub 即可执行 `docker compose pull`。
 
 ## 发布检查清单
 

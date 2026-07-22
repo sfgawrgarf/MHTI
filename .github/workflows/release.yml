@@ -7,7 +7,7 @@
 #
 # 功能：
 #   1. 构建 Docker 多架构镜像 (Dockerfile 内部构建前端)
-#   2. 推送到 Docker Hub
+#   2. 推送到 GitHub Container Registry (GHCR)
 #   3. 导出镜像文件到 Releases
 #   4. 创建 GitHub Release
 # =============================================================================
@@ -31,8 +31,8 @@ on:
         default: false
 
 env:
-  DOCKER_IMAGE: xiyan520/mhti
-  REGISTRY: docker.io
+  DOCKER_IMAGE: ghcr.io/sfgawrgarf/mhti
+  REGISTRY: ghcr.io
 
 jobs:
   # ===========================================================================
@@ -67,12 +67,15 @@ jobs:
           echo "🚀 预发布: $IS_PRERELEASE"
 
   # ===========================================================================
-  # 构建并推送 Docker 镜像到 Docker Hub
+  # 构建并推送 Docker 镜像到 GitHub Container Registry
   # ===========================================================================
   build-and-push:
     name: 🐳 构建并推送 Docker 镜像
     runs-on: ubuntu-latest
     needs: prepare
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -83,11 +86,12 @@ jobs:
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: 登录 Docker Hub
+      - name: 登录 GitHub Container Registry
         uses: docker/login-action@v4
         with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 提取 Docker 元数据
         id: meta
@@ -290,7 +294,7 @@ jobs:
 
             ### 🐳 Docker 部署
 
-            #### 方式一：从 Docker Hub 拉取（推荐）
+            #### 方式一：从 GitHub Container Registry 拉取（推荐）
 
             ```bash
             # 拉取最新版本
@@ -345,7 +349,7 @@ jobs:
             ### 🔗 链接
 
             - 📖 [使用文档](https://github.com/${{ github.repository }}/blob/main/README.md)
-            - 🐳 [Docker Hub](https://hub.docker.com/r/${{ env.DOCKER_IMAGE }})
+            - 🐳 [Container package](https://github.com/${{ github.repository }}/pkgs/container/mhti)
             - 🐛 [问题反馈](https://github.com/${{ github.repository }}/issues)
 
           files: release-files/*
