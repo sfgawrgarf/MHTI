@@ -1044,6 +1044,9 @@ class TestP115Service:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """Real p115client loader should restore HOME/USERPROFILE after import."""
+        pytest.importorskip(
+            "p115client", reason="p115client is an optional runtime integration"
+        )
         original_cache = p115_service_module._P115_MODULE_CACHE
         monkeypatch.setenv("HOME", "C:/tmp/test-home")
         monkeypatch.setenv("USERPROFILE", "C:/tmp/test-userprofile")

@@ -23,6 +23,13 @@ def files_client(override_auth) -> TestClient:
     Returns:
         Configured test client.
     """
+    class StubHistoryService:
+        """Keep scan tests independent from the application's persistent database."""
+
+        async def get_existing_fingerprints(self, fingerprints):
+            return set()
+
+    app.dependency_overrides[get_history_service] = lambda: StubHistoryService()
     yield TestClient(app)
     app.dependency_overrides.clear()
 

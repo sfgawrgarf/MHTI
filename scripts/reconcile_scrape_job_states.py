@@ -12,7 +12,17 @@ import sqlite3
 from pathlib import Path
 
 
-VALID = {"pending", "running", "success", "failed", "timeout", "cancelled", "skipped", "pending_action"}
+VALID = {
+    "pending",
+    "running",
+    "success",
+    "failed",
+    "timeout",
+    "cancelled",
+    "skipped",
+    "pending_action",
+    "replaced",
+}
 
 
 def main() -> int:
