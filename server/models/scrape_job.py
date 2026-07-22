@@ -25,6 +25,9 @@ class ScrapeJobStatus(str, Enum):
     SUCCESS = "success"  # 成功
     FAILED = "failed"  # 失败
     TIMEOUT = "timeout"  # 超时
+    CANCELLED = "cancelled"  # 已取消
+    SKIPPED = "skipped"  # 用户跳过
+    REPLACED = "replaced"  # 已由新的重试任务替代
     PENDING_ACTION = "pending_action"  # 需要用户处理
 
 
@@ -49,6 +52,8 @@ class ScrapeJob(BaseModel):
     finished_at: datetime | None = None
     error_message: str | None = None
     history_record_id: str | None = None  # 关联的历史记录ID
+    replaces_job_id: str | None = None
+    replaced_by_job_id: str | None = None
 
 
 class ScrapeJobCreate(BaseModel):
@@ -65,6 +70,7 @@ class ScrapeJobCreate(BaseModel):
     source: ScrapeJobSource = ScrapeJobSource.MANUAL
     source_id: int | None = None
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
+    replaces_job_id: str | None = None
 
 
 class ScrapeJobListResponse(BaseModel):

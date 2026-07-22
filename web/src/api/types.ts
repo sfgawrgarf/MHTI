@@ -260,7 +260,7 @@ export interface TMDBSeries {
 
 // 历史记录相关
 export type TaskSource = 'manual' | 'watcher'
-export type TaskStatus = 'success' | 'failed' | 'timeout' | 'cancelled' | 'skipped' | 'pending_action' | 'running'
+export type TaskStatus = 'success' | 'failed' | 'timeout' | 'cancelled' | 'skipped' | 'replaced' | 'pending_action' | 'running'
 export type LogLevel = 'success' | 'warning' | 'error'
 export type ConflictType = 'need_selection' | 'need_season_episode' | 'file_conflict' | 'no_match' | 'search_failed' | 'api_failed' | 'emby_conflict'
 

@@ -35,6 +35,10 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  ci:
+    name: ✅ CI 门禁
+    uses: ./.github/workflows/ci.yml
+
   # ===========================================================================
   # 准备阶段：确定版本号
   # ===========================================================================
@@ -72,7 +76,7 @@ jobs:
   build-and-push:
     name: 🐳 构建并推送 Docker 镜像
     runs-on: ubuntu-latest
-    needs: prepare
+    needs: [prepare, ci]
     permissions:
       contents: read
       packages: write
@@ -173,7 +177,7 @@ jobs:
   build-frontend-zip:
     name: 🎨 打包前端
     runs-on: ubuntu-latest
-    needs: prepare
+    needs: [prepare, ci]
     steps:
       - name: 检出代码
         uses: actions/checkout@v5

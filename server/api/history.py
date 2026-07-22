@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -89,6 +90,74 @@ async def export_records(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=history.csv"},
     )
+
+
+class AIRetryRequest(BaseModel):
+    """Batch retry only unresolved no-match records through the AI pipeline."""
+
+    record_ids: list[str] | None = None
+    limit: int = 100
+
+
+@router.post("/ai-retry")
+async def retry_no_match_with_ai(
+    request: AIRetryRequest,
+    history_service: HistoryService = Depends(get_history_service),
+) -> dict:
+    """Queue fresh replacement jobs for pending ``no_match`` records.
+
+    The worker performs the normal AI-assisted scrape; this endpoint never
+    writes an AI suggestion into an old record and never reuses its job ID.
+    """
+    from server.services.scrape_job_service import ScrapeJobService
+
+    if request.limit < 1 or request.limit > 500:
+        raise HTTPException(status_code=400, detail="limit 必须在 1 到 500 之间")
+
+    if request.record_ids:
+        candidate_ids = request.record_ids[:request.limit]
+    else:
+        records, _ = await history_service.list_records(
+            limit=request.limit, status=TaskStatus.PENDING_ACTION
+        )
+        candidate_ids = [record.id for record in records]
+
+    jobs = ScrapeJobService()
+    queued: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for record_id in candidate_ids:
+        record = await history_service.get_record(record_id)
+        if record is None:
+            skipped.append({"id": record_id, "reason": "记录不存在"})
+            continue
+        if record.status != TaskStatus.PENDING_ACTION or record.conflict_type != ConflictType.NO_MATCH:
+            skipped.append({"id": record.id, "reason": "仅支持待处理的 no_match 记录"})
+            continue
+        if not record.scrape_job_id:
+            skipped.append({"id": record.id, "reason": "缺少原始任务"})
+            continue
+        old_job = await jobs.get_job(record.scrape_job_id)
+        if old_job is None:
+            skipped.append({"id": record.id, "reason": "原始任务不存在"})
+            continue
+        if old_job.file_locator is None and not Path(old_job.file_path).is_file():
+            skipped.append({"id": record.id, "reason": "源文件不存在"})
+            continue
+        replacement = await jobs.create_replacement_job(old_job)
+        if replacement is None:
+            skipped.append({"id": record.id, "reason": "创建替代任务失败"})
+            continue
+        conflict_data = dict(record.conflict_data or {})
+        conflict_data["replaced_by_job_id"] = replacement.id
+        await history_service.update_record(
+            record.id,
+            status=TaskStatus.REPLACED,
+            error_message="已创建 AI 重试替代任务",
+            conflict_data=conflict_data,
+        )
+        queued.append(replacement.id)
+
+    return {"queued_job_ids": queued, "skipped": skipped}
 
 
 @router.delete("")

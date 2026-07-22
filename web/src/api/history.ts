@@ -97,6 +97,11 @@ export const historyApi = {
     return response.data
   },
 
+  async retryNoMatchWithAI(recordIds: string[]): Promise<{ queued_job_ids: string[]; skipped: Array<{ id: string; reason: string }> }> {
+    const response = await api.post('/history/ai-retry', { record_ids: recordIds })
+    return response.data
+  },
+
   /**
    * 订阅日志更新 (SSE)
    */

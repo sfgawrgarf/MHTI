@@ -21,6 +21,7 @@ from server.models.organize import OrganizeMode
 from server.models.storage import StorageLocator
 from server.services.websocket_manager import get_notifier
 from server.services.fingerprint_service import calculate_fingerprint
+from server.services.media_identity_service import MediaIdentityService
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,11 @@ class ScrapeJobService:
                 await db.execute("ALTER TABLE scrape_jobs ADD COLUMN allow_local_output INTEGER DEFAULT 0")
             except Exception:
                 pass  # 列已存在
+            for column in ("replaces_job_id", "replaced_by_job_id"):
+                try:
+                    await db.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {column} TEXT")
+                except Exception:
+                    pass
             await db.commit()
 
     async def get_pending_job_by_path(self, file_path: str) -> ScrapeJob | None:
@@ -132,6 +138,20 @@ class ScrapeJobService:
                 logger.info(f"文件已有待处理任务，跳过: {job.file_path}")
                 return None
 
+            # 监控任务只投递尚未完成整理的文件。手动任务仍允许用户显式重试。
+            if job.source == ScrapeJobSource.WATCHER and not job.file_locator:
+                source_fingerprint = MediaIdentityService.fingerprint(job.file_path)
+                async with aiosqlite.connect(self.db_path) as db:
+                    await _configure_connection(db)
+                    cursor = await db.execute(
+                        "SELECT 1 FROM media_versions WHERE source_fingerprint = ? LIMIT 1",
+                        (source_fingerprint,),
+                    )
+                    already_recorded = await cursor.fetchone()
+                if already_recorded:
+                    logger.info(f"文件已成功整理，跳过监控重复任务: {job.file_path}")
+                    return None
+
         job_id = str(uuid.uuid4())[:8]
         now = datetime.now()
 
@@ -150,8 +170,8 @@ class ScrapeJobService:
                 INSERT INTO scrape_jobs
                 (id, file_path, output_dir, metadata_dir, link_mode, source, source_id,
                  advanced_settings, file_locator, output_locator, metadata_locator,
-                 allow_local_output, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 allow_local_output, replaces_job_id, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -166,10 +186,16 @@ class ScrapeJobService:
                     output_locator_json,
                     metadata_locator_json,
                     1 if job.allow_local_output else 0,
+                    job.replaces_job_id,
                     ScrapeJobStatus.PENDING.value,
                     now.isoformat(),
                 ),
             )
+            if job.replaces_job_id:
+                await db.execute(
+                    "UPDATE scrape_jobs SET replaced_by_job_id = ? WHERE id = ?",
+                    (job_id, job.replaces_job_id),
+                )
             await db.commit()
 
         created_job = ScrapeJob(
@@ -187,6 +213,7 @@ class ScrapeJobService:
             advanced_settings=job.advanced_settings,
             status=ScrapeJobStatus.PENDING,
             created_at=now,
+            replaces_job_id=job.replaces_job_id,
         )
 
         # 加入队列
@@ -274,6 +301,7 @@ class ScrapeJobService:
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
         error_message: str | None = None,
+        clear_error_message: bool = False,
         history_record_id: str | None = None,
     ) -> None:
         """更新刮削任务"""
@@ -291,7 +319,9 @@ class ScrapeJobService:
         if finished_at is not None:
             updates.append("finished_at = ?")
             params.append(finished_at.isoformat())
-        if error_message is not None:
+        if clear_error_message:
+            updates.append("error_message = NULL")
+        elif error_message is not None:
             updates.append("error_message = ?")
             params.append(error_message)
         if history_record_id is not None:
@@ -327,6 +357,26 @@ class ScrapeJobService:
             )
             await db.commit()
             return cursor.rowcount
+
+    async def create_replacement_job(self, job: ScrapeJob) -> ScrapeJob | None:
+        """Create a fresh worker job while preserving the old job for audit."""
+        return await self.create_job(
+            ScrapeJobCreate(
+                file_path=job.file_path,
+                output_dir=job.output_dir,
+                metadata_dir=job.metadata_dir,
+                file_locator=job.file_locator,
+                output_locator=job.output_locator,
+                metadata_locator=job.metadata_locator,
+                allow_local_output=job.allow_local_output,
+                link_mode=job.link_mode,
+                source=job.source,
+                source_id=job.source_id,
+                advanced_settings=job.advanced_settings,
+                replaces_job_id=job.id,
+            ),
+            skip_duplicate_check=True,
+        )
 
     def _row_to_job(self, row) -> ScrapeJob:
         """转换数据库行到模型"""
@@ -372,6 +422,8 @@ class ScrapeJobService:
             finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
             error_message=row["error_message"],
             history_record_id=row["history_record_id"],
+            replaces_job_id=row["replaces_job_id"] if "replaces_job_id" in row.keys() else None,
+            replaced_by_job_id=row["replaced_by_job_id"] if "replaced_by_job_id" in row.keys() else None,
         )
 
 
@@ -543,6 +595,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 job_id,
                 status=ScrapeJobStatus.SUCCESS,
                 finished_at=datetime.now(),
+                clear_error_message=True,
             )
             # 发送完成通知
             await notifier.notify_completed(job_id, {

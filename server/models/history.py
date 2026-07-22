@@ -15,6 +15,7 @@ class TaskStatus(str, Enum):
     TIMEOUT = "timeout"  # 任务超时
     CANCELLED = "cancelled"
     SKIPPED = "skipped"
+    REPLACED = "replaced"  # 已由新的重试任务替代
     PENDING_ACTION = "pending_action"  # 待处理（需要用户手动处理）
     RUNNING = "running"  # 正在处理中
 
