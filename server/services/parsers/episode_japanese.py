@@ -111,6 +111,9 @@ DYNAMIC_EPISODE_PATTERNS = [
     (r"巻\s*(\d+)", "digit"),
     (rf"巻\s*({_KANJI_CHAR_CLASS}+)", "kanji"),
 
+    # ===== 里番常见的「お家賃6突き目」形式 =====
+    (r"(?:お家賃\s*)?(\d{1,3})\s*突き目", "digit"),
+
     # ===== Episode N / Ep.N / ep N =====
     (r"[Ee]pisode\s*(\d+)", "digit"),
     (r"[Ee]p\.?\s*(\d+)", "digit"),
@@ -127,6 +130,8 @@ DYNAMIC_EPISODE_PATTERNS = [
     (r"\((\d{1,2})\)\s*$", "digit"),
     # 中括号数字 [01] [02]
     (r"\[(\d{1,3})\]", "digit"),
+    # 发行名里的「标题 1［副标题］」；必须有空格和全角括号以避免误匹配标题数字。
+    (r"\s+(\d{1,3})\s*［", "digit"),
 ]
 
 
@@ -238,6 +243,11 @@ class EpisodeJapanesePlugin(ParserPlugin):
 
         # 2. 检查特别篇模式（season=0）
         is_special = False
+        # 里番发行名经常以“OVA作品名”开头，OVA 在这里是介质标记而不是
+        # TMDB 的 Special 季。仅匹配 OVA 后直接跟日文标题的收敛形式。
+        is_hentai_ova_release = bool(
+            re.search(r"(?:OVA|OAD|ONA)(?=[\u3040-\u30ff\u4e00-\u9fff])", text, re.I)
+        )
         for pattern in SPECIAL_PATTERNS:
             if re.search(pattern, text):
                 is_special = True
@@ -256,15 +266,16 @@ class EpisodeJapanesePlugin(ParserPlugin):
                         ctx.episode = kanji_to_number(match.group(1))
                     if ctx.episode:
                         ctx.matched_patterns.append(f"{self.name}:dynamic:{pattern}")
-                        # 如果是特别篇且没有季数，设置 season=0
+                        # 成人动画文件中的 OVA 通常是发行格式，而 TMDB 通常将其
+                        # 编在 Season 1；当文件同时含明确集数时优先按正片处理。
                         if is_special and ctx.season is None:
-                            ctx.season = 0
+                            ctx.season = 1 if is_hentai_ova_release else 0
                         return ctx
 
         # 4. 如果是特别篇但没有找到集数，设置默认值
         if is_special:
             if ctx.season is None:
-                ctx.season = 0
+                ctx.season = 1 if is_hentai_ova_release else 0
             if ctx.episode is None:
                 ctx.episode = 1
 

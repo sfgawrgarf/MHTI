@@ -16,7 +16,7 @@ from server.services.parsers.base import ParseContext, ParserPlugin
 # ============================================================================
 # 视频文件扩展名
 # ============================================================================
-VIDEO_EXTENSIONS = r"\.(mp4|mkv|avi|wmv|mov|flv|rmvb|ts|m2ts|webm|iso|m4v)$"
+VIDEO_EXTENSIONS = r"\.(mp4|mkv|avi|wmv|mov|flv|rmvb|ts|m2ts|webm|iso|m4v|strm)$"
 
 # ============================================================================
 # 语言标识（扩展名前）
@@ -93,6 +93,7 @@ KNOWN_GROUPS = [
     r"字幕组",
     r"動畫瘋",
     r"喵萌",
+    r"妄想実現めでぃあ",
 ]
 
 # ============================================================================
@@ -112,6 +113,8 @@ EPISODE_MARKERS_FOR_SUBTITLE = [
     r"第\s*[\d一二三四五六七八九十]+\s*[話话集回章弾幕]",  # 第1話, 第二話
     r"[＃#♯]\s*\d+",                                      # ＃2, #2
     r"[Vv]ol\.?\s*\d+",                                   # Vol.1
+    r"(?:お家賃\s*)?\d+\s*突き目",                         # お家賃6突き目
+    r"\s+\d{1,3}\s*［",                                    # 标题 1［副标题］
     r"前編|後編|前篇|後篇|上巻|下巻",                      # 前編/後編
     r"其[のノ之乃]\s*[\d一二三四五六七八九十弍参肆伍]+",   # 其の弍
 ]
@@ -120,11 +123,12 @@ EPISODE_MARKERS_FOR_SUBTITLE = [
 # OVA/动画标记（需要移除）
 # ============================================================================
 ANIMATION_MARKERS = [
-    r"\bOVA\b",
-    r"\bOAD\b",
-    r"\bONA\b",
-    r"\bTHE\s+ANIMATION\b",
-    r"\bANIMATION\b",
+    # 日文标题常直接紧跟 OVA（如 OVAヴァルキリー），\b 在此场景不成立。
+    r"OVA",
+    r"OAD",
+    r"ONA",
+    r"THE\s+ANIMATION",
+    r"ANIMATION",
 ]
 
 
@@ -202,7 +206,16 @@ class CleanerPlugin(ParserPlugin):
 
     def _remove_group_and_author_brackets(self, text: str) -> str:
         """移除制作组和作者方括号。"""
-        # 移除开头的制作组方括号（日期已移除，第一个方括号是制作组）
+        # 移除字幕组、制作组及常见编码信息；这些标签会严重干扰 TMDB 搜索。
+        for group_pattern in KNOWN_GROUPS:
+            text = re.sub(rf"\[[^\]]*{group_pattern}[^\]]*\]", "", text, flags=re.I)
+        text = re.sub(
+            r"\[\s*(?:\d{3,4}p|4k|uhd|fhd|hd|gb|big5|chs|cht|jpn|x26[45]|h\.?26[45]|hevc|aac|flac)(?:[\s._-]+[\w.-]+)*\s*\]",
+            "",
+            text,
+            flags=re.I,
+        )
+        # 兼容没有识别到名称的首个发布标签。
         text = re.sub(r"^\[[^\]]+\]", "", text)
 
         # 移除末尾的作者方括号

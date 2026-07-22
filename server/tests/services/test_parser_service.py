@@ -283,6 +283,23 @@ class TestJapaneseEpisodeParser:
 
         assert result.episode == 3, f"Expected episode 3, got {result.episode}"
 
+    @pytest.mark.parametrize(
+        "filename,expected_name,expected_episode",
+        [
+            ("[妄想実現めでぃあ]OVAヴァルキリーハザード.strm", "ヴァルキリーハザード", 1),
+            ("dokidokiりとる大家さん お家賃6突き目.strm", "dokidokiりとる大家さん", 6),
+            ("キスハグ 1［水平 線］.strm", "キスハグ", 1),
+        ],
+    )
+    def test_parse_hentai_anime_release_conventions(
+        self, parser_service, filename, expected_name, expected_episode
+    ):
+        """Common Japanese adult-animation release conventions retain clean titles."""
+        result = parser_service.parse(filename)
+        assert result.series_name == expected_name
+        assert result.season == 1
+        assert result.episode == expected_episode
+
     # ===== 罗马数字测试 =====
     @pytest.mark.parametrize(
         "filename,expected_episode",
