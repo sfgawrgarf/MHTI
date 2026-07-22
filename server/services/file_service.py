@@ -31,6 +31,7 @@ SUPPORTED_VIDEO_EXTENSIONS: set[str] = {
     ".mpeg",
     ".vob",
     ".iso",
+    ".strm",
 }
 
 # 禁止访问的系统目录（安全防护）

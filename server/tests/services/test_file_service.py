@@ -105,7 +105,7 @@ class TestFileService:
         expected = {
             ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv",
             ".rmvb", ".ts", ".m2ts", ".bdmv", ".webm",
-            ".3gp", ".mpg", ".mpeg", ".vob", ".iso",
+            ".3gp", ".mpg", ".mpeg", ".vob", ".iso", ".strm",
         }
         assert SUPPORTED_VIDEO_EXTENSIONS == expected
 
