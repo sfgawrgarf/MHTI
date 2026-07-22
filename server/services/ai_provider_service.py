@@ -73,11 +73,14 @@ class AIProviderService:
             )
 
         prompt = {
-            "task": "根据媒体文件证据在候选中选择最可能的剧集，并提取季和集。",
+            "task": "根据媒体文件证据在候选中选择最可能的剧集，并提取季和集；主要处理日文成人动画文件名。",
             "rules": [
                 "仅根据提供的证据推断；不能编造候选之外的 ID。",
+                "给出 1 到 4 个适合 TMDB 搜索的标题变体，按可信度排序，放入 search_titles；可使用原始标题、罗马音或常见译名。",
+                "日文成人动画中「第N話/第N章/#N/Vol.N/N突き目/上巻/下巻」分别对应第 N 集、N 集、N 集、N 集、N 集、第 1/2 集；OVA 常是发行格式，不要把它加入搜索标题。",
+                "优先保留日文原名作为第一个 search_titles；如文件名含字幕组、画质、作者或副标题，应排除这些部分。",
                 "无法可靠确定时，confidence 必须低于 0.75 并设置 needs_confirmation=true。",
-                "返回严格 JSON：title, season, episode, selected_candidate_id, confidence, reason, warnings, needs_confirmation。",
+                "返回严格 JSON：title, search_titles, season, episode, selected_candidate_id, confidence, reason, warnings, needs_confirmation。",
             ],
             "file_path_basename": Path(file_path).name,
             "evidence": evidence,

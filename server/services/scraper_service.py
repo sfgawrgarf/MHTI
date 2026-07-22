@@ -28,7 +28,9 @@ from server.models.scraper import (
     ScrapeStatus,
 )
 from server.models.storage import StorageLocator, StorageProvider
-from server.models.tmdb import TMDBSeries
+from server.models.tmdb import TMDBSearchResult, TMDBSeries
+from server.models.ai import AICandidate
+from server.services.ai_provider_service import AIProviderError, AIProviderService
 from server.services.config_service import ConfigService
 from server.services.emby_service import EmbyService
 from server.services.image_service import ImageService
@@ -803,8 +805,9 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
         try:
             search_response = await self.tmdb_service.search_series_by_api(parsed.series_name)
+            all_results: list[TMDBSearchResult] = search_response.results
             # 只保留成人内容
-            adult_results = [r for r in search_response.results if r.adult]
+            adult_results = [r for r in all_results if r.adult]
             result.search_results = adult_results
             search_step.logs.append(ScrapeLogEntry(message=f"找到 {len(adult_results)} 个匹配结果"))
             await notify_log_update()
@@ -825,6 +828,88 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             result.scrape_logs = scrape_logs
             return result
 
+        # Step 2.5: Ask the configured AI to refine the title, season/episode,
+        # and select a TMDB candidate. This keeps the final metadata source as
+        # TMDB while allowing difficult filenames (including .strm) to be
+        # interpreted by the configured OpenAI-compatible provider.
+        ai_selected: TMDBSearchResult | None = None
+        ai_provider = AIProviderService(self.config_service)
+        ai_config = await ai_provider.get_config()
+        if ai_config.enabled:
+            ai_step = ScrapeLogStep(name="AI 辅助识别", logs=[])
+            scrape_logs.append(ai_step)
+            candidates = [
+                AICandidate(
+                    id=item.id,
+                    title=item.name,
+                    original_title=item.original_name,
+                    year=item.first_air_date.year if item.first_air_date else None,
+                    overview=item.overview,
+                )
+                for item in all_results[:10]
+            ]
+            evidence = {
+                "filename": path.name,
+                "parsed_title": parsed.series_name,
+                "parsed_season": parsed.season,
+                "parsed_episode": parsed.episode,
+                "parser_confidence": parsed.confidence,
+                "suffix": path.suffix.lower(),
+            }
+            try:
+                ai_result = await ai_provider.recognize(
+                    file_path=file_path,
+                    evidence=evidence,
+                    candidates=candidates,
+                )
+                if ai_result.title:
+                    parsed.series_name = ai_result.title
+                    result.parsed_title = ai_result.title
+                if ai_result.season is not None:
+                    parsed.season = ai_result.season
+                    result.parsed_season = ai_result.season
+                if ai_result.episode is not None:
+                    parsed.episode = ai_result.episode
+                    result.parsed_episode = ai_result.episode
+
+                selected_id = str(ai_result.selected_candidate_id) if ai_result.selected_candidate_id is not None else None
+                selected_candidate = next(
+                    (item for item in all_results if str(item.id) == selected_id and item.adult),
+                    None,
+                )
+                if selected_candidate is not None and not ai_result.needs_confirmation:
+                    ai_selected = selected_candidate
+                    adult_results = [ai_selected]
+                    result.search_results = adult_results
+                    ai_step.logs.append(ScrapeLogEntry(message=f"AI 高置信度选择 TMDB 候选: {ai_selected.name} (ID {ai_selected.id})"))
+                elif selected_candidate is not None:
+                    ai_step.logs.append(ScrapeLogEntry(message="AI 选择了候选但置信度不足，保留人工确认", level=LogLevel.WARNING))
+
+                # Use the AI-normalized title plus aliases to retry TMDB when
+                # the original noisy filename has no adult result.
+                search_titles = [ai_result.title, *ai_result.search_titles]
+                search_titles = list(dict.fromkeys(title.strip() for title in search_titles if title and title.strip()))
+                if not adult_results:
+                    for search_title in search_titles:
+                        retry_response = await self.tmdb_service.search_series_by_api(search_title)
+                        retry_adult_results = [item for item in retry_response.results if item.adult]
+                        ai_step.logs.append(ScrapeLogEntry(message=f"AI 检索标题“{search_title}”得到 {len(retry_adult_results)} 个成人候选"))
+                        if retry_adult_results:
+                            all_results = retry_response.results
+                            adult_results = retry_adult_results
+                            result.search_results = adult_results
+                            break
+
+                if not ai_selected and not adult_results:
+                    ai_step.logs.append(ScrapeLogEntry(message=ai_result.reason or "AI 未给出可用候选", level=LogLevel.WARNING))
+                if ai_result.needs_confirmation:
+                    ai_step.logs.append(ScrapeLogEntry(message="AI 结果置信度较低，仍会遵守候选与季集校验", level=LogLevel.WARNING))
+                await notify_log_update()
+            except AIProviderError as exc:
+                ai_step.logs.append(ScrapeLogEntry(message=f"AI 识别失败，回退到常规刮削: {exc}", level=LogLevel.WARNING))
+                ai_step.completed = False
+                await notify_log_update()
+
         if not adult_results:
             search_step.logs.append(ScrapeLogEntry(message="未找到匹配的成人剧集", level=LogLevel.WARNING))
             search_step.completed = False
@@ -837,7 +922,10 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         # Step 3: Select match
         result.search_results = adult_results
 
-        if request.auto_select and len(adult_results) == 1:
+        if request.auto_select and ai_selected is not None:
+            selected = ai_selected
+            result.selected_id = selected.id
+        elif request.auto_select and len(adult_results) == 1:
             # 只有一个结果时自动选择
             selected = adult_results[0]
             result.selected_id = selected.id
