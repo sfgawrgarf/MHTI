@@ -1,0 +1,12 @@
+# Local development override.  It deliberately does not replace the default
+# GHCR image in docker-compose.yml, which remains suitable for users
+# deploying a published release.
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
+services:
+  mhti:
+    build:
+      context: .
+    image: mhti:local
