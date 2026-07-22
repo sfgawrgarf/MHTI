@@ -422,6 +422,20 @@ class HistoryService:
                 f"UPDATE history_records SET {', '.join(updates)} WHERE id = ?",
                 params,
             )
+            # history_records is the user-visible state machine.  Keep its
+            # linked worker row in lockstep in the *same transaction* so a
+            # resolved, skipped, or retried record cannot leave a stale
+            # pending_action scrape job behind.
+            if status is not None:
+                await db.execute(
+                    """UPDATE scrape_jobs
+                       SET status = ?,
+                           finished_at = CASE WHEN ? IN ('pending', 'running')
+                                              THEN finished_at
+                                              ELSE COALESCE(finished_at, CURRENT_TIMESTAMP) END
+                       WHERE history_record_id = ?""",
+                    (status.value, status.value, record_id),
+                )
             await db.commit()
             updated = cursor.rowcount > 0
 

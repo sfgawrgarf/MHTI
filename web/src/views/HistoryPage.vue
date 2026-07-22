@@ -141,6 +141,26 @@ const clearAllRecords = async () => {
   }
 }
 
+const retryVisibleNoMatchesWithAI = async () => {
+  const candidates = records.value.filter(record => record.status === 'pending_action').map(record => record.id)
+  if (!candidates.length) {
+    message.info('当前页没有待处理记录')
+    return
+  }
+  loading.value = true
+  try {
+    const result = await historyApi.retryNoMatchWithAI(candidates)
+    message.success(`已创建 ${result.queued_job_ids.length} 个 AI 重试任务`)
+    if (result.skipped.length) message.warning(`${result.skipped.length} 条记录未满足重试条件`)
+    await loadRecords()
+  } catch (error) {
+    message.error('AI 批量重试创建失败')
+    console.error(error)
+  } finally {
+    loading.value = false
+  }
+}
+
 // 导出记录
 const exportRecords = async () => {
   try {
@@ -193,6 +213,7 @@ const statusTag = (status: TaskStatus) => {
     timeout: { type: 'warning' as const, text: '超时' },
     cancelled: { type: 'warning' as const, text: '取消' },
     skipped: { type: 'default' as const, text: '跳过' },
+    replaced: { type: 'default' as const, text: '已替代' },
     pending_action: { type: 'info' as const, text: '待处理' },
     running: { type: 'info' as const, text: '处理中' },
   }
@@ -207,6 +228,7 @@ const getStatusBadge = (status: TaskStatus): { status: 'success' | 'warning' | '
     timeout: { status: 'warning', text: '超时' },
     cancelled: { status: 'warning', text: '取消' },
     skipped: { status: 'default', text: '跳过' },
+    replaced: { status: 'default', text: '已替代' },
     pending_action: { status: 'pending', text: '待处理' },
     running: { status: 'info', text: '处理中' },
   }
@@ -441,6 +463,9 @@ watch(manualJobId, () => {
           />
         </div>
         <div class="toolbar-right">
+          <NButton type="primary" secondary @click="retryVisibleNoMatchesWithAI">
+            AI 重试待处理
+          </NButton>
           <NButton quaternary @click="loadRecords">
             <template #icon><NIcon :component="RefreshOutline" /></template>
           </NButton>
