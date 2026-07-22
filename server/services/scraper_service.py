@@ -29,7 +29,7 @@ from server.models.scraper import (
 )
 from server.models.storage import StorageLocator, StorageProvider
 from server.models.tmdb import TMDBSearchResult, TMDBSeries
-from server.models.ai import AICandidate
+from server.models.ai import AICandidate, AIRecognitionResult
 from server.services.ai_provider_service import AIProviderError, AIProviderService
 from server.services.config_service import ConfigService
 from server.services.emby_service import EmbyService
@@ -62,6 +62,15 @@ def _get_mode_name(mode: OrganizeMode | None) -> str:
     if mode is None:
         return "移动"
     return _MODE_NAMES.get(mode, "移动")
+
+
+def _can_auto_apply_ai_result(result: AIRecognitionResult) -> bool:
+    """Return whether an AI result is safe to use in an automatic scrape.
+
+    Low-confidence results are still useful for the manual recognition preview,
+    but they must not alter the title or episode data consumed by a worker.
+    """
+    return not result.needs_confirmation
 
 
 class _P115StorageProvider:
@@ -862,48 +871,51 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     evidence=evidence,
                     candidates=candidates,
                 )
-                if ai_result.title:
-                    parsed.series_name = ai_result.title
-                    result.parsed_title = ai_result.title
-                if ai_result.season is not None:
-                    parsed.season = ai_result.season
-                    result.parsed_season = ai_result.season
-                if ai_result.episode is not None:
-                    parsed.episode = ai_result.episode
-                    result.parsed_episode = ai_result.episode
+                if _can_auto_apply_ai_result(ai_result):
+                    if ai_result.title:
+                        parsed.series_name = ai_result.title
+                        result.parsed_title = ai_result.title
+                    if ai_result.season is not None:
+                        parsed.season = ai_result.season
+                        result.parsed_season = ai_result.season
+                    if ai_result.episode is not None:
+                        parsed.episode = ai_result.episode
+                        result.parsed_episode = ai_result.episode
 
-                selected_id = str(ai_result.selected_candidate_id) if ai_result.selected_candidate_id is not None else None
-                selected_candidate = next(
-                    (item for item in all_results if str(item.id) == selected_id and item.adult),
-                    None,
-                )
-                if selected_candidate is not None and not ai_result.needs_confirmation:
-                    ai_selected = selected_candidate
-                    adult_results = [ai_selected]
-                    result.search_results = adult_results
-                    ai_step.logs.append(ScrapeLogEntry(message=f"AI 高置信度选择 TMDB 候选: {ai_selected.name} (ID {ai_selected.id})"))
-                elif selected_candidate is not None:
-                    ai_step.logs.append(ScrapeLogEntry(message="AI 选择了候选但置信度不足，保留人工确认", level=LogLevel.WARNING))
+                    selected_id = str(ai_result.selected_candidate_id) if ai_result.selected_candidate_id is not None else None
+                    selected_candidate = next(
+                        (item for item in all_results if str(item.id) == selected_id and item.adult),
+                        None,
+                    )
+                    if selected_candidate is not None:
+                        ai_selected = selected_candidate
+                        adult_results = [ai_selected]
+                        result.search_results = adult_results
+                        ai_step.logs.append(ScrapeLogEntry(message=f"AI 高置信度选择 TMDB 候选: {ai_selected.name} (ID {ai_selected.id})"))
 
-                # Use the AI-normalized title plus aliases to retry TMDB when
-                # the original noisy filename has no adult result.
-                search_titles = [ai_result.title, *ai_result.search_titles]
-                search_titles = list(dict.fromkeys(title.strip() for title in search_titles if title and title.strip()))
-                if not adult_results:
-                    for search_title in search_titles:
-                        retry_response = await self.tmdb_service.search_series_by_api(search_title)
-                        retry_adult_results = [item for item in retry_response.results if item.adult]
-                        ai_step.logs.append(ScrapeLogEntry(message=f"AI 检索标题“{search_title}”得到 {len(retry_adult_results)} 个成人候选"))
-                        if retry_adult_results:
-                            all_results = retry_response.results
-                            adult_results = retry_adult_results
-                            result.search_results = adult_results
-                            break
+                    # Only high-confidence results may retry TMDB with an
+                    # AI-normalized title; a low-confidence alias must not
+                    # create a path to automatic selection.
+                    search_titles = [ai_result.title, *ai_result.search_titles]
+                    search_titles = list(dict.fromkeys(title.strip() for title in search_titles if title and title.strip()))
+                    if not adult_results:
+                        for search_title in search_titles:
+                            retry_response = await self.tmdb_service.search_series_by_api(search_title)
+                            retry_adult_results = [item for item in retry_response.results if item.adult]
+                            ai_step.logs.append(ScrapeLogEntry(message=f"AI 检索标题“{search_title}”得到 {len(retry_adult_results)} 个成人候选"))
+                            if retry_adult_results:
+                                all_results = retry_response.results
+                                adult_results = retry_adult_results
+                                result.search_results = adult_results
+                                break
+                else:
+                    ai_step.logs.append(ScrapeLogEntry(
+                        message="AI 结果置信度不足，已保留原始标题和季集，不参与自动选择",
+                        level=LogLevel.WARNING,
+                    ))
 
                 if not ai_selected and not adult_results:
                     ai_step.logs.append(ScrapeLogEntry(message=ai_result.reason or "AI 未给出可用候选", level=LogLevel.WARNING))
-                if ai_result.needs_confirmation:
-                    ai_step.logs.append(ScrapeLogEntry(message="AI 结果置信度较低，仍会遵守候选与季集校验", level=LogLevel.WARNING))
                 await notify_log_update()
             except AIProviderError as exc:
                 ai_step.logs.append(ScrapeLogEntry(message=f"AI 识别失败，回退到常规刮削: {exc}", level=LogLevel.WARNING))
