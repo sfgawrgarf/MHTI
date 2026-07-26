@@ -520,7 +520,7 @@ async def retry_scrape(
 ) -> dict:
     """重试失败的刮削记录
 
-    允许对 failed/timeout/cancelled 状态的记录重新执行刮削。
+    允许对 failed/timeout/cancelled/skipped 状态的记录重新执行刮削。
     """
     from server.models.scraper import ScrapeByIdRequest
     from server.models.organize import OrganizeMode
@@ -531,11 +531,16 @@ async def retry_scrape(
         raise HTTPException(status_code=404, detail="记录不存在")
 
     # 2. 验证状态允许重试
-    retryable_statuses = [TaskStatus.FAILED, TaskStatus.TIMEOUT, TaskStatus.CANCELLED]
+    retryable_statuses = [
+        TaskStatus.FAILED,
+        TaskStatus.TIMEOUT,
+        TaskStatus.CANCELLED,
+        TaskStatus.SKIPPED,
+    ]
     if record.status not in retryable_statuses:
         raise HTTPException(
             status_code=400,
-            detail=f"该记录状态为 {record.status.value}，不支持重试。仅支持 failed/timeout/cancelled 状态",
+            detail=f"该记录状态为 {record.status.value}，不支持重试。仅支持 failed/timeout/cancelled/skipped 状态",
         )
 
     # 3. 从 conflict_data 恢复原始参数

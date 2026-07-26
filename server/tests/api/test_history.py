@@ -87,3 +87,29 @@ async def test_resolve_conflict_rejects_completed_record():
         )
 
     assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_retry_allows_rematching_skipped_record(monkeypatch):
+    """A skipped file conflict can be retried with a new TMDB match."""
+    record = SimpleNamespace(
+        status=TaskStatus.SKIPPED,
+        conflict_data={"output_dir": "/output", "metadata_dir": "/metadata"},
+        folder_path="/incoming/example.mkv",
+    )
+    history_service = AsyncMock()
+    history_service.get_record.return_value = record
+    execute_scrape = AsyncMock(return_value={"success": True})
+
+    monkeypatch.setattr(history_api, "_restore_locators_from_scrape_job", AsyncMock(return_value={}))
+    monkeypatch.setattr(history_api, "_execute_scrape_and_update", execute_scrape)
+
+    result = await history_api.retry_scrape(
+        "record-1",
+        history_api.RetryRequest(tmdb_id=456, season=2, episode=3),
+        history_service,
+    )
+
+    assert result == {"success": True}
+    scrape_request = execute_scrape.await_args.args[2]
+    assert (scrape_request.tmdb_id, scrape_request.season, scrape_request.episode) == (456, 2, 3)
