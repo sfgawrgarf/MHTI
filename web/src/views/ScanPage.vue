@@ -3,7 +3,6 @@ import { ref, h, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard,
-  NSpace,
   NButton,
   NDataTable,
   NTag,
@@ -16,6 +15,7 @@ import {
   useMessage,
   type DataTableColumns,
   type DataTableRowKey,
+  type SelectOption,
 } from 'naive-ui'
 import {
   AddOutline,
@@ -58,7 +58,7 @@ const statusOptions = [
   { label: '成功', value: 'success' },
   { label: '失败', value: 'failed' },
   { label: '已取消', value: 'cancelled' },
-]
+] as unknown as SelectOption[]
 
 // 整理模式映射
 const linkModeMap: Record<number, { label: string; type: 'success' | 'info' | 'warning' | 'default' }> = {

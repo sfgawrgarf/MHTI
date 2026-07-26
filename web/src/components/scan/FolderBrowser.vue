@@ -17,7 +17,6 @@ import {
   FolderOutline,
   ArrowUpOutline,
   RefreshOutline,
-  CloseOutline,
   CloudOutline,
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
@@ -51,8 +50,6 @@ const currentProvider = ref<StorageProvider>('local')
 const currentFileId = ref<string | null>(null)
 // 父目录的 file_id（来自后端响应），返回上级时直接使用，无需前端维护栈
 const parentFileId = ref<string | null>(null)
-
-const VIRTUAL_115_ROOT = '/115网盘'
 
 // 双向绑定
 const selectedPath = computed({

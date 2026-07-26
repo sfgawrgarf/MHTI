@@ -115,7 +115,7 @@ const startQrLogin = async () => {
       console.warn('二维码渲染失败，降级为文本:', e)
       qrDataUrl.value = ''
     }
-    qrStatusText.value = STATUS_TEXT['pending']
+    qrStatusText.value = STATUS_TEXT['pending'] ?? ''
     showQrModal.value = true
     startPolling()
   } catch (error: any) {
@@ -133,7 +133,7 @@ const startPolling = () => {
     try {
       const result = await configApi.poll115QrLogin(qrUid.value, selectedApp.value)
       qrStatusType.value = (result.status as typeof qrStatusType.value) || 'unknown'
-      qrStatusText.value = result.message || STATUS_TEXT[result.status] || STATUS_TEXT['unknown']
+      qrStatusText.value = result.message || STATUS_TEXT[result.status] || STATUS_TEXT['unknown'] || ''
 
       if (result.is_logged_in || result.status === 'success') {
         message.success('115 网盘登录成功')

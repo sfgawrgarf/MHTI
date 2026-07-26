@@ -78,6 +78,7 @@ function handleTouchStart(event: TouchEvent) {
   if (props.disabled) return
 
   const touch = event.touches[0]
+  if (!touch) return
   touchStartX = touch.clientX
   touchStartY = touch.clientY
   touchStartTime = Date.now()
@@ -102,6 +103,7 @@ function handleTouchMove(event: TouchEvent) {
   if (props.disabled) return
 
   const touch = event.touches[0]
+  if (!touch) return
   const deltaX = touch.clientX - touchStartX
   const deltaY = touch.clientY - touchStartY
 

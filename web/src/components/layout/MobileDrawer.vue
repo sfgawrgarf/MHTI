@@ -48,7 +48,6 @@ const isDragging = ref(false)
 
 let touchStartX = 0
 let touchStartY = 0
-let startTranslateX = 0
 
 // 关闭抽屉
 function close() {
@@ -61,9 +60,9 @@ function handleTouchStart(event: TouchEvent) {
   if (!props.swipeToClose) return
 
   const touch = event.touches[0]
+  if (!touch) return
   touchStartX = touch.clientX
   touchStartY = touch.clientY
-  startTranslateX = translateX.value
   isDragging.value = false
 }
 
@@ -72,6 +71,7 @@ function handleTouchMove(event: TouchEvent) {
   if (!props.swipeToClose) return
 
   const touch = event.touches[0]
+  if (!touch) return
   const deltaX = touch.clientX - touchStartX
   const deltaY = touch.clientY - touchStartY
 

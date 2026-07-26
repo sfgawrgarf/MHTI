@@ -13,6 +13,7 @@ import {
   NIcon,
   NDivider,
   useMessage,
+  type SelectOption,
 } from 'naive-ui'
 import {
   FolderOutline,
@@ -89,7 +90,7 @@ const configReuseOptions = computed(() => {
   watchedFolders.value.forEach((folder) => {
     options.push({ label: folder.path, value: parseInt(folder.id) })
   })
-  return options
+  return options as unknown as SelectOption[]
 })
 
 // 是否显示移动模式选项

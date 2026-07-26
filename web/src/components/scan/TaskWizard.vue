@@ -86,14 +86,6 @@ const steps = [
   { title: '预览确认', icon: CheckmarkCircleOutline },
 ]
 
-// 当前步骤状态
-const currentStepStatus = computed(() => {
-  if (currentStep.value === 1) {
-    return formData.value.scan_path && formData.value.target_folder ? 'finish' : 'process'
-  }
-  return 'process'
-})
-
 // 是否可以进入下一步
 const canProceed = computed(() => {
   if (currentStep.value === 1) {

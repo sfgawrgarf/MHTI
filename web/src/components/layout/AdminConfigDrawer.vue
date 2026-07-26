@@ -23,6 +23,7 @@ import {
   useMessage,
   useDialog,
   type DataTableColumns,
+  type UploadOnChange,
 } from 'naive-ui'
 import {
   PersonOutline,
@@ -102,7 +103,7 @@ const handleClose = () => {
 }
 
 // ========== 头像处理 ==========
-const handleAvatarChange = async (options: { file: { file?: File }; fileList: unknown[] }) => {
+const handleAvatarChange: UploadOnChange = async (options) => {
   const file = options.file.file
   if (!file) return
 

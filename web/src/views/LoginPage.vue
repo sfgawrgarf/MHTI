@@ -176,7 +176,6 @@ import { useTheme } from '@/composables/useTheme'
 import { expireOptions as expireOptionsData } from '@/api/auth'
 
 const {
-  formRef,
   loginForm,
   registerForm,
   loginRules,

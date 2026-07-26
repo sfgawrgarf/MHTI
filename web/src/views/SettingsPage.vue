@@ -9,7 +9,6 @@ import ProxySettings from '@/components/settings/ProxySettings.vue'
 import NfoSettings from '@/components/settings/NfoSettings.vue'
 import SystemSettings from '@/components/settings/SystemSettings.vue'
 import EmbySettings from '@/components/settings/EmbySettings.vue'
-import ScrapedFilesSettings from '@/components/settings/ScrapedFilesSettings.vue'
 import Cloud115Settings from '@/components/settings/Cloud115Settings.vue'
 import AiSettings from '@/components/settings/AiSettings.vue'
 </script>

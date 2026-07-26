@@ -394,11 +394,6 @@ const openTmdbSearchModal = () => {
   showTmdbSearchModal.value = true
 }
 
-// 关闭 TMDB 搜索弹窗
-const closeTmdbSearchModal = () => {
-  showTmdbSearchModal.value = false
-}
-
 // 重置表单
 watch(() => props.show, (show) => {
   if (show && props.record) {

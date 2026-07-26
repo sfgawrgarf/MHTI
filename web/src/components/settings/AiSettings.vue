@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpace, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NCard, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpace, NSwitch, NTag, useMessage } from 'naive-ui'
 import { aiApi, type AiConfig, type AiRecognitionResult } from '@/api/ai'
 
 const message = useMessage()
@@ -73,7 +73,7 @@ onMounted(load)
     </NAlert>
     <NForm label-placement="left" label-width="150">
       <NFormItem label="启用 AI">
-        <NSelect v-model:value="config.enabled" :options="[{ label: '关闭', value: false }, { label: '开启', value: true }]" />
+        <NSwitch v-model:value="config.enabled" />
       </NFormItem>
       <NFormItem label="兼容接口地址">
         <NInput v-model:value="config.base_url" placeholder="https://api.openai.com/v1" />

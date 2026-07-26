@@ -14,7 +14,6 @@ import {
   FolderOutline,
   DocumentOutline,
   LinkOutline,
-  ImageOutline,
   CheckmarkCircleOutline,
   CloseCircleOutline,
   FilmOutline,
@@ -73,7 +72,7 @@ const getFileIcon = (entry: DirectoryEntry) => {
 }
 
 // 格式化文件大小
-const formatSize = (bytes?: number) => {
+const formatSize = (bytes?: number | null) => {
   if (!bytes) return '-'
   const units = ['B', 'KB', 'MB', 'GB']
   let size = bytes
