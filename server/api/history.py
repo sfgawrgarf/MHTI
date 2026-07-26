@@ -233,11 +233,11 @@ async def delete_record(
     record_id: str,
     history_service: HistoryService = Depends(get_history_service),
 ) -> dict:
-    """Delete a history record."""
+    """Move a history record to the deleted status."""
     deleted = await history_service.delete_record(record_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Record not found")
-    return {"success": True, "message": "记录已删除"}
+    return {"success": True, "message": "记录已移入已删除"}
 
 
 class ResolveConflictRequest(BaseModel):

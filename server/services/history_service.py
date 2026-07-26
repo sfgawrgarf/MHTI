@@ -288,49 +288,21 @@ class HistoryService:
             await _configure_connection(db)
             placeholders = ",".join("?" * len(fingerprints))
             cursor = await db.execute(
-                f"SELECT DISTINCT file_fingerprint FROM history_records WHERE file_fingerprint IN ({placeholders})",
-                fingerprints,
+                f"""SELECT DISTINCT file_fingerprint FROM history_records
+                    WHERE file_fingerprint IN ({placeholders}) AND status != ?""",
+                [*fingerprints, TaskStatus.DELETED.value],
             )
             rows = await cursor.fetchall()
 
         return {row[0] for row in rows if row[0]}
 
     async def delete_record(self, record_id: str) -> bool:
-        """Delete a history record and its associated scrape job."""
-        await self._ensure_db()
-
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
-            # 先获取关联的 scrape_job_id
-            cursor = await db.execute(
-                "SELECT scrape_job_id FROM history_records WHERE id = ?",
-                (record_id,),
-            )
-            row = await cursor.fetchone()
-            scrape_job_id = row[0] if row else None
-
-            # 删除历史记录
-            cursor = await db.execute(
-                "DELETE FROM history_records WHERE id = ?",
-                (record_id,),
-            )
-            deleted = cursor.rowcount > 0
-
-            # 同时删除关联的 scrape_job
-            if scrape_job_id:
-                await db.execute(
-                    "DELETE FROM scrape_jobs WHERE id = ?",
-                    (scrape_job_id,),
-                )
-
-            await db.commit()
-
-            # 发送 WebSocket 通知
-            if deleted:
-                notifier = get_notifier()
-                await notifier.notify_history_deleted(record_id)
-
-            return deleted
+        """Mark a history record as deleted without discarding its audit trail."""
+        return await self.update_record(
+            record_id,
+            status=TaskStatus.DELETED,
+            error_message="用户删除",
+        )
 
     async def update_record(
         self,
