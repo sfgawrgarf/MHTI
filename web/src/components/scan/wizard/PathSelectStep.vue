@@ -56,7 +56,6 @@ const watchedFolderOptions = computed(() => {
   return props.watchedFolders.map(folder => ({
     label: folder.path,
     value: folder.path,
-    targetFolder: folder.output_dir,
   }))
 })
 
@@ -92,16 +91,12 @@ const handleFolderLocator = (locator: StorageLocator) => {
 // 从监控目录快速填充
 const handleWatchedFolderSelect = (path: string) => {
   emit('update:scanPath', path)
-  const folder = props.watchedFolders.find(f => f.path === path)
-  if (folder?.output_dir) {
-    emit('update:targetFolder', folder.output_dir)
-  }
 }
 
 // 使用全局配置的整理目录
 const useGlobalTargetFolder = () => {
-  if (props.globalConfig?.target_folder) {
-    emit('update:targetFolder', props.globalConfig.target_folder)
+  if (props.globalConfig?.organize_dir) {
+    emit('update:targetFolder', props.globalConfig.organize_dir)
   }
 }
 </script>
@@ -157,9 +152,9 @@ const useGlobalTargetFolder = () => {
             </template>
           </NButton>
         </NInputGroup>
-        <div v-if="globalConfig?.target_folder" class="quick-fill">
+        <div v-if="globalConfig?.organize_dir" class="quick-fill">
           <NButton text size="small" type="primary" @click="useGlobalTargetFolder">
-            使用全局配置: {{ globalConfig.target_folder }}
+            使用全局配置: {{ globalConfig.organize_dir }}
           </NButton>
         </div>
       </div>

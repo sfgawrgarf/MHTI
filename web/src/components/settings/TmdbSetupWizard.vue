@@ -19,7 +19,6 @@ import {
   KeyOutline,
   OpenOutline,
   CheckmarkCircleOutline,
-  CopyOutline,
   ArrowForwardOutline,
   ArrowBackOutline,
   ShieldCheckmarkOutline,
@@ -134,16 +133,6 @@ const verifyToken = async () => {
     console.error(error)
   } finally {
     verifying.value = false
-  }
-}
-
-// 复制到剪贴板
-const copyToClipboard = async (text: string) => {
-  try {
-    await navigator.clipboard.writeText(text)
-    message.success('已复制到剪贴板')
-  } catch {
-    message.error('复制失败')
   }
 }
 

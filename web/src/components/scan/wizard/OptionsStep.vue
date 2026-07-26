@@ -1,12 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import {
-  NFormItem,
   NRadioGroup,
   NRadioButton,
   NSwitch,
-  NCollapse,
-  NCollapseItem,
   NIcon,
   NSpace,
   NTooltip,

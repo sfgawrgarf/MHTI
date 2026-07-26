@@ -14,6 +14,7 @@ import {
   NPopconfirm,
   useMessage,
   type DataTableColumns,
+  type SelectOption,
 } from 'naive-ui'
 import {
   DownloadOutline,
@@ -70,7 +71,7 @@ const statusOptions = [
   { label: '超时', value: 'timeout' },
   { label: '跳过', value: 'skipped' },
   { label: '取消', value: 'cancelled' },
-]
+] as unknown as SelectOption[]
 
 // 加载历史记录
 const loadRecords = async () => {
@@ -394,7 +395,8 @@ const wsHandler = (msg: WSMessage) => {
       {
         const idx = records.value.findIndex(r => r.id === payload.id)
         if (idx !== -1) {
-          Object.assign(records.value[idx], payload)
+          const record = records.value[idx]
+          if (record) Object.assign(record, payload)
         }
       }
       break

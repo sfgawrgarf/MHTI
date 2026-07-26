@@ -1,14 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted } from 'vue'
 import {
   NAlert,
   NButton,
   NIcon,
-  NSpace,
 } from 'naive-ui'
 import {
   KeyOutline,
-  CloseOutline,
   SettingsOutline,
   CheckmarkCircleOutline,
 } from '@vicons/ionicons5'

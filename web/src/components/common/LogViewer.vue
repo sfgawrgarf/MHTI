@@ -38,12 +38,12 @@ const stats = ref<LogStats | null>(null)
 const clearing = ref(false)
 
 // 日志级别选项（只显示会记录的级别）
-const levelOptions: SelectOption[] = [
+const levelOptions = [
   { label: '全部', value: null },
   { label: 'WARNING', value: 'WARNING' },
   { label: 'ERROR', value: 'ERROR' },
   { label: 'CRITICAL', value: 'CRITICAL' },
-]
+ ] as unknown as SelectOption[]
 
 // 日志级别颜色
 const levelColor = (level: SystemLogLevel) => {
@@ -61,12 +61,6 @@ const levelColor = (level: SystemLogLevel) => {
 const formatTime = (timestamp: string) => {
   const d = new Date(timestamp)
   return d.toLocaleTimeString('zh-CN', { hour12: false })
-}
-
-// 格式化日期时间
-const formatDateTime = (timestamp: string) => {
-  const d = new Date(timestamp)
-  return d.toLocaleString('zh-CN', { hour12: false })
 }
 
 // 加载日志列表（加载更多条以便滚动查看）

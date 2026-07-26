@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { h, computed, type Component } from 'vue'
+import { computed, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NIcon } from 'naive-ui'
 import {

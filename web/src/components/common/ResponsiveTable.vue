@@ -1,6 +1,6 @@
 <script setup lang="ts" generic="T extends Record<string, any>">
-import { computed, ref, type VNode } from 'vue'
-import { NDataTable, NCard, NEmpty, NSpin, NPagination } from 'naive-ui'
+import { computed, type VNode } from 'vue'
+import { NDataTable, NEmpty, NSpin, NPagination } from 'naive-ui'
 import type { DataTableColumns, PaginationProps } from 'naive-ui'
 import { useMobileLayout } from '@/composables/useMobileLayout'
 import TouchCard from '@/components/common/TouchCard.vue'
@@ -123,12 +123,12 @@ const mobileColumns = computed(() => {
 
 // 主要列（卡片标题）
 const primaryColumn = computed(() => {
-  return props.columns.find(col => col.primary) || props.columns[0]
+  return props.columns.find(col => col.primary) ?? props.columns[0] ?? null
 })
 
 // 次要列（卡片副标题）
 const secondaryColumn = computed(() => {
-  return props.columns.find(col => col.secondary) || props.columns[1]
+  return props.columns.find(col => col.secondary) ?? props.columns[1] ?? null
 })
 
 // 获取行键
@@ -210,7 +210,7 @@ function handleCardSwipeRight(row: T, index: number) {
           >
             <!-- 卡片头部：主要信息 -->
             <div class="card-header">
-              <div class="card-primary">
+              <div v-if="primaryColumn" class="card-primary">
                 <component
                   :is="getCellValue(row, primaryColumn, index)"
                   v-if="typeof getCellValue(row, primaryColumn, index) === 'object'"

@@ -27,14 +27,7 @@ const props = withDefaults(defineProps<{
   cols: 3,
 })
 
-const { isMobile, isTablet } = useMobileLayout()
-
-// 响应式网格列数
-const gridCols = computed(() => {
-  if (isMobile.value) return 1
-  if (isTablet.value) return Math.min(props.cols, 2)
-  return props.cols
-})
+const { isMobile } = useMobileLayout()
 
 // 响应式列数字符串（Naive UI 格式）
 const responsiveCols = computed(() => `1 s:2 m:${props.cols}`)

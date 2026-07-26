@@ -18,7 +18,7 @@ import {
   FilmOutline,
 } from '@vicons/ionicons5'
 import { useHomeStats } from '@/composables/useHomeStats'
-import { useMobileLayout, useResponsiveValue } from '@/composables/useMobileLayout'
+import { useResponsiveValue } from '@/composables/useMobileLayout'
 import type { HistoryRecord } from '@/api/types'
 import HomeSkeleton from '@/components/common/HomeSkeleton.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -26,11 +26,9 @@ import AnimatedNumber from '@/components/common/AnimatedNumber.vue'
 import RingChart from '@/components/common/RingChart.vue'
 import BarChart from '@/components/common/BarChart.vue'
 import TmdbSetupBanner from '@/components/common/TmdbSetupBanner.vue'
-import TouchCard from '@/components/common/TouchCard.vue'
 
 const router = useRouter()
 const { loading, totalTasks, successCount, failedCount, recentTasks, weeklyStats } = useHomeStats()
-const { isMobile } = useMobileLayout()
 
 // 响应式图表尺寸
 const ringChartSize = useResponsiveValue({ mobile: 80, tablet: 90, desktop: 100 })

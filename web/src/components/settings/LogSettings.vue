@@ -13,13 +13,11 @@ import {
   NInput,
   NPagination,
   NDatePicker,
-  NDivider,
   NStatistic,
   NGrid,
   NGi,
   NPopconfirm,
   NSpin,
-  NEmpty,
   NText,
   useMessage,
   type DataTableColumns,
@@ -70,14 +68,14 @@ const clearing = ref(false)
 const exporting = ref(false)
 
 // 日志级别选项
-const levelOptions: SelectOption[] = [
+const levelOptions = [
   { label: '全部', value: null },
   { label: 'DEBUG', value: 'DEBUG' },
   { label: 'INFO', value: 'INFO' },
   { label: 'WARNING', value: 'WARNING' },
   { label: 'ERROR', value: 'ERROR' },
   { label: 'CRITICAL', value: 'CRITICAL' },
-]
+] as unknown as SelectOption[]
 
 // 日志级别标签样式
 const levelTagType = (level: SystemLogLevel) => {
@@ -186,7 +184,7 @@ const loadLoggers = async () => {
     loggerOptions.value = [
       { label: '全部模块', value: null },
       ...loggers.map((l) => ({ label: l, value: l })),
-    ]
+    ] as unknown as SelectOption[]
   } catch (error) {
     console.error('加载模块列表失败:', error)
   }
