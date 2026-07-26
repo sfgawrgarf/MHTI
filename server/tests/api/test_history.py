@@ -14,10 +14,11 @@ from server.services.history_service import HistoryService
 
 
 @pytest.mark.asyncio
-async def test_resolve_conflict_allows_reprocessing_skipped_record(monkeypatch):
-    """A skipped conflict can be reopened with the original conflict context."""
+@pytest.mark.parametrize("status", [TaskStatus.SKIPPED, TaskStatus.DELETED])
+async def test_resolve_conflict_allows_reprocessing_skipped_or_deleted_record(monkeypatch, status):
+    """Skipped and deleted conflicts can be reopened with the original context."""
     record = SimpleNamespace(
-        status=TaskStatus.SKIPPED,
+        status=status,
         conflict_type=ConflictType.FILE_CONFLICT,
         conflict_data={
             "tmdb_id": 123,
@@ -93,10 +94,11 @@ async def test_resolve_conflict_rejects_completed_record():
 
 
 @pytest.mark.asyncio
-async def test_retry_allows_rematching_skipped_record(monkeypatch):
-    """A skipped file conflict can be retried with a new TMDB match."""
+@pytest.mark.parametrize("status", [TaskStatus.SKIPPED, TaskStatus.DELETED])
+async def test_retry_allows_rematching_skipped_or_deleted_record(monkeypatch, status):
+    """Skipped and deleted records can be retried with a new TMDB match."""
     record = SimpleNamespace(
-        status=TaskStatus.SKIPPED,
+        status=status,
         conflict_data={"output_dir": "/output", "metadata_dir": "/metadata"},
         folder_path="/incoming/example.mkv",
     )

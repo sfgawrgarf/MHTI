@@ -64,23 +64,27 @@ const recordId = computed(() => route.params.id as string)
 // 处理弹窗显示状态
 const showHandleModal = ref(false)
 
-// 是否可处理（pending_action、skipped 或 failed/timeout/cancelled）
+// 是否可处理（pending_action、skipped、deleted 或 failed/timeout/cancelled）
 const canHandle = computed(() => {
   const status = record.value?.status
   return status === 'pending_action' ||
          status === 'skipped' ||
+         status === 'deleted' ||
          status === 'failed' ||
          status === 'timeout' ||
          status === 'cancelled'
 })
 
-// 处理模式：pending_action/skipped 用 resolve，其他用 retry
+// 处理模式：pending_action/skipped 和有冲突上下文的 deleted 用 resolve，其他用 retry
 const handleMode = computed<'resolve' | 'retry'>(() => {
-  return record.value?.status === 'pending_action' || record.value?.status === 'skipped' ? 'resolve' : 'retry'
+  return record.value?.status === 'pending_action' || record.value?.status === 'skipped' ||
+    (record.value?.status === 'deleted' && record.value.conflict_type)
+    ? 'resolve'
+    : 'retry'
 })
 
 const handleButtonText = computed(() => {
-  return record.value?.status === 'skipped' ? '再次处理' : '处理'
+  return record.value?.status === 'skipped' || record.value?.status === 'deleted' ? '再次处理' : '处理'
 })
 
 // 处理成功回调
