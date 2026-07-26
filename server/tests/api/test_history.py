@@ -3,10 +3,12 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import aiosqlite
 import pytest
 from fastapi import HTTPException
 
 from server.api import history as history_api
+from server.core.db import configure_connection, create_all_tables
 from server.models.history import ConflictType, HistoryRecordCreate, TaskStatus
 from server.services.history_service import HistoryService
 
@@ -119,6 +121,11 @@ async def test_retry_allows_rematching_skipped_record(monkeypatch):
 @pytest.mark.asyncio
 async def test_delete_record_marks_history_as_deleted_and_allows_rescrape(temp_db):
     """Deleting a record keeps it visible under the deleted status."""
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.commit()
+
     service = HistoryService(db_path=temp_db)
     record = await service.create_record(
         HistoryRecordCreate(
