@@ -70,6 +70,7 @@ const statusOptions = [
   { label: '待处理', value: 'pending_action' },
   { label: '超时', value: 'timeout' },
   { label: '跳过', value: 'skipped' },
+  { label: '已删除', value: 'deleted' },
   { label: '取消', value: 'cancelled' },
 ] as unknown as SelectOption[]
 
@@ -118,11 +119,11 @@ const goBack = () => {
   router.push('/scan')
 }
 
-// 删除记录
+// 将记录移入已删除状态
 const deleteRecord = async (record: HistoryRecord) => {
   try {
-    await historyApi.deleteRecord(record.id)
-    message.success('记录已删除')
+    const result = await historyApi.deleteRecord(record.id)
+    message.success(result.message)
     await loadRecords()
   } catch (error) {
     message.error('删除失败')
@@ -214,6 +215,7 @@ const statusTag = (status: TaskStatus) => {
     timeout: { type: 'warning' as const, text: '超时' },
     cancelled: { type: 'warning' as const, text: '取消' },
     skipped: { type: 'default' as const, text: '跳过' },
+    deleted: { type: 'default' as const, text: '已删除' },
     replaced: { type: 'default' as const, text: '已替代' },
     pending_action: { type: 'info' as const, text: '待处理' },
     running: { type: 'info' as const, text: '处理中' },
@@ -229,6 +231,7 @@ const getStatusBadge = (status: TaskStatus): { status: 'success' | 'warning' | '
     timeout: { status: 'warning', text: '超时' },
     cancelled: { status: 'warning', text: '取消' },
     skipped: { status: 'default', text: '跳过' },
+    deleted: { status: 'default', text: '已删除' },
     replaced: { status: 'default', text: '已替代' },
     pending_action: { status: 'pending', text: '待处理' },
     running: { status: 'info', text: '处理中' },
@@ -323,8 +326,8 @@ const columns: DataTableColumns<HistoryRecord> = [
               openResolveModal(row)
             }
           }, { default: () => '处理' }),
-          // 删除按钮
-          h(NButton, {
+          // 未删除记录可移入“已删除”状态
+          row.status !== 'deleted' && h(NButton, {
             size: 'small',
             quaternary: true,
             type: 'error',
@@ -540,6 +543,7 @@ watch(manualJobId, () => {
                     处理
                   </NButton>
                   <NButton
+                    v-if="record.status !== 'deleted'"
                     size="tiny"
                     quaternary
                     type="error"

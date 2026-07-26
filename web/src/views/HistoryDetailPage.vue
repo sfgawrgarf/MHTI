@@ -25,6 +25,7 @@ import {
   CloseCircleOutline,
   CloudOfflineOutline,
   ConstructOutline,
+  TrashOutline,
 } from '@vicons/ionicons5'
 import { historyApi } from '@/api/history'
 import { useWebSocket, type WSMessage } from '@/composables/useWebSocket'
@@ -107,6 +108,7 @@ const statusConfig = computed(() => {
     timeout: { type: 'warning', text: '超时', icon: TimeOutline },
     cancelled: { type: 'warning', text: '取消', icon: AlertCircleOutline },
     skipped: { type: 'default', text: '跳过', icon: AlertCircleOutline },
+    deleted: { type: 'default', text: '已删除', icon: TrashOutline },
     replaced: { type: 'default', text: '已替代', icon: ConstructOutline },
     pending_action: { type: 'info', text: '待处理', icon: TimeOutline },
     running: { type: 'info', text: '处理中', icon: TimeOutline },

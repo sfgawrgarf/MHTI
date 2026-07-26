@@ -43,7 +43,7 @@ export const historyApi = {
   },
 
   /**
-   * 删除历史记录
+   * 将历史记录移入已删除状态
    */
   async deleteRecord(recordId: string): Promise<{ success: boolean; message: string }> {
     const response = await api.delete<{ success: boolean; message: string }>(`/history/${recordId}`)
