@@ -349,7 +349,9 @@ async def resolve_conflict(
     if record is None:
         raise HTTPException(status_code=404, detail="记录不存在")
 
-    if record.status != TaskStatus.PENDING_ACTION:
+    # A skipped conflict retains its conflict details and can be reopened without
+    # rescanning the file or losing its original cloud locator.
+    if record.status not in (TaskStatus.PENDING_ACTION, TaskStatus.SKIPPED):
         raise HTTPException(status_code=400, detail="该记录不需要处理")
 
     if record.conflict_type != request.conflict_type:

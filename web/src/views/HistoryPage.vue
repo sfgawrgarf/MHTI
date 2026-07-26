@@ -304,15 +304,15 @@ const columns: DataTableColumns<HistoryRecord> = [
     render: (row) =>
       h(NSpace, { size: 'small' }, {
         default: () => [
-          // 待处理状态显示处理按钮（打开冲突处理弹窗）
-          row.status === 'pending_action' && h(NButton, {
+          // 待处理和已跳过的记录都可以打开冲突处理弹窗
+          (row.status === 'pending_action' || row.status === 'skipped') && h(NButton, {
             size: 'small',
             type: 'primary',
             onClick: (e: Event) => {
               e.stopPropagation()
               openResolveModal(row)
             }
-          }, { default: () => '处理' }),
+          }, { default: () => row.status === 'skipped' ? '再次处理' : '处理' }),
           // 失败/超时状态显示处理按钮（直接弹窗重试）
           (row.status === 'failed' || row.status === 'timeout') && h(NButton, {
             size: 'small',
@@ -338,10 +338,10 @@ const columns: DataTableColumns<HistoryRecord> = [
 ]
 
 // 打开处理弹窗
-// pending_action → resolve（冲突处理）；failed/timeout → retry（重试刮削）
+// pending_action/skipped → resolve（冲突处理）；failed/timeout → retry（重试刮削）
 const openResolveModal = async (row: HistoryRecord) => {
   resolveLoading.value = true
-  resolveMode.value = row.status === 'pending_action' ? 'resolve' : 'retry'
+  resolveMode.value = row.status === 'pending_action' || row.status === 'skipped' ? 'resolve' : 'retry'
   try {
     resolveRecord.value = await historyApi.getRecord(row.id)
     showResolveModal.value = true
@@ -522,12 +522,12 @@ watch(manualJobId, () => {
                 </NTag>
                 <div class="action-buttons">
                   <NButton
-                    v-if="record.status === 'pending_action'"
+                    v-if="record.status === 'pending_action' || record.status === 'skipped'"
                     size="tiny"
                     type="primary"
                     @click.stop="openResolveModal(record)"
                   >
-                    处理
+                    {{ record.status === 'skipped' ? '再次处理' : '处理' }}
                   </NButton>
                   <NButton
                     v-if="record.status === 'failed' || record.status === 'timeout'"
