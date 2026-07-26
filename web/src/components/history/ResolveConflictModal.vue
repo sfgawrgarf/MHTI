@@ -72,15 +72,17 @@ const manualSearching = ref(false)
 const manualSearchResults = ref<TMDBSearchResult[]>([])
 const manualHasSearched = ref(false)
 const manualSelectedSeries = ref<TMDBSeries | null>(null)
+const rematchMode = ref(false)
 
 // 是否为重试模式
 const isRetryMode = computed(() => props.mode === 'retry')
+const isManualMatchMode = computed(() => isRetryMode.value || rematchMode.value)
 
 // 冲突类型标题
 const modalTitle = computed(() => {
   // 重试模式的标题
-  if (isRetryMode.value) {
-    if (manualStep.value === 1) return '重试刮削 - 搜索剧集'
+  if (isManualMatchMode.value) {
+    if (manualStep.value === 1) return rematchMode.value ? '重新匹配 - 搜索剧集' : '重试刮削 - 搜索剧集'
     if (manualStep.value === 2) return `选择季 - ${manualSelectedSeries.value?.name || ''}`
     return `选择集 - 第${selectedSeason.value}季`
   }
@@ -394,6 +396,18 @@ const openTmdbSearchModal = () => {
   showTmdbSearchModal.value = true
 }
 
+const startRematch = () => {
+  rematchMode.value = true
+  manualStep.value = 1
+  manualSearchQuery.value = ''
+  manualSearchResults.value = []
+  manualHasSearched.value = false
+  manualSelectedSeries.value = null
+  loadedSeasons.value = []
+  selectedTmdbId.value = null
+  selectedEpisode.value = null
+}
+
 // 重置表单
 watch(() => props.show, (show) => {
   if (show && props.record) {
@@ -411,6 +425,7 @@ watch(() => props.show, (show) => {
     manualSearchResults.value = []
     manualHasSearched.value = false
     manualSelectedSeries.value = null
+    rematchMode.value = false
     // 重置搜索状态
     showTmdbSearchModal.value = false
     tmdbSearchQuery.value = ''
@@ -443,7 +458,7 @@ const handleSubmit = async () => {
   if (!props.record) return
 
   // 重试模式处理
-  if (isRetryMode.value) {
+  if (isManualMatchMode.value) {
     if (!selectedTmdbId.value) {
       message.warning('请选择一个剧集')
       return
@@ -460,7 +475,7 @@ const handleSubmit = async () => {
         season: selectedSeason.value,
         episode: selectedEpisode.value,
       })
-      message.success('重试成功')
+      message.success(rematchMode.value ? '重新匹配已提交' : '重试成功')
       emit('success')
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } } }
@@ -588,12 +603,12 @@ const getYear = (date: string | null) => {
           </div>
 
           <!-- 无冲突类型时显示错误 -->
-          <div v-if="!record.conflict_type && !isRetryMode" class="error-tip">
+          <div v-if="!record.conflict_type && !isManualMatchMode" class="error-tip">
             该记录缺少冲突类型信息，无法处理。请删除此记录后重新刮削。
           </div>
 
           <!-- 重试模式 - 复用手动匹配三步流程 -->
-          <template v-if="isRetryMode">
+          <template v-if="isManualMatchMode">
             <!-- 步骤 1: 搜索 -->
             <template v-if="manualStep === 1">
               <NSpace>
@@ -725,7 +740,7 @@ const getYear = (date: string | null) => {
           </template>
 
           <!-- 多结果选择 - 两步流程 -->
-          <template v-if="record.conflict_type === 'need_selection'">
+          <template v-else-if="record.conflict_type === 'need_selection'">
             <!-- 步骤1: 选择剧集 -->
             <template v-if="step === 1">
               <NSpace justify="space-between" align="center" style="margin-bottom: 12px">
@@ -929,6 +944,10 @@ const getYear = (date: string | null) => {
           <template v-else-if="record.conflict_type === 'file_conflict'">
             <div class="conflict-options">
               <div class="option-title">选择处理方式</div>
+              <NButton type="primary" block style="margin-bottom: 12px" @click="startRematch">
+                <template #icon><NIcon :component="SearchOutline" /></template>
+                重新匹配
+              </NButton>
               <NRadioGroup v-model:value="fileAction" class="radio-group">
                 <div class="radio-option" :class="{ active: fileAction === 'skip' }" @click="fileAction = 'skip'">
                   <NRadio value="skip" />
