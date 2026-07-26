@@ -63,18 +63,23 @@ const recordId = computed(() => route.params.id as string)
 // 处理弹窗显示状态
 const showHandleModal = ref(false)
 
-// 是否可处理（pending_action 或 failed/timeout/cancelled）
+// 是否可处理（pending_action、skipped 或 failed/timeout/cancelled）
 const canHandle = computed(() => {
   const status = record.value?.status
   return status === 'pending_action' ||
+         status === 'skipped' ||
          status === 'failed' ||
          status === 'timeout' ||
          status === 'cancelled'
 })
 
-// 处理模式：pending_action 用 resolve，其他用 retry
+// 处理模式：pending_action/skipped 用 resolve，其他用 retry
 const handleMode = computed<'resolve' | 'retry'>(() => {
-  return record.value?.status === 'pending_action' ? 'resolve' : 'retry'
+  return record.value?.status === 'pending_action' || record.value?.status === 'skipped' ? 'resolve' : 'retry'
+})
+
+const handleButtonText = computed(() => {
+  return record.value?.status === 'skipped' ? '再次处理' : '处理'
 })
 
 // 处理成功回调
@@ -355,7 +360,7 @@ onUnmounted(() => {
                   @click="showHandleModal = true"
                 >
                   <template #icon><NIcon :component="ConstructOutline" /></template>
-                  处理
+                  {{ handleButtonText }}
                 </NButton>
               </div>
             </div>
@@ -503,7 +508,7 @@ onUnmounted(() => {
                     class="section-action-btn"
                     @click="showHandleModal = true"
                   >
-                    处理
+                    {{ handleButtonText }}
                   </NButton>
                 </div>
                 <div class="section-content">
