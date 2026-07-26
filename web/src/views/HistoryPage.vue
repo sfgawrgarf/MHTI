@@ -308,15 +308,15 @@ const columns: DataTableColumns<HistoryRecord> = [
     render: (row) =>
       h(NSpace, { size: 'small' }, {
         default: () => [
-          // 待处理和已跳过的记录都可以打开冲突处理弹窗
-          (row.status === 'pending_action' || row.status === 'skipped') && h(NButton, {
+          // 待处理、已跳过和已删除的记录都可以再次处理
+          (row.status === 'pending_action' || row.status === 'skipped' || row.status === 'deleted') && h(NButton, {
             size: 'small',
             type: 'primary',
             onClick: (e: Event) => {
               e.stopPropagation()
               openResolveModal(row)
             }
-          }, { default: () => row.status === 'skipped' ? '再次处理' : '处理' }),
+          }, { default: () => row.status === 'skipped' || row.status === 'deleted' ? '再次处理' : '处理' }),
           // 失败/超时状态显示处理按钮（直接弹窗重试）
           (row.status === 'failed' || row.status === 'timeout') && h(NButton, {
             size: 'small',
@@ -342,12 +342,16 @@ const columns: DataTableColumns<HistoryRecord> = [
 ]
 
 // 打开处理弹窗
-// pending_action/skipped → resolve（冲突处理）；failed/timeout → retry（重试刮削）
+// pending_action/skipped 和有冲突上下文的 deleted → resolve；其余可重试状态 → 手动搜索重试
 const openResolveModal = async (row: HistoryRecord) => {
   resolveLoading.value = true
-  resolveMode.value = row.status === 'pending_action' || row.status === 'skipped' ? 'resolve' : 'retry'
   try {
-    resolveRecord.value = await historyApi.getRecord(row.id)
+    const recordDetail = await historyApi.getRecord(row.id)
+    resolveRecord.value = recordDetail
+    resolveMode.value = row.status === 'pending_action' || row.status === 'skipped' ||
+      (row.status === 'deleted' && recordDetail.conflict_type)
+      ? 'resolve'
+      : 'retry'
     showResolveModal.value = true
   } catch (error) {
     message.error('加载记录详情失败')
@@ -527,12 +531,12 @@ watch(manualJobId, () => {
                 </NTag>
                 <div class="action-buttons">
                   <NButton
-                    v-if="record.status === 'pending_action' || record.status === 'skipped'"
+                    v-if="record.status === 'pending_action' || record.status === 'skipped' || record.status === 'deleted'"
                     size="tiny"
                     type="primary"
                     @click.stop="openResolveModal(record)"
                   >
-                    {{ record.status === 'skipped' ? '再次处理' : '处理' }}
+                    {{ record.status === 'skipped' || record.status === 'deleted' ? '再次处理' : '处理' }}
                   </NButton>
                   <NButton
                     v-if="record.status === 'failed' || record.status === 'timeout'"
