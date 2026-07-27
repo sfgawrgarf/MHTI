@@ -94,6 +94,81 @@ async def test_resolve_conflict_rejects_completed_record():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [TaskStatus.PENDING_ACTION, TaskStatus.SKIPPED, TaskStatus.DELETED],
+)
+async def test_resolve_conflict_rematches_file_conflict(monkeypatch, status):
+    """Eligible file conflicts rematch through resolve, not the retry endpoint."""
+    record = SimpleNamespace(
+        status=status,
+        conflict_type=ConflictType.FILE_CONFLICT,
+        conflict_data={
+            "tmdb_id": 123,
+            "season": 1,
+            "episode": 2,
+            "output_dir": "/output",
+            "metadata_dir": "/metadata",
+            "link_mode": "copy",
+        },
+        folder_path="/incoming/example.mkv",
+    )
+    history_service = AsyncMock()
+    history_service.get_record.return_value = record
+    execute_scrape = AsyncMock(return_value={"success": True})
+
+    monkeypatch.setattr(
+        history_api,
+        "_restore_locators_from_scrape_job",
+        AsyncMock(
+            return_value={
+                "file_locator": {
+                    "provider": "115",
+                    "path": "/incoming/example.mkv",
+                    "file_id": "abc",
+                    "is_dir": False,
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(history_api, "_execute_scrape_and_update", execute_scrape)
+
+    result = await history_api.resolve_conflict(
+        "record-1",
+        history_api.ResolveConflictRequest(
+            conflict_type=ConflictType.FILE_CONFLICT,
+            resolution_action="rematch",
+            tmdb_id=456,
+            season=2,
+            episode=3,
+        ),
+        history_service,
+    )
+
+    assert result == {"success": True}
+    scrape_request = execute_scrape.await_args.args[2]
+    assert (scrape_request.tmdb_id, scrape_request.season, scrape_request.episode) == (456, 2, 3)
+    assert scrape_request.file_locator.file_id == "abc"
+
+
+@pytest.mark.asyncio
+async def test_retry_rejects_pending_action_record():
+    """Pending conflicts must be resolved rather than sent to the retry endpoint."""
+    record = SimpleNamespace(status=TaskStatus.PENDING_ACTION)
+    history_service = AsyncMock()
+    history_service.get_record.return_value = record
+
+    with pytest.raises(HTTPException, match="不支持重试") as error:
+        await history_api.retry_scrape(
+            "record-1",
+            history_api.RetryRequest(tmdb_id=456, season=2, episode=3),
+            history_service,
+        )
+
+    assert error.value.status_code == 400
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [TaskStatus.SKIPPED, TaskStatus.DELETED])
 async def test_retry_allows_rematching_skipped_or_deleted_record(monkeypatch, status):
     """Skipped and deleted records can be retried with a new TMDB match."""
