@@ -168,10 +168,27 @@ const getImageUrl = (path: string | null, size = 'w300') => {
   return `https://image.tmdb.org/t/p/${size}${path}`
 }
 
-// 季列表（过滤掉第0季）- 优先使用加载的数据
+const getSelectableSeasons = (items: TMDBSeason[], requireEpisodes = false) => {
+  return items.filter((season) =>
+    season.season_number >= 0 && (!requireEpisodes || (season.episode_count ?? 0) > 0)
+  )
+}
+
+const getDefaultSeason = (items: TMDBSeason[], requireEpisodes = false) => {
+  const selectable = getSelectableSeasons(items, requireEpisodes)
+  return selectable.find((season) => season.season_number > 0) ?? selectable[0]
+}
+
+const getSeasonLabel = (season: TMDBSeason) => {
+  return season.season_number === 0
+    ? '特别篇 / Season 00'
+    : season.name || `第 ${season.season_number} 季`
+}
+
+// 季列表包含 Season 0（特别篇）- 优先使用加载的数据
 const seasons = computed(() => {
   const list = loadedSeasons.value.length ? loadedSeasons.value : (seriesInfo.value?.seasons || [])
-  return list.filter((s) => s.season_number > 0)
+  return getSelectableSeasons(list)
 })
 
 // 当前选中季的集列表
@@ -204,10 +221,9 @@ const selectSeries = async (result: TMDBSearchResult) => {
     const series = await tmdbApi.getSeries(result.id)
     loadedSeasons.value = series.seasons || []
 
-    // 默认选中第一季
+    // 常规剧集优先选中第一季；只有特别篇时才默认 Season 0
     if (loadedSeasons.value.length) {
-      const validSeasons = loadedSeasons.value.filter(s => s.season_number > 0)
-      const firstSeason = validSeasons[0]
+      const firstSeason = getDefaultSeason(loadedSeasons.value)
       if (firstSeason) {
         selectedSeason.value = firstSeason.season_number
       }
@@ -244,10 +260,9 @@ const enterEmbySeasonSelect = async () => {
     const series = await tmdbApi.getSeries(tmdbId)
     loadedSeasons.value = series.seasons || []
 
-    // 默认选中第一季
+    // 常规剧集优先选中第一季；只有特别篇时才默认 Season 0
     if (loadedSeasons.value.length) {
-      const validSeasons = loadedSeasons.value.filter(s => s.season_number > 0)
-      const firstSeason = validSeasons[0]
+      const firstSeason = getDefaultSeason(loadedSeasons.value)
       if (firstSeason) {
         selectedSeason.value = firstSeason.season_number
       }
@@ -301,9 +316,8 @@ const handleManualSelectSeries = async (result: TMDBSearchResult) => {
     selectedTmdbId.value = result.id
     loadedSeasons.value = series.seasons || []
 
-    // 默认选中第一个有效季
-    const validSeasons = loadedSeasons.value.filter(s => s.season_number > 0 && (s.episode_count ?? 0) > 0)
-    const firstSeason = validSeasons[0]
+    // 常规剧集优先选中第一季；只有特别篇时才默认 Season 0
+    const firstSeason = getDefaultSeason(loadedSeasons.value, true)
     if (firstSeason) {
       selectedSeason.value = firstSeason.season_number
     }
@@ -334,8 +348,7 @@ const handleManualTmdbId = async () => {
     selectedTmdbId.value = tmdbId
     loadedSeasons.value = series.seasons || []
 
-    const validSeasons = loadedSeasons.value.filter(s => s.season_number > 0 && (s.episode_count ?? 0) > 0)
-    const firstSeason = validSeasons[0]
+    const firstSeason = getDefaultSeason(loadedSeasons.value, true)
     if (firstSeason) {
       selectedSeason.value = firstSeason.season_number
     }
@@ -376,7 +389,7 @@ const goBackManualStep = () => {
 
 // 手动匹配：有效季列表
 const manualValidSeasons = computed(() => {
-  return loadedSeasons.value.filter(s => s.season_number > 0 && (s.episode_count ?? 0) > 0)
+  return getSelectableSeasons(loadedSeasons.value, true)
 })
 
 // 手动匹配：当前季的集列表
@@ -747,7 +760,7 @@ const getYear = (date: string | null) => {
                         <div v-else class="no-poster-small">S{{ season.season_number }}</div>
                       </template>
                       <template #header>
-                        {{ season.name || `第${season.season_number}季` }}
+                        {{ getSeasonLabel(season) }}
                         <NTag size="small" style="margin-left: 8px">
                           {{ season.episode_count }} 集
                         </NTag>
@@ -884,7 +897,7 @@ const getYear = (date: string | null) => {
                     v-for="season in seasons"
                     :key="season.season_number"
                     :name="season.season_number"
-                    :tab="`第 ${season.season_number} 季`"
+                    :tab="getSeasonLabel(season)"
                   />
                 </NTabs>
 
@@ -926,7 +939,7 @@ const getYear = (date: string | null) => {
               <div v-else class="manual-input">
                 <div class="input-group">
                   <label>季</label>
-                  <NInputNumber v-model:value="selectedSeason" :min="1" :max="99" size="small" />
+                  <NInputNumber v-model:value="selectedSeason" :min="0" :max="99" size="small" />
                 </div>
                 <div class="input-group">
                   <label>集</label>
@@ -951,7 +964,7 @@ const getYear = (date: string | null) => {
                   v-for="season in seasons"
                   :key="season.season_number"
                   :name="season.season_number"
-                  :tab="`第 ${season.season_number} 季`"
+                  :tab="getSeasonLabel(season)"
                 />
               </NTabs>
 
@@ -993,7 +1006,7 @@ const getYear = (date: string | null) => {
             <div v-else class="manual-input">
               <div class="input-group">
                 <label>季</label>
-                <NInputNumber v-model:value="selectedSeason" :min="1" :max="99" />
+                <NInputNumber v-model:value="selectedSeason" :min="0" :max="99" />
               </div>
               <div class="input-group">
                 <label>集</label>
@@ -1098,7 +1111,7 @@ const getYear = (date: string | null) => {
                     v-for="season in seasons"
                     :key="season.season_number"
                     :name="season.season_number"
-                    :tab="`第 ${season.season_number} 季`"
+                    :tab="getSeasonLabel(season)"
                   />
                 </NTabs>
 
@@ -1140,7 +1153,7 @@ const getYear = (date: string | null) => {
               <div v-else class="manual-input">
                 <div class="input-group">
                   <label>季</label>
-                  <NInputNumber v-model:value="selectedSeason" :min="1" :max="99" />
+                  <NInputNumber v-model:value="selectedSeason" :min="0" :max="99" />
                 </div>
                 <div class="input-group">
                   <label>集</label>
@@ -1243,7 +1256,7 @@ const getYear = (date: string | null) => {
                         <div v-else class="no-poster-small">S{{ season.season_number }}</div>
                       </template>
                       <template #header>
-                        {{ season.name || `第${season.season_number}季` }}
+                        {{ getSeasonLabel(season) }}
                         <NTag size="small" style="margin-left: 8px">
                           {{ season.episode_count }} 集
                         </NTag>
