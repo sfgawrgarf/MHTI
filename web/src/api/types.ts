@@ -331,6 +331,7 @@ export interface ResolveConflictRequest {
   season?: number | null
   episode?: number | null
   file_action?: 'overwrite' | 'skip' | 'rename' | null
+  resolution_action?: 'rematch' | null
 }
 
 // 重试刮削请求
