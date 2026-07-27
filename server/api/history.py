@@ -251,6 +251,8 @@ class ResolveConflictRequest(BaseModel):
     episode: int | None = None
     # FILE_CONFLICT: 处理方式
     file_action: str | None = None  # "overwrite" | "skip" | "rename"
+    # FILE_CONFLICT: 放弃原匹配结果，使用用户重新选择的剧集/季/集
+    resolution_action: str | None = None  # "rematch"
 
 
 async def _execute_scrape_and_update(
@@ -423,6 +425,30 @@ async def resolve_conflict(
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
 
     elif request.conflict_type == ConflictType.FILE_CONFLICT:
+        if request.resolution_action == "rematch":
+            if request.tmdb_id is None:
+                raise HTTPException(status_code=400, detail="请选择 TMDB ID")
+            if request.season is None or request.episode is None:
+                raise HTTPException(status_code=400, detail="请提供季/集号")
+
+            user_log = (
+                f"用户重新匹配: TMDB ID {request.tmdb_id}, "
+                f"S{request.season:02d}E{request.episode:02d}"
+            )
+            scrape_request = ScrapeByIdRequest(
+                file_path=record.folder_path,
+                tmdb_id=request.tmdb_id,
+                season=request.season,
+                episode=request.episode,
+                output_dir=output_dir,
+                metadata_dir=metadata_dir,
+                link_mode=link_mode,
+                **locators,
+            )
+            return await _execute_scrape_and_update(
+                history_service, record_id, scrape_request, user_log
+            )
+
         if request.file_action not in ("overwrite", "skip", "rename"):
             raise HTTPException(status_code=400, detail="无效的处理方式")
 
