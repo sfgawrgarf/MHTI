@@ -1,12 +1,14 @@
 """Unit tests for TMDBService."""
 
-import pytest
-from pathlib import Path
 import tempfile
-from unittest.mock import AsyncMock, patch, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from server.services.tmdb_service import TMDBService
+import pytest
+
+from server.models.tmdb import TMDBEpisode, TMDBSeason, TMDBSeries
 from server.services.config_service import ConfigService
+from server.services.tmdb_service import TMDBService
 
 
 @pytest.fixture
@@ -334,6 +336,41 @@ class TestTMDBServiceSearch:
             result = await tmdb_service.get_season_by_api(1396, 99)
 
             assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_series_with_episodes_fetches_special_season(self, tmdb_service):
+        """Special seasons should include their episode details."""
+        series = TMDBSeries(
+            id=90151,
+            name="鬼作",
+            seasons=[
+                TMDBSeason(
+                    season_number=0,
+                    name="特别篇",
+                    episode_count=3,
+                )
+            ],
+        )
+        special_season = TMDBSeason(
+            season_number=0,
+            name="特别篇",
+            episode_count=3,
+            episodes=[TMDBEpisode(episode_number=1, name="第一发")],
+        )
+
+        with patch.object(
+            tmdb_service, "get_series_by_api", new_callable=AsyncMock
+        ) as mock_series, patch.object(
+            tmdb_service, "get_season_by_api", new_callable=AsyncMock
+        ) as mock_season:
+            mock_series.return_value = series
+            mock_season.return_value = special_season
+
+            result = await tmdb_service.get_series_with_episodes(90151)
+
+            mock_season.assert_awaited_once_with(90151, 0, None)
+            assert result is not None
+            assert result.seasons[0].episodes == special_season.episodes
 
     def test_parse_series_json(self, tmdb_service):
         """Test parsing series JSON."""
