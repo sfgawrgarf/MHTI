@@ -470,11 +470,23 @@ const handleSubmit = async () => {
 
     loading.value = true
     try {
-      await historyApi.retryRecord(props.record.id, {
-        tmdb_id: selectedTmdbId.value,
-        season: selectedSeason.value,
-        episode: selectedEpisode.value,
-      })
+      if (rematchMode.value) {
+        const conflictType = props.record.conflict_type
+        if (!conflictType) return
+        await historyApi.resolveConflict(props.record.id, {
+          conflict_type: conflictType,
+          resolution_action: 'rematch',
+          tmdb_id: selectedTmdbId.value,
+          season: selectedSeason.value,
+          episode: selectedEpisode.value,
+        })
+      } else {
+        await historyApi.retryRecord(props.record.id, {
+          tmdb_id: selectedTmdbId.value,
+          season: selectedSeason.value,
+          episode: selectedEpisode.value,
+        })
+      }
       message.success(rematchMode.value ? '重新匹配已提交' : '重试成功')
       emit('success')
     } catch (error: unknown) {
