@@ -512,10 +512,6 @@ class TMDBService:
 
         updated_seasons = []
         for season in series.seasons:
-            if season.season_number == 0:
-                updated_seasons.append(season)
-                continue
-
             try:
                 season_detail = await self.get_season_by_api(
                     tmdb_id, season.season_number, language
