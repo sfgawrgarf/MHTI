@@ -68,6 +68,7 @@ const loadedSeasons = ref<TMDBSeason[]>([])
 // 手动匹配搜索相关
 const manualStep = ref(1) // 1=搜索, 2=选季, 3=选集
 const manualSearchQuery = ref('')
+const manualTmdbId = ref<number | null>(null)
 const manualSearching = ref(false)
 const manualSearchResults = ref<TMDBSearchResult[]>([])
 const manualHasSearched = ref(false)
@@ -318,6 +319,38 @@ const handleManualSelectSeries = async (result: TMDBSearchResult) => {
   }
 }
 
+// 手动匹配：直接使用已知的 TMDB ID 加载剧集
+const handleManualTmdbId = async () => {
+  const tmdbId = manualTmdbId.value
+  if (!tmdbId || !Number.isInteger(tmdbId) || tmdbId < 1) {
+    message.warning('请输入有效的 TMDB ID')
+    return
+  }
+
+  loadingSeasons.value = true
+  try {
+    const series = await tmdbApi.getSeries(tmdbId)
+    manualSelectedSeries.value = series
+    selectedTmdbId.value = tmdbId
+    loadedSeasons.value = series.seasons || []
+
+    const validSeasons = loadedSeasons.value.filter(s => s.season_number > 0 && (s.episode_count ?? 0) > 0)
+    const firstSeason = validSeasons[0]
+    if (firstSeason) {
+      selectedSeason.value = firstSeason.season_number
+    }
+
+    manualStep.value = 2
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { error?: string; message?: string } } }
+    const errorMsg = err.response?.data?.message || err.response?.data?.error || 'TMDB ID 无效或剧集不存在'
+    message.error(errorMsg)
+    console.error(error)
+  } finally {
+    loadingSeasons.value = false
+  }
+}
+
 // 手动匹配：选择季 → 进入选集
 const handleManualSelectSeason = (season: TMDBSeason) => {
   selectedSeason.value = season.season_number
@@ -400,6 +433,7 @@ const startRematch = () => {
   rematchMode.value = true
   manualStep.value = 1
   manualSearchQuery.value = ''
+  manualTmdbId.value = null
   manualSearchResults.value = []
   manualHasSearched.value = false
   manualSelectedSeries.value = null
@@ -422,6 +456,7 @@ watch(() => props.show, (show) => {
     embyAction.value = 'force'
     loadedSeasons.value = []
     manualSearchQuery.value = ''
+    manualTmdbId.value = null
     manualSearchResults.value = []
     manualHasSearched.value = false
     manualSelectedSeries.value = null
@@ -632,6 +667,21 @@ const getYear = (date: string | null) => {
                 />
                 <NButton type="primary" :loading="manualSearching" @click="handleManualSearch">
                   搜索
+                </NButton>
+              </NSpace>
+              <NSpace align="center" style="margin-top: 12px">
+                <span class="tmdb-id-label">或直接输入 TMDB ID</span>
+                <NInputNumber
+                  v-model:value="manualTmdbId"
+                  :min="1"
+                  :precision="0"
+                  :show-button="false"
+                  placeholder="例如：1396"
+                  style="width: 180px"
+                  @keyup.enter="handleManualTmdbId"
+                />
+                <NButton :loading="loadingSeasons" @click="handleManualTmdbId">
+                  按 ID 识别
                 </NButton>
               </NSpace>
 
@@ -1113,6 +1163,21 @@ const getYear = (date: string | null) => {
                 />
                 <NButton type="primary" :loading="manualSearching" @click="handleManualSearch">
                   搜索
+                </NButton>
+              </NSpace>
+              <NSpace align="center" style="margin-top: 12px">
+                <span class="tmdb-id-label">或直接输入 TMDB ID</span>
+                <NInputNumber
+                  v-model:value="manualTmdbId"
+                  :min="1"
+                  :precision="0"
+                  :show-button="false"
+                  placeholder="例如：1396"
+                  style="width: 180px"
+                  @keyup.enter="handleManualTmdbId"
+                />
+                <NButton :loading="loadingSeasons" @click="handleManualTmdbId">
+                  按 ID 识别
                 </NButton>
               </NSpace>
 
