@@ -64,7 +64,7 @@ const recordId = computed(() => route.params.id as string)
 // 处理弹窗显示状态
 const showHandleModal = ref(false)
 
-// 是否可处理（pending_action、skipped、deleted 或 failed/timeout/cancelled）
+// 是否可处理（成功记录可创建安全的修改匹配任务）
 const canHandle = computed(() => {
   const status = record.value?.status
   return status === 'pending_action' ||
@@ -72,11 +72,13 @@ const canHandle = computed(() => {
          status === 'deleted' ||
          status === 'failed' ||
          status === 'timeout' ||
-         status === 'cancelled'
+         status === 'cancelled' ||
+         status === 'success'
 })
 
-// 处理模式：pending_action/skipped 和有冲突上下文的 deleted 用 resolve，其他用 retry
-const handleMode = computed<'resolve' | 'retry'>(() => {
+// 处理模式：成功记录单独进入安全的重新匹配任务。
+const handleMode = computed<'resolve' | 'retry' | 'success_rematch'>(() => {
+  if (record.value?.status === 'success') return 'success_rematch'
   return record.value?.status === 'pending_action' || record.value?.status === 'skipped' ||
     (record.value?.status === 'deleted' && record.value.conflict_type)
     ? 'resolve'
@@ -84,6 +86,7 @@ const handleMode = computed<'resolve' | 'retry'>(() => {
 })
 
 const handleButtonText = computed(() => {
+  if (record.value?.status === 'success') return '修改匹配'
   return record.value?.status === 'skipped' || record.value?.status === 'deleted' ? '再次处理' : '处理'
 })
 

@@ -92,6 +92,16 @@ class ScrapeJobService:
                     await db.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {column} TEXT")
                 except Exception:
                     pass
+            for column, column_type in (
+                ("correction_history_id", "TEXT"),
+                ("correction_tmdb_id", "INTEGER"),
+                ("correction_season", "INTEGER"),
+                ("correction_episode", "INTEGER"),
+            ):
+                try:
+                    await db.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {column} {column_type}")
+                except Exception:
+                    pass
             await db.commit()
 
     async def get_pending_job_by_path(self, file_path: str) -> ScrapeJob | None:
@@ -186,8 +196,9 @@ class ScrapeJobService:
                 INSERT INTO scrape_jobs
                 (id, file_path, output_dir, metadata_dir, link_mode, source, source_id,
                  advanced_settings, file_locator, output_locator, metadata_locator,
-                 allow_local_output, replaces_job_id, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 allow_local_output, replaces_job_id, correction_history_id,
+                 correction_tmdb_id, correction_season, correction_episode, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -203,6 +214,10 @@ class ScrapeJobService:
                     metadata_locator_json,
                     1 if job.allow_local_output else 0,
                     job.replaces_job_id,
+                    job.correction_history_id,
+                    job.correction_tmdb_id,
+                    job.correction_season,
+                    job.correction_episode,
                     ScrapeJobStatus.PENDING.value,
                     now.isoformat(),
                 ),
@@ -230,6 +245,10 @@ class ScrapeJobService:
             status=ScrapeJobStatus.PENDING,
             created_at=now,
             replaces_job_id=job.replaces_job_id,
+            correction_history_id=job.correction_history_id,
+            correction_tmdb_id=job.correction_tmdb_id,
+            correction_season=job.correction_season,
+            correction_episode=job.correction_episode,
         )
 
         # 加入队列
@@ -440,6 +459,10 @@ class ScrapeJobService:
             history_record_id=row["history_record_id"],
             replaces_job_id=row["replaces_job_id"] if "replaces_job_id" in row.keys() else None,
             replaced_by_job_id=row["replaced_by_job_id"] if "replaced_by_job_id" in row.keys() else None,
+            correction_history_id=row["correction_history_id"] if "correction_history_id" in row.keys() else None,
+            correction_tmdb_id=row["correction_tmdb_id"] if "correction_tmdb_id" in row.keys() else None,
+            correction_season=row["correction_season"] if "correction_season" in row.keys() else None,
+            correction_episode=row["correction_episode"] if "correction_episode" in row.keys() else None,
         )
 
 
@@ -502,7 +525,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     from server.core.container import get_scraper_service
     from server.services.history_service import HistoryService
     from server.services.config_service import ConfigService
-    from server.models.scraper import ScrapeRequest, ScrapeStatus
+    from server.models.scraper import ScrapeByIdRequest, ScrapeRequest, ScrapeStatus
     from server.models.history import HistoryRecordCreate, TaskStatus, ConflictType, TaskSource
 
     job = await service.get_job(job_id)
@@ -561,26 +584,72 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     # 更新任务关联的历史记录ID
     await service.update_job(job_id, history_record_id=record_id)
 
+    # 成功记录纠正：先备份当前剧集文件、同名 sidecar，以及季/剧集共享元数据。
+    # 备份失败会让新任务失败，旧成功记录和媒体文件不会被替代。
+    if job.correction_history_id:
+        from server.services.correction_backup_service import CorrectionBackupService
+
+        try:
+            backup_service = CorrectionBackupService()
+            backup_path = await asyncio.to_thread(
+                backup_service.backup_for_correction,
+                Path(job.file_path),
+                job.correction_history_id,
+            )
+            await history_service.update_scrape_logs(record_id, [])
+            logger.info("Created correction backup for job %s: %s", job_id, backup_path)
+        except Exception as exc:
+            message = f"纠正前备份失败，未替代原成功记录: {exc}"
+            logger.exception(message)
+            await history_service.update_record(record_id, status=TaskStatus.FAILED, error_message=message)
+            await service.update_job(
+                job_id,
+                status=ScrapeJobStatus.FAILED,
+                finished_at=datetime.now(),
+                error_message=message,
+            )
+            await notifier.notify_failed(job_id, message)
+            history_service.clear_log_cache(record_id)
+            return
+
     # 创建日志回调
     async def on_log_update(logs):
         await history_service.update_scrape_logs(record_id, logs)
 
     try:
-        request = ScrapeRequest(
-            file_path=job.file_path,
-            output_dir=job.output_dir,
-            metadata_dir=job.metadata_dir,
-            file_locator=job.file_locator,
-            output_locator=job.output_locator,
-            metadata_locator=job.metadata_locator,
-            allow_local_output=job.allow_local_output,
-            link_mode=job.link_mode,
-            auto_select=True,
-            advanced_settings=job.advanced_settings,
-        )
+        if job.correction_tmdb_id is not None:
+            request = ScrapeByIdRequest(
+                file_path=job.file_path,
+                tmdb_id=job.correction_tmdb_id,
+                season=job.correction_season or 1,
+                episode=job.correction_episode or 1,
+                output_dir=job.output_dir,
+                metadata_dir=job.metadata_dir,
+                file_locator=job.file_locator,
+                output_locator=job.output_locator,
+                metadata_locator=job.metadata_locator,
+                allow_local_output=job.allow_local_output,
+                link_mode=job.link_mode,
+                advanced_settings=job.advanced_settings,
+            )
+            scrape_call = scraper.scrape_by_id(request, on_log_update=on_log_update)
+        else:
+            request = ScrapeRequest(
+                file_path=job.file_path,
+                output_dir=job.output_dir,
+                metadata_dir=job.metadata_dir,
+                file_locator=job.file_locator,
+                output_locator=job.output_locator,
+                metadata_locator=job.metadata_locator,
+                allow_local_output=job.allow_local_output,
+                link_mode=job.link_mode,
+                auto_select=True,
+                advanced_settings=job.advanced_settings,
+            )
+            scrape_call = scraper.scrape_file(request, on_log_update=on_log_update)
         # 使用超时控制
         result = await asyncio.wait_for(
-            scraper.scrape_file(request, on_log_update=on_log_update),
+            scrape_call,
             timeout=timeout_seconds,
         )
         file_duration = (datetime.now() - started_at).total_seconds()
@@ -613,6 +682,21 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 finished_at=datetime.now(),
                 clear_error_message=True,
             )
+            if job.correction_history_id:
+                old_record = await history_service.get_record(job.correction_history_id)
+                if old_record is not None:
+                    conflict_data = dict(old_record.conflict_data or {})
+                    conflict_data.update({
+                        "replaced_by_job_id": job_id,
+                        "replaced_by_history_id": record_id,
+                        "correction_backup_retention_days": 7,
+                    })
+                    await history_service.update_record(
+                        old_record.id,
+                        status=TaskStatus.REPLACED,
+                        error_message="已由成功记录纠正任务替代",
+                        conflict_data=conflict_data,
+                    )
             # 发送完成通知
             await notifier.notify_completed(job_id, {
                 "status": "success",

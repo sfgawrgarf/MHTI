@@ -54,6 +54,10 @@ class ScrapeJob(BaseModel):
     history_record_id: str | None = None  # 关联的历史记录ID
     replaces_job_id: str | None = None
     replaced_by_job_id: str | None = None
+    correction_history_id: str | None = None
+    correction_tmdb_id: int | None = None
+    correction_season: int | None = None
+    correction_episode: int | None = None
 
 
 class ScrapeJobCreate(BaseModel):
@@ -71,6 +75,11 @@ class ScrapeJobCreate(BaseModel):
     source_id: int | None = None
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
     replaces_job_id: str | None = None
+    # 成功记录纠正任务专用：保留原记录直到新任务成功。
+    correction_history_id: str | None = None
+    correction_tmdb_id: int | None = None
+    correction_season: int | None = None
+    correction_episode: int | None = None
 
 
 class ScrapeJobListResponse(BaseModel):

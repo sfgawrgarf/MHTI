@@ -52,7 +52,7 @@ const { isMobile } = useMobileLayout()
 // 处理弹窗相关
 const showResolveModal = ref(false)
 const resolveRecord = ref<HistoryRecordDetail | null>(null)
-const resolveMode = ref<'resolve' | 'retry'>('resolve')
+const resolveMode = ref<'resolve' | 'retry' | 'success_rematch'>('resolve')
 const resolveLoading = ref(false)
 
 // 从 URL 获取 manual_job_id
@@ -326,6 +326,14 @@ const columns: DataTableColumns<HistoryRecord> = [
               openResolveModal(row)
             }
           }, { default: () => '处理' }),
+          row.status === 'success' && h(NButton, {
+            size: 'small',
+            type: 'info',
+            onClick: (e: Event) => {
+              e.stopPropagation()
+              openResolveModal(row)
+            }
+          }, { default: () => '修改匹配' }),
           // 未删除记录可移入“已删除”状态
           row.status !== 'deleted' && h(NButton, {
             size: 'small',
@@ -348,7 +356,9 @@ const openResolveModal = async (row: HistoryRecord) => {
   try {
     const recordDetail = await historyApi.getRecord(row.id)
     resolveRecord.value = recordDetail
-    resolveMode.value = row.status === 'pending_action' || row.status === 'skipped' ||
+    resolveMode.value = row.status === 'success'
+      ? 'success_rematch'
+      : row.status === 'pending_action' || row.status === 'skipped' ||
       (row.status === 'deleted' && recordDetail.conflict_type)
       ? 'resolve'
       : 'retry'
@@ -545,6 +555,14 @@ watch(manualJobId, () => {
                     @click.stop="openResolveModal(record)"
                   >
                     处理
+                  </NButton>
+                  <NButton
+                    v-if="record.status === 'success'"
+                    size="tiny"
+                    type="info"
+                    @click.stop="openResolveModal(record)"
+                  >
+                    修改匹配
                   </NButton>
                   <NButton
                     v-if="record.status !== 'deleted'"
