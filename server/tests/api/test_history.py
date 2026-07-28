@@ -1,7 +1,7 @@
 """History API regression tests."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import aiosqlite
 import pytest
@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from server.api import history as history_api
 from server.core.db import configure_connection, create_all_tables
 from server.models.history import ConflictType, HistoryRecordCreate, TaskStatus
+from server.models.scraper import ScrapeByIdRequest, ScrapeResult, ScrapeStatus
 from server.services.history_service import HistoryService
 
 
@@ -294,3 +295,81 @@ async def test_success_rematch_rejects_missing_current_output():
         )
 
     assert error.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_manual_match_file_conflict_becomes_pending_action(monkeypatch):
+    """Manual TMDB matching must retain a destination conflict for user choice."""
+    conflict_path = "/library/Show/Season 01/Show - S01E01.strm"
+    scraper = SimpleNamespace(
+        scrape_by_id=AsyncMock(
+            return_value=ScrapeResult(
+                file_path="/incoming/example.strm",
+                status=ScrapeStatus.FILE_CONFLICT,
+                message=f"目标文件已存在: {conflict_path}",
+                dest_path=conflict_path,
+            )
+        )
+    )
+    monkeypatch.setattr("server.core.container.get_scraper_service", lambda: scraper)
+    record = SimpleNamespace(
+        scrape_logs=[],
+        manual_job_id=None,
+        conflict_data={"parsed_title": "example"},
+    )
+    history_service = AsyncMock()
+    history_service.get_record.return_value = record
+    history_service.clear_log_cache = Mock()
+    request = ScrapeByIdRequest(
+        file_path="/incoming/example.strm",
+        tmdb_id=123,
+        season=1,
+        episode=1,
+        output_dir="/library",
+        metadata_dir="/library",
+    )
+
+    result = await history_api._execute_scrape_and_update(
+        history_service, "record-1", request, "用户手动输入 TMDB ID"
+    )
+
+    assert result["requires_action"] is True
+    update = history_service.update_record.await_args
+    assert update.kwargs["status"] == TaskStatus.PENDING_ACTION
+    assert update.kwargs["conflict_type"] == ConflictType.FILE_CONFLICT
+    assert update.kwargs["conflict_data"]["dest_path"] == conflict_path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["overwrite", "rename"])
+async def test_file_conflict_resolution_passes_selected_file_action(monkeypatch, action):
+    record = SimpleNamespace(
+        status=TaskStatus.PENDING_ACTION,
+        conflict_type=ConflictType.FILE_CONFLICT,
+        conflict_data={
+            "tmdb_id": 123,
+            "season": 1,
+            "episode": 2,
+            "output_dir": "/output",
+            "metadata_dir": "/metadata",
+            "link_mode": "copy",
+        },
+        folder_path="/incoming/example.strm",
+    )
+    history_service = AsyncMock()
+    history_service.get_record.return_value = record
+    execute_scrape = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(history_api, "_execute_scrape_and_update", execute_scrape)
+    monkeypatch.setattr(history_api, "_restore_locators_from_scrape_job", AsyncMock(return_value={}))
+
+    await history_api.resolve_conflict(
+        "record-1",
+        history_api.ResolveConflictRequest(
+            conflict_type=ConflictType.FILE_CONFLICT,
+            file_action=action,
+        ),
+        history_service,
+    )
+
+    scrape_request = execute_scrape.await_args.args[2]
+    assert scrape_request.file_action == action

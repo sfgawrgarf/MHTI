@@ -212,6 +212,48 @@ class TestRenameServiceExecute:
         assert result.success is False
         assert "exists" in result.error.lower()
 
+    def test_execute_rename_overwrites_only_when_explicitly_requested(self, rename_service, temp_dir):
+        source_path = Path(temp_dir) / "source.mp4"
+        source_path.write_bytes(b"new content")
+        request = RenameRequest(
+            source_path=str(source_path),
+            title="Test Show",
+            season=1,
+            episode=1,
+            output_dir=str(Path(temp_dir) / "output"),
+            conflict_action="overwrite",
+        )
+        dest_path = Path(rename_service.preview_rename(request).dest_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(b"old content")
+
+        result = rename_service.execute_rename(request)
+
+        assert result.success is True
+        assert Path(result.dest_path).read_bytes() == b"new content"
+
+    def test_execute_rename_uses_numbered_name_when_requested(self, rename_service, temp_dir):
+        source_path = Path(temp_dir) / "source.mp4"
+        source_path.write_bytes(b"new content")
+        request = RenameRequest(
+            source_path=str(source_path),
+            title="Test Show",
+            season=1,
+            episode=1,
+            output_dir=str(Path(temp_dir) / "output"),
+            conflict_action="rename",
+        )
+        original_dest = Path(rename_service.preview_rename(request).dest_path)
+        original_dest.parent.mkdir(parents=True, exist_ok=True)
+        original_dest.write_bytes(b"existing content")
+
+        result = rename_service.execute_rename(request)
+
+        assert result.success is True
+        assert Path(result.dest_path).name == f"{original_dest.stem} (1){original_dest.suffix}"
+        assert Path(result.dest_path).read_bytes() == b"new content"
+        assert original_dest.read_bytes() == b"existing content"
+
     def test_execute_creates_directory_structure(self, rename_service, sample_video, temp_dir):
         """Test that execute creates necessary directories."""
         output_dir = Path(temp_dir) / "deep" / "nested" / "output"

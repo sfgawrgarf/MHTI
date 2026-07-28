@@ -1242,7 +1242,6 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                             output_dir=effective_output_dir,
                             link_mode=request.link_mode,
                         )
-
                         dest_file, season_folder, series_folder = await self._organize_local_output(
                             rename_request=rename_request,
                             source_display_path=source_display_path,
@@ -1267,7 +1266,6 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     output_dir=effective_output_dir,
                     link_mode=request.link_mode,
                 )
-
                 dest_file, season_folder, series_folder = await self._organize_local_output(
                     rename_request=rename_request,
                     source_display_path=source_display_path,
@@ -1596,6 +1594,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                             output_dir=effective_output_dir,
                             link_mode=request.link_mode,
                         )
+                        rename_request.conflict_action = request.file_action
 
                         dest_file, season_folder, series_folder = await self._organize_local_output(
                             rename_request=rename_request,
@@ -1621,6 +1620,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     output_dir=effective_output_dir,
                     link_mode=request.link_mode,
                 )
+                rename_request.conflict_action = request.file_action
 
                 dest_file, season_folder, series_folder = await self._organize_local_output(
                     rename_request=rename_request,

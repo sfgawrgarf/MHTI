@@ -75,8 +75,8 @@ export const historyApi = {
   async resolveConflict(
     recordId: string,
     request: ResolveConflictRequest
-  ): Promise<{ success: boolean; message: string; dest_path?: string }> {
-    const response = await api.put<{ success: boolean; message: string; dest_path?: string }>(
+  ): Promise<{ success: boolean; message: string; dest_path?: string; requires_action?: boolean }> {
+    const response = await api.put<{ success: boolean; message: string; dest_path?: string; requires_action?: boolean }>(
       `/history/${recordId}/resolve`,
       request
     )

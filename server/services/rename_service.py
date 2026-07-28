@@ -130,16 +130,23 @@ class RenameService:
             if create_backup:
                 backup_path = self._create_backup(source_path)
 
-            # Check if destination already exists
+            # 目标冲突只在用户明确处理时改变默认的安全失败行为。
             if dest_path.exists() and dest_path != source_path:
-                logger.warning(f"目标文件已存在: {dest_path}")
-                return RenameResult(
-                    source_path=str(source_path),
-                    dest_path=str(dest_path),
-                    success=False,
-                    error=f"Destination file already exists: {dest_path}",
-                    backup_path=backup_path,
-                )
+                if request.conflict_action == "rename":
+                    dest_path = self._next_available_path(dest_path)
+                    logger.info(f"目标文件已存在，使用重命名目标: {dest_path}")
+                elif request.conflict_action == "overwrite":
+                    logger.warning(f"用户确认覆盖目标文件: {dest_path}")
+                    dest_path.unlink()
+                else:
+                    logger.warning(f"目标文件已存在: {dest_path}")
+                    return RenameResult(
+                        source_path=str(source_path),
+                        dest_path=str(dest_path),
+                        success=False,
+                        error=f"Destination file already exists: {dest_path}",
+                        backup_path=backup_path,
+                    )
 
             # Move/rename the file based on link_mode
             logger.info(f"execute_rename: 正在处理文件，模式: {request.link_mode or 'move(默认)'}...")
@@ -152,7 +159,6 @@ class RenameService:
                 success=True,
                 backup_path=backup_path,
             )
-
         except PermissionError as e:
             logger.error(f"权限错误: {e}")
             return RenameResult(
@@ -169,6 +175,16 @@ class RenameService:
                 success=False,
                 error=f"OS error: {e}",
             )
+
+    @staticmethod
+    def _next_available_path(dest_path: Path) -> Path:
+        """Return a sibling path using a numbered suffix without overwriting."""
+        number = 1
+        candidate = dest_path.with_name(f"{dest_path.stem} ({number}){dest_path.suffix}")
+        while candidate.exists():
+            number += 1
+            candidate = dest_path.with_name(f"{dest_path.stem} ({number}){dest_path.suffix}")
+        return candidate
 
     def batch_rename(self, request: BatchRenameRequest) -> BatchRenameResponse:
         """Execute batch rename operations.
