@@ -228,3 +228,69 @@ async def test_delete_record_marks_history_as_deleted_and_allows_rescrape(temp_d
     assert total == 1
     assert [item.id for item in records] == [record.id]
     assert await service.get_existing_fingerprints(["fingerprint-1"]) == set()
+
+
+@pytest.mark.asyncio
+async def test_success_rematch_queues_replacement_without_replacing_original(monkeypatch, tmp_path):
+    """A successful record becomes replaced only in the worker's success path."""
+    current_file = tmp_path / "Episode.strm"
+    current_file.write_text("https://example.invalid/video", encoding="utf-8")
+    record = SimpleNamespace(
+        id="history-old",
+        status=TaskStatus.SUCCESS,
+        scrape_job_id="job-old",
+        folder_path=f"/incoming/episode.mkv => {current_file}",
+    )
+    old_job = SimpleNamespace(
+        id="job-old",
+        output_dir="/library",
+        metadata_dir="/library",
+        output_locator=None,
+        metadata_locator=None,
+        allow_local_output=True,
+        link_mode=None,
+        source_id=7,
+        advanced_settings=None,
+    )
+    queued_job = SimpleNamespace(id="job-new")
+    jobs = AsyncMock()
+    jobs.get_job.return_value = old_job
+    jobs.create_job.return_value = queued_job
+    history_service = AsyncMock()
+    history_service.get_record.return_value = record
+
+    monkeypatch.setattr("server.services.scrape_job_service.ScrapeJobService", lambda: jobs)
+
+    result = await history_api.rematch_successful_record(
+        "history-old",
+        history_api.SuccessRematchRequest(tmdb_id=123, season=2, episode=3),
+        history_service,
+    )
+
+    assert result["job_id"] == "job-new"
+    create_request = jobs.create_job.await_args.args[0]
+    assert create_request.file_path == str(current_file)
+    assert (create_request.correction_tmdb_id, create_request.correction_season, create_request.correction_episode) == (123, 2, 3)
+    assert create_request.correction_history_id == "history-old"
+    history_service.update_record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_success_rematch_rejects_missing_current_output():
+    record = SimpleNamespace(
+        id="history-old",
+        status=TaskStatus.SUCCESS,
+        scrape_job_id="job-old",
+        folder_path="/incoming/episode.mkv => /missing/Episode.strm",
+    )
+    history_service = AsyncMock()
+    history_service.get_record.return_value = record
+
+    with pytest.raises(HTTPException, match="当前已整理文件不存在") as error:
+        await history_api.rematch_successful_record(
+            "history-old",
+            history_api.SuccessRematchRequest(tmdb_id=123, season=2, episode=3),
+            history_service,
+        )
+
+    assert error.value.status_code == 409

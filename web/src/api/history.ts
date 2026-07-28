@@ -97,6 +97,18 @@ export const historyApi = {
     return response.data
   },
 
+  /** 为成功记录创建可回退的重新匹配任务。 */
+  async rematchSuccessfulRecord(
+    recordId: string,
+    request: RetryRequest
+  ): Promise<{ success: boolean; job_id: string; message: string }> {
+    const response = await api.post<{ success: boolean; job_id: string; message: string }>(
+      `/history/${recordId}/rematch`,
+      request
+    )
+    return response.data
+  },
+
   async retryNoMatchWithAI(recordIds: string[]): Promise<{ queued_job_ids: string[]; skipped: Array<{ id: string; reason: string }> }> {
     const response = await api.post('/history/ai-retry', { record_ids: recordIds })
     return response.data

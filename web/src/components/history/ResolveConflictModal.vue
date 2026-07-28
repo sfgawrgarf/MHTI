@@ -38,7 +38,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 const props = defineProps<{
   show: boolean
   record: HistoryRecordDetail | null
-  mode?: 'resolve' | 'retry'  // resolve=冲突处理, retry=重试刮削
+  mode?: 'resolve' | 'retry' | 'success_rematch'
 }>()
 
 const emit = defineEmits<{
@@ -77,13 +77,17 @@ const rematchMode = ref(false)
 
 // 是否为重试模式
 const isRetryMode = computed(() => props.mode === 'retry')
-const isManualMatchMode = computed(() => isRetryMode.value || rematchMode.value)
+const isSuccessRematchMode = computed(() => props.mode === 'success_rematch')
+const isManualMatchMode = computed(() => isRetryMode.value || isSuccessRematchMode.value || rematchMode.value)
 
 // 冲突类型标题
 const modalTitle = computed(() => {
   // 重试模式的标题
   if (isManualMatchMode.value) {
-    if (manualStep.value === 1) return rematchMode.value ? '重新匹配 - 搜索剧集' : '重试刮削 - 搜索剧集'
+    if (manualStep.value === 1) {
+      if (isSuccessRematchMode.value) return '修改匹配 - 搜索剧集'
+      return rematchMode.value ? '重新匹配 - 搜索剧集' : '重试刮削 - 搜索剧集'
+    }
     if (manualStep.value === 2) return `选择季 - ${manualSelectedSeries.value?.name || ''}`
     return `选择集 - 第${selectedSeason.value}季`
   }
@@ -518,7 +522,13 @@ const handleSubmit = async () => {
 
     loading.value = true
     try {
-      if (rematchMode.value) {
+      if (isSuccessRematchMode.value) {
+        await historyApi.rematchSuccessfulRecord(props.record.id, {
+          tmdb_id: selectedTmdbId.value,
+          season: selectedSeason.value,
+          episode: selectedEpisode.value,
+        })
+      } else if (rematchMode.value) {
         const conflictType = props.record.conflict_type
         if (!conflictType) return
         await historyApi.resolveConflict(props.record.id, {
@@ -535,11 +545,11 @@ const handleSubmit = async () => {
           episode: selectedEpisode.value,
         })
       }
-      message.success(rematchMode.value ? '重新匹配已提交' : '重试成功')
+      message.success(isSuccessRematchMode.value ? '已创建纠正任务，成功后会替代原记录' : (rematchMode.value ? '重新匹配已提交' : '重试成功'))
       emit('success')
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } } }
-      message.error(err.response?.data?.detail || '重试失败')
+      message.error(err.response?.data?.detail || '提交失败')
     } finally {
       loading.value = false
     }
@@ -1315,7 +1325,7 @@ const getYear = (date: string | null) => {
       <template #footer>
         <NSpace justify="end">
           <!-- 重试模式返回按钮 -->
-          <NButton v-if="isRetryMode && manualStep > 1" @click="goBackManualStep">
+          <NButton v-if="isManualMatchMode && manualStep > 1" @click="goBackManualStep">
             ← 返回
           </NButton>
           <!-- 手动匹配返回按钮 -->
@@ -1325,7 +1335,7 @@ const getYear = (date: string | null) => {
           <NButton @click="handleClose">取消</NButton>
           <!-- 步骤1时不显示确认按钮，用户需要点击剧集卡片 (重试模式也复用此逻辑) -->
           <NButton
-            v-if="!(record?.conflict_type === 'need_selection' && step === 1) && !(needManualInput) && !(isRetryMode)"
+            v-if="!(record?.conflict_type === 'need_selection' && step === 1) && !(needManualInput) && !(isManualMatchMode)"
             type="primary"
             :loading="loading"
             @click="handleSubmit"

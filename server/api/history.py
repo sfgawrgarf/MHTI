@@ -542,6 +542,88 @@ class RetryRequest(BaseModel):
     episode: int  # 集号
 
 
+class SuccessRematchRequest(BaseModel):
+    """Queue a safe, explicit correction for a successful history record."""
+
+    tmdb_id: int
+    season: int
+    episode: int
+
+
+def _get_success_output_path(record: HistoryRecord) -> Path | None:
+    """Return the current local output recorded by a successful worker job."""
+    marker = " => "
+    if marker not in record.folder_path:
+        return None
+    _, output_path = record.folder_path.rsplit(marker, 1)
+    output_path = output_path.strip()
+    return Path(output_path) if output_path else None
+
+
+@router.post("/{record_id}/rematch")
+async def rematch_successful_record(
+    record_id: str,
+    request: SuccessRematchRequest,
+    history_service: HistoryService = Depends(get_history_service),
+) -> dict:
+    """Queue a correction without mutating the original successful record.
+
+    The worker copies a seven-day rollback backup before it changes media
+    files.  Only a successful replacement marks the old record as ``replaced``.
+    """
+    from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
+    from server.services.scrape_job_service import ScrapeJobService
+
+    record = await history_service.get_record(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    if record.status != TaskStatus.SUCCESS:
+        raise HTTPException(status_code=400, detail="仅支持修改成功记录的匹配")
+    if not record.scrape_job_id:
+        raise HTTPException(status_code=409, detail="该成功记录缺少原始任务，无法安全纠正")
+
+    current_output = _get_success_output_path(record)
+    if current_output is None or not current_output.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail="当前已整理文件不存在或不是本地输出，无法创建可回退的纠正任务",
+        )
+
+    jobs = ScrapeJobService()
+    old_job = await jobs.get_job(record.scrape_job_id)
+    if old_job is None:
+        raise HTTPException(status_code=409, detail="原始任务不存在，无法安全纠正")
+
+    correction = await jobs.create_job(
+        ScrapeJobCreate(
+            # 以当前已整理文件为输入，而不是原始来源，避免重跑时留下旧错误文件。
+            file_path=str(current_output),
+            output_dir=old_job.output_dir,
+            metadata_dir=old_job.metadata_dir,
+            output_locator=old_job.output_locator,
+            metadata_locator=old_job.metadata_locator,
+            allow_local_output=old_job.allow_local_output,
+            link_mode=old_job.link_mode,
+            source=ScrapeJobSource.MANUAL,
+            source_id=old_job.source_id,
+            advanced_settings=old_job.advanced_settings,
+            replaces_job_id=old_job.id,
+            correction_history_id=record.id,
+            correction_tmdb_id=request.tmdb_id,
+            correction_season=request.season,
+            correction_episode=request.episode,
+        )
+    )
+    if correction is None:
+        raise HTTPException(status_code=409, detail="当前文件已有待处理任务，请等待其完成后再修改匹配")
+
+    return {
+        "success": True,
+        "job_id": correction.id,
+        "message": "已创建纠正任务；新任务成功后才会替代原成功记录，并保留 7 天备份",
+    }
+
+
 @router.post("/{record_id}/retry")
 async def retry_scrape(
     record_id: str,
