@@ -7,9 +7,11 @@ import aiosqlite
 import pytest
 
 from server.core.db import create_all_tables
+from server.models.history import HistoryRecordCreate, TaskStatus
 from server.models.manual_job import JobSource, LinkMode, ManualJobCreate
 from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
 from server.models.storage import StorageLocator, StorageProvider
+from server.services.history_service import HistoryService
 from server.services.manual_job_service import ManualJobService
 from server.services.scrape_job_service import ScrapeJobService
 import server.services.manual_job_service as manual_job_service_module
@@ -177,6 +179,140 @@ async def test_scrape_job_create_and_get_persist_locator_fields(
     assert loaded.output_locator == output_locator
     assert loaded.metadata_locator == metadata_locator
     assert loaded.allow_local_output is True
+
+
+@pytest.mark.asyncio
+async def test_watcher_does_not_recreate_deleted_history_record(
+    temp_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restart scan must not resurrect a source the user deleted."""
+    await _initialize_test_db(temp_db)
+    monkeypatch.setattr(scrape_job_service_module, "_ensure_worker", lambda: None)
+
+    class FakeNotifier:
+        async def notify_job_created(self, *args, **kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(scrape_job_service_module, "get_notifier", lambda: FakeNotifier())
+
+    video_path = tmp_path / "deleted-source.mp4"
+    video_path.write_bytes(b"deleted source video")
+
+    history_service = HistoryService(db_path=temp_db)
+    record = await history_service.create_record(
+        HistoryRecordCreate(
+            task_name="deleted-source",
+            folder_path=str(video_path),
+            status=TaskStatus.DELETED,
+            total_files=1,
+            success_count=0,
+            failed_count=0,
+            duration_seconds=0,
+        )
+    )
+
+    # The worker normally saves the local fingerprint when the history row is
+    # created; use the path fallback here to also cover older retained rows.
+    assert record.status == TaskStatus.DELETED
+    service = ScrapeJobService(db_path=temp_db)
+    created = await service.create_job(
+        ScrapeJobCreate(
+            file_path=str(video_path),
+            output_dir=str(tmp_path / "output"),
+            source=ScrapeJobSource.WATCHER,
+        )
+    )
+
+    assert created is None
+    jobs, total = await service.list_jobs()
+    assert jobs == []
+    assert total == 0
+
+
+@pytest.mark.asyncio
+async def test_watcher_does_not_recreate_deleted_p115_history_record(
+    temp_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider sources fall back to their retained source path."""
+    await _initialize_test_db(temp_db)
+    monkeypatch.setattr(scrape_job_service_module, "_ensure_worker", lambda: None)
+
+    history_service = HistoryService(db_path=temp_db)
+    source_path = "/115网盘/待整理/deleted-source.mp4"
+    await history_service.create_record(
+        HistoryRecordCreate(
+            task_name="deleted-p115-source",
+            folder_path=source_path,
+            status=TaskStatus.DELETED,
+            total_files=1,
+            success_count=0,
+            failed_count=0,
+            duration_seconds=0,
+        )
+    )
+
+    service = ScrapeJobService(db_path=temp_db)
+    created = await service.create_job(
+        ScrapeJobCreate(
+            file_path=source_path,
+            output_dir="/115网盘/已整理",
+            file_locator=_build_locator(
+                path=source_path,
+                file_id="file-001",
+                parent_id="scan-root",
+                is_dir=False,
+            ),
+            source=ScrapeJobSource.WATCHER,
+        )
+    )
+
+    assert created is None
+
+
+@pytest.mark.asyncio
+async def test_manual_job_can_explicitly_reprocess_deleted_history_record(
+    temp_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit manual reprocessing remains available after deletion."""
+    await _initialize_test_db(temp_db)
+    monkeypatch.setattr(scrape_job_service_module, "_ensure_worker", lambda: None)
+
+    class FakeNotifier:
+        async def notify_job_created(self, *args, **kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(scrape_job_service_module, "get_notifier", lambda: FakeNotifier())
+
+    video_path = tmp_path / "deleted-source.mp4"
+    video_path.write_bytes(b"deleted source video")
+    history_service = HistoryService(db_path=temp_db)
+    await history_service.create_record(
+        HistoryRecordCreate(
+            task_name="deleted-source",
+            folder_path=str(video_path),
+            status=TaskStatus.DELETED,
+            total_files=1,
+            success_count=0,
+            failed_count=0,
+            duration_seconds=0,
+        )
+    )
+
+    service = ScrapeJobService(db_path=temp_db)
+    created = await service.create_job(
+        ScrapeJobCreate(
+            file_path=str(video_path),
+            output_dir=str(tmp_path / "output"),
+            source=ScrapeJobSource.MANUAL,
+        )
+    )
+
+    assert created is not None
 
 
 @pytest.mark.asyncio
