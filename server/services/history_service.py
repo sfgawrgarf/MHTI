@@ -296,6 +296,41 @@ class HistoryService:
 
         return {row[0] for row in rows if row[0]}
 
+    async def is_auto_scrape_blocked_by_deleted_record(
+        self,
+        file_path: str,
+        file_fingerprint: str | None = None,
+    ) -> bool:
+        """Return whether a deleted record suppresses watcher reprocessing.
+
+        A deleted history row is retained for audit and may still be retried
+        explicitly by the user.  It must not, however, be recreated by a
+        watcher restart while the source file remains in the watched folder.
+        Local sources are matched by fingerprint when available; provider
+        sources without a local fingerprint fall back to their source path.
+        """
+        await self._ensure_db()
+
+        if file_fingerprint:
+            where_clause = (
+                "(file_fingerprint = ? "
+                "OR (file_fingerprint IS NULL AND folder_path = ?))"
+            )
+            params = (TaskStatus.DELETED.value, file_fingerprint, file_path)
+        else:
+            where_clause = "folder_path = ?"
+            params = (TaskStatus.DELETED.value, file_path)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await _configure_connection(db)
+            cursor = await db.execute(
+                f"""SELECT 1 FROM history_records
+                    WHERE status = ? AND {where_clause}
+                    LIMIT 1""",
+                params,
+            )
+            return await cursor.fetchone() is not None
+
     async def delete_record(self, record_id: str) -> bool:
         """Mark a history record as deleted without discarding its audit trail."""
         return await self.update_record(
