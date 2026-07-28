@@ -1,6 +1,7 @@
 """Scraper data models."""
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -57,6 +58,7 @@ class ScrapeByIdRequest(BaseModel):
     allow_local_output: bool = False
     link_mode: OrganizeMode | None = None  # 整理模式
     skip_emby_check: bool = False  # 跳过 Emby 冲突检查
+    file_action: Literal["overwrite", "rename"] | None = None
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
 
 

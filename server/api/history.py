@@ -266,6 +266,7 @@ async def _execute_scrape_and_update(
     from server.services.manual_job_service import ManualJobService
     from server.models.manual_job import ManualJobStatus
     from server.models.history import ScrapeLogStep, ScrapeLogEntry
+    from server.models.scraper import ScrapeStatus
 
     scraper = get_scraper_service()
 
@@ -330,6 +331,30 @@ async def _execute_scrape_and_update(
                 )
 
         return {"success": True, "message": "处理成功", "dest_path": result.dest_path}
+    if result.status == ScrapeStatus.FILE_CONFLICT:
+        conflict_data = dict(record.conflict_data or {}) if record else {}
+        conflict_data.update({
+            "output_dir": scrape_request.output_dir,
+            "metadata_dir": scrape_request.metadata_dir,
+            "link_mode": scrape_request.link_mode.value if scrape_request.link_mode else None,
+            "tmdb_id": scrape_request.tmdb_id,
+            "season": scrape_request.season,
+            "episode": scrape_request.episode,
+            "dest_path": result.dest_path,
+        })
+        await history_service.update_record(
+            record_id,
+            status=TaskStatus.PENDING_ACTION,
+            error_message=result.message or "目标文件已存在",
+            conflict_type=ConflictType.FILE_CONFLICT,
+            conflict_data=conflict_data,
+        )
+        return {
+            "success": False,
+            "requires_action": True,
+            "message": result.message or "目标文件已存在，请选择处理方式",
+            "dest_path": result.dest_path,
+        }
     else:
         await history_service.update_record(
             record_id, status=TaskStatus.FAILED, error_message=result.message
@@ -398,6 +423,7 @@ async def resolve_conflict(
             output_dir=output_dir,
             metadata_dir=metadata_dir,
             link_mode=link_mode,
+            file_action=request.file_action,
             **locators,
         )
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
@@ -420,6 +446,7 @@ async def resolve_conflict(
             output_dir=output_dir,
             metadata_dir=metadata_dir,
             link_mode=link_mode,
+            file_action=request.file_action,
             **locators,
         )
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
@@ -473,6 +500,7 @@ async def resolve_conflict(
             output_dir=output_dir,
             metadata_dir=metadata_dir,
             link_mode=link_mode,
+            file_action=request.file_action,
             **locators,
         )
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)

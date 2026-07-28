@@ -522,6 +522,7 @@ const handleSubmit = async () => {
 
     loading.value = true
     try {
+      let response: { success: boolean; message: string; requires_action?: boolean } | undefined
       if (isSuccessRematchMode.value) {
         await historyApi.rematchSuccessfulRecord(props.record.id, {
           tmdb_id: selectedTmdbId.value,
@@ -531,7 +532,7 @@ const handleSubmit = async () => {
       } else if (rematchMode.value) {
         const conflictType = props.record.conflict_type
         if (!conflictType) return
-        await historyApi.resolveConflict(props.record.id, {
+        response = await historyApi.resolveConflict(props.record.id, {
           conflict_type: conflictType,
           resolution_action: 'rematch',
           tmdb_id: selectedTmdbId.value,
@@ -545,7 +546,11 @@ const handleSubmit = async () => {
           episode: selectedEpisode.value,
         })
       }
-      message.success(isSuccessRematchMode.value ? '已创建纠正任务，成功后会替代原记录' : (rematchMode.value ? '重新匹配已提交' : '重试成功'))
+      if (response?.requires_action) {
+        message.warning('目标文件已存在，请选择覆盖、跳过或重命名')
+      } else {
+        message.success(isSuccessRematchMode.value ? '已创建纠正任务，成功后会替代原记录' : (rematchMode.value ? '重新匹配已提交' : '重试成功'))
+      }
       emit('success')
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } } }
@@ -615,14 +620,18 @@ const handleSubmit = async () => {
       }
     }
 
-    await historyApi.resolveConflict(props.record.id, {
+    const response = await historyApi.resolveConflict(props.record.id, {
       conflict_type: conflictType,
       tmdb_id: selectedTmdbId.value,
       season: conflictType === 'emby_conflict' ? season : season,
       episode: conflictType === 'emby_conflict' ? episode : episode,
       file_action: fileActionValue,
     })
-    message.success('处理成功')
+    if (response.requires_action) {
+      message.warning('目标文件已存在，请选择覆盖、跳过或重命名')
+    } else {
+      message.success('处理成功')
+    }
     emit('success')
   } catch (error: unknown) {
     const err = error as { response?: { data?: { detail?: string } } }
