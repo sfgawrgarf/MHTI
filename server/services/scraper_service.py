@@ -28,14 +28,23 @@ from server.models.scraper import (
     ScrapeStatus,
 )
 from server.models.storage import StorageLocator, StorageProvider
-from server.models.tmdb import TMDBSearchResult, TMDBSeries
+from server.models.tmdb import TMDBSearchResult, TMDBSeason, TMDBSeries
 from server.models.ai import AICandidate, AIRecognitionResult
 from server.services.ai_provider_service import AIProviderError, AIProviderService
 from server.services.config_service import ConfigService
 from server.services.emby_service import EmbyService
 from server.services.image_service import ImageService
+from server.services.media_alias_service import MediaAliasMatch, MediaAliasService
 from server.services.nfo_service import NFOService
 from server.services.parser_service import ParserService
+from server.services.recognition_service import (
+    EpisodeMatch,
+    build_search_title_variants,
+    extract_release_year_month,
+    match_episode_from_titles,
+    merge_search_results,
+    select_series_candidate,
+)
 from server.services.rename_service import RenameService
 from server.services.scraper_config import ScraperConfigMixin
 from server.services.scraper_media import ScraperMediaMixin
@@ -346,6 +355,100 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         self.image_service = image_service
         self.subtitle_service = subtitle_service
         self.emby_service = emby_service
+        self.media_alias_service = MediaAliasService()
+
+    async def _lookup_confirmed_alias(
+        self,
+        *,
+        file_path: str,
+        parsed_title: str | None,
+    ) -> MediaAliasMatch | None:
+        try:
+            return await self.media_alias_service.lookup(
+                file_path=file_path,
+                parsed_title=parsed_title,
+            )
+        except Exception as exc:
+            logger.warning("Unable to look up confirmed media alias: %s", exc)
+            return None
+
+    async def _remember_confirmed_aliases(
+        self,
+        *,
+        file_path: str,
+        parsed_title: str | None,
+        tmdb_id: int,
+        season: int,
+        episode: int,
+        series: TMDBSeries,
+        source: str,
+    ) -> None:
+        try:
+            await self.media_alias_service.remember_confirmed(
+                file_path=file_path,
+                parsed_title=parsed_title,
+                tmdb_id=tmdb_id,
+                season=season,
+                episode=episode,
+                canonical_titles=[series.name, series.original_name],
+                source=source,
+            )
+        except Exception as exc:
+            logger.warning("Unable to remember confirmed media aliases: %s", exc)
+
+    async def _match_episode_by_multilingual_title(
+        self,
+        *,
+        file_path: str,
+        tmdb_id: int,
+        series: TMDBSeries,
+        season_hint: int | None,
+    ) -> tuple[EpisodeMatch | None, list[TMDBSeason]]:
+        """Fetch localized episode titles and return only a decisive match."""
+        season_numbers = [
+            season.season_number
+            for season in series.seasons
+            if season_hint is None or season.season_number == season_hint
+        ]
+        localized_seasons = []
+        japanese_seasons = []
+        for season_number in season_numbers:
+            try:
+                season = await self.tmdb_service.get_season_by_api(
+                    tmdb_id,
+                    season_number,
+                )
+                if season is not None:
+                    localized_seasons.append(season)
+            except Exception as exc:
+                logger.debug(
+                    "Unable to fetch localized season %s for TMDB %s: %s",
+                    season_number,
+                    tmdb_id,
+                    exc,
+                )
+            try:
+                season_ja = await self.tmdb_service.get_season_by_api(
+                    tmdb_id,
+                    season_number,
+                    "ja-JP",
+                )
+                if season_ja is not None:
+                    japanese_seasons.append(season_ja)
+            except Exception as exc:
+                logger.debug(
+                    "Unable to fetch Japanese season %s for TMDB %s: %s",
+                    season_number,
+                    tmdb_id,
+                    exc,
+                )
+
+        match = match_episode_from_titles(
+            file_path=file_path,
+            seasons_by_language=[localized_seasons, japanese_seasons],
+            season_hint=season_hint,
+        )
+        return match, localized_seasons
 
     def _is_provider_source(self, locator: StorageLocator | None) -> bool:
         """判断是否为云端 provider 文件。"""
@@ -731,8 +834,18 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         # Search TMDB if we have a title
         if parsed.series_name:
             try:
-                search_response = await self.tmdb_service.search_series_by_api(parsed.series_name)
-                preview.search_results = search_response.results
+                merged_results: list[TMDBSearchResult] = []
+                for search_title in build_search_title_variants(parsed.series_name):
+                    search_response = await self.tmdb_service.search_series_by_api(
+                        search_title
+                    )
+                    merged_results = merge_search_results(
+                        merged_results,
+                        search_response.results,
+                    )
+                    if any(item.adult for item in search_response.results):
+                        break
+                preview.search_results = merged_results
             except (httpx.TimeoutException, httpx.RequestError):
                 pass
 
@@ -806,36 +919,83 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         scrape_logs.append(parse_step)
         await notify_log_update()
 
-        # Step 2: Search TMDB using API
+        # Step 2: Resolve a confirmed local alias, then search TMDB with a
+        # bounded query ladder. Search expansion is intentionally separate
+        # from permission to auto-select a result.
         search_step = ScrapeLogStep(name="搜索 TMDB", logs=[])
-        search_step.logs.append(ScrapeLogEntry(message=f"搜索关键词: {parsed.series_name}"))
         scrape_logs.append(search_step)
         await notify_log_update()
 
-        try:
-            search_response = await self.tmdb_service.search_series_by_api(parsed.series_name)
-            all_results: list[TMDBSearchResult] = search_response.results
-            # 只保留成人内容
-            adult_results = [r for r in all_results if r.adult]
+        alias_match = await self._lookup_confirmed_alias(
+            file_path=file_path,
+            parsed_title=parsed.series_name,
+        )
+        all_results: list[TMDBSearchResult] = []
+        adult_results: list[TMDBSearchResult] = []
+        attempted_titles: list[str] = []
+        candidate_sources: dict[int, set[str]] = {}
+
+        if alias_match is not None:
+            result.selected_id = alias_match.tmdb_id
+            if alias_match.season is not None:
+                parsed.season = alias_match.season
+                result.parsed_season = alias_match.season
+            if alias_match.episode is not None:
+                parsed.episode = alias_match.episode
+                result.parsed_episode = alias_match.episode
+            search_step.logs.append(ScrapeLogEntry(
+                message=(
+                    f"命中已确认本地别名: {alias_match.alias} "
+                    f"→ TMDB {alias_match.tmdb_id}"
+                )
+            ))
+            await notify_log_update()
+        else:
+            deterministic_titles = build_search_title_variants(parsed.series_name)
+            for index, search_title in enumerate(deterministic_titles):
+                attempted_titles.append(search_title)
+                search_step.logs.append(ScrapeLogEntry(message=f"搜索关键词: {search_title}"))
+                await notify_log_update()
+                try:
+                    search_response = await self.tmdb_service.search_series_by_api(search_title)
+                except httpx.TimeoutException:
+                    search_step.logs.append(ScrapeLogEntry(
+                        message="TMDB 搜索超时",
+                        level=LogLevel.ERROR,
+                    ))
+                    search_step.completed = False
+                    await notify_log_update()
+                    result.status = ScrapeStatus.SEARCH_FAILED
+                    result.message = "TMDB 搜索超时，请检查网络或 Cookie"
+                    result.scrape_logs = scrape_logs
+                    return result
+                except httpx.RequestError as e:
+                    search_step.logs.append(ScrapeLogEntry(
+                        message=f"TMDB 搜索失败: {str(e)}",
+                        level=LogLevel.ERROR,
+                    ))
+                    search_step.completed = False
+                    await notify_log_update()
+                    result.status = ScrapeStatus.SEARCH_FAILED
+                    result.message = f"TMDB 搜索失败: {str(e)}"
+                    result.scrape_logs = scrape_logs
+                    return result
+
+                all_results = merge_search_results(all_results, search_response.results)
+                query_adult = [item for item in search_response.results if item.adult]
+                for item in query_adult:
+                    candidate_sources.setdefault(item.id, set()).add(
+                        f"deterministic:{index}"
+                    )
+                adult_results = merge_search_results(adult_results, query_adult)
+                search_step.logs.append(ScrapeLogEntry(
+                    message=f"该关键词找到 {len(query_adult)} 个成人候选"
+                ))
+                await notify_log_update()
+                if query_adult:
+                    break
+
             result.search_results = adult_results
-            search_step.logs.append(ScrapeLogEntry(message=f"找到 {len(adult_results)} 个匹配结果"))
-            await notify_log_update()
-        except httpx.TimeoutException:
-            search_step.logs.append(ScrapeLogEntry(message="TMDB 搜索超时", level=LogLevel.ERROR))
-            search_step.completed = False
-            await notify_log_update()
-            result.status = ScrapeStatus.SEARCH_FAILED
-            result.message = "TMDB 搜索超时，请检查网络或 Cookie"
-            result.scrape_logs = scrape_logs
-            return result
-        except httpx.RequestError as e:
-            search_step.logs.append(ScrapeLogEntry(message=f"TMDB 搜索失败: {str(e)}", level=LogLevel.ERROR))
-            search_step.completed = False
-            await notify_log_update()
-            result.status = ScrapeStatus.SEARCH_FAILED
-            result.message = f"TMDB 搜索失败: {str(e)}"
-            result.scrape_logs = scrape_logs
-            return result
 
         # Step 2.5: Ask the configured AI to refine the title, season/episode,
         # and select a TMDB candidate. This keeps the final metadata source as
@@ -844,7 +1004,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         ai_selected: TMDBSearchResult | None = None
         ai_provider = AIProviderService(self.config_service)
         ai_config = await ai_provider.get_config()
-        if ai_config.enabled:
+        if alias_match is None and ai_config.enabled:
             ai_step = ScrapeLogStep(name="AI 辅助识别", logs=[])
             scrape_logs.append(ai_step)
             candidates = [
@@ -864,6 +1024,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 "parsed_episode": parsed.episode,
                 "parser_confidence": parsed.confidence,
                 "suffix": path.suffix.lower(),
+                "release_year_month": extract_release_year_month(file_path),
             }
             try:
                 ai_result = await ai_provider.recognize(
@@ -871,7 +1032,8 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     evidence=evidence,
                     candidates=candidates,
                 )
-                if _can_auto_apply_ai_result(ai_result):
+                can_auto_apply = _can_auto_apply_ai_result(ai_result)
+                if can_auto_apply:
                     if ai_result.title:
                         parsed.series_name = ai_result.title
                         result.parsed_title = ai_result.title
@@ -891,28 +1053,61 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                         ai_selected = selected_candidate
                         adult_results = [ai_selected]
                         result.search_results = adult_results
+                        candidate_sources.setdefault(ai_selected.id, set()).add(
+                            "ai_confirmed"
+                        )
                         ai_step.logs.append(ScrapeLogEntry(message=f"AI 高置信度选择 TMDB 候选: {ai_selected.name} (ID {ai_selected.id})"))
-
-                    # Only high-confidence results may retry TMDB with an
-                    # AI-normalized title; a low-confidence alias must not
-                    # create a path to automatic selection.
-                    search_titles = [ai_result.title, *ai_result.search_titles]
-                    search_titles = list(dict.fromkeys(title.strip() for title in search_titles if title and title.strip()))
-                    if not adult_results:
-                        for search_title in search_titles:
-                            retry_response = await self.tmdb_service.search_series_by_api(search_title)
-                            retry_adult_results = [item for item in retry_response.results if item.adult]
-                            ai_step.logs.append(ScrapeLogEntry(message=f"AI 检索标题“{search_title}”得到 {len(retry_adult_results)} 个成人候选"))
-                            if retry_adult_results:
-                                all_results = retry_response.results
-                                adult_results = retry_adult_results
-                                result.search_results = adult_results
-                                break
                 else:
                     ai_step.logs.append(ScrapeLogEntry(
-                        message="AI 结果置信度不足，已保留原始标题和季集，不参与自动选择",
+                        message=(
+                            "AI 结果置信度不足：保留原始标题和季集，"
+                            "仅使用建议标题扩展候选，不允许自动选择"
+                        ),
                         level=LogLevel.WARNING,
                     ))
+
+                # Search aliases are discovery-only and therefore useful even
+                # when the model cannot safely choose an ID or episode. Results
+                # discovered only from an unconfirmed alias remain manual.
+                search_titles = [ai_result.title, *ai_result.search_titles]
+                search_titles = list(dict.fromkeys(
+                    title.strip()
+                    for title in search_titles
+                    if title and title.strip()
+                ))
+                if not adult_results:
+                    for search_title in search_titles:
+                        if search_title in attempted_titles:
+                            continue
+                        attempted_titles.append(search_title)
+                        retry_response = await self.tmdb_service.search_series_by_api(
+                            search_title
+                        )
+                        all_results = merge_search_results(
+                            all_results,
+                            retry_response.results,
+                        )
+                        retry_adult_results = [
+                            item for item in retry_response.results if item.adult
+                        ]
+                        source = (
+                            "ai_confirmed" if can_auto_apply else "ai_suggestion"
+                        )
+                        for item in retry_adult_results:
+                            candidate_sources.setdefault(item.id, set()).add(source)
+                        adult_results = merge_search_results(
+                            adult_results,
+                            retry_adult_results,
+                        )
+                        result.search_results = adult_results
+                        ai_step.logs.append(ScrapeLogEntry(
+                            message=(
+                                f"AI 检索标题“{search_title}”得到 "
+                                f"{len(retry_adult_results)} 个成人候选"
+                            )
+                        ))
+                        if retry_adult_results:
+                            break
 
                 if not ai_selected and not adult_results:
                     ai_step.logs.append(ScrapeLogEntry(message=ai_result.reason or "AI 未给出可用候选", level=LogLevel.WARNING))
@@ -921,8 +1116,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 ai_step.logs.append(ScrapeLogEntry(message=f"AI 识别失败，回退到常规刮削: {exc}", level=LogLevel.WARNING))
                 ai_step.completed = False
                 await notify_log_update()
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
+                ai_step.logs.append(ScrapeLogEntry(
+                    message=f"AI 建议标题的 TMDB 搜索失败: {exc}",
+                    level=LogLevel.WARNING,
+                ))
+                ai_step.completed = False
+                await notify_log_update()
 
-        if not adult_results:
+        if alias_match is None and not adult_results:
             search_step.logs.append(ScrapeLogEntry(message="未找到匹配的成人剧集", level=LogLevel.WARNING))
             search_step.completed = False
             await notify_log_update()
@@ -934,25 +1136,65 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         # Step 3: Select match
         result.search_results = adult_results
 
-        if request.auto_select and ai_selected is not None:
+        if alias_match is not None:
+            result.selected_id = alias_match.tmdb_id
+        elif request.auto_select and ai_selected is not None:
             selected = ai_selected
             result.selected_id = selected.id
-        elif request.auto_select and len(adult_results) == 1:
-            # 只有一个结果时自动选择
-            selected = adult_results[0]
-            result.selected_id = selected.id
-        elif request.auto_select and len(adult_results) > 1:
+        elif request.auto_select:
+            ranked_match = select_series_candidate(
+                adult_results,
+                attempted_titles,
+            )
+            exact_single = (
+                len(adult_results) == 1
+                and "deterministic:0"
+                in candidate_sources.get(adult_results[0].id, set())
+            )
+            trusted_match = (
+                exact_single
+                or (
+                    ranked_match is not None
+                    and candidate_sources.get(ranked_match.candidate.id, set())
+                    != {"ai_suggestion"}
+                )
+            )
+            if trusted_match:
+                selected_match = (
+                    adult_results[0]
+                    if exact_single
+                    else ranked_match.candidate
+                )
+                result.selected_id = selected_match.id
+                score_text = (
+                    "exact-query"
+                    if exact_single
+                    else (
+                        f"score={ranked_match.score:.2f}, "
+                        f"margin={ranked_match.margin:.2f}"
+                    )
+                )
+                search_step.logs.append(ScrapeLogEntry(
+                    message=(
+                        f"标题评分自动选择: {selected_match.name} "
+                        f"(TMDB {selected_match.id}, {score_text})"
+                    )
+                ))
+                await notify_log_update()
+            else:
+                search_step.logs.append(ScrapeLogEntry(message="获取各剧集详情..."))
+                await notify_log_update()
+                enriched_results = await self._enrich_search_results(adult_results)
+                result.search_results = enriched_results
+                result.status = ScrapeStatus.NEED_SELECTION
+                if ranked_match is not None and not trusted_match:
+                    result.message = "AI 建议标题找到了候选，但置信度不足，请手动确认"
+                else:
+                    result.message = f"找到 {len(adult_results)} 个候选，请手动选择"
+                result.scrape_logs = scrape_logs
+                return result
+        elif len(adult_results) > 0:
             # 多个结果时需要用户选择，先获取每个结果的详情
-            search_step.logs.append(ScrapeLogEntry(message="获取各剧集详情..."))
-            await notify_log_update()
-            enriched_results = await self._enrich_search_results(adult_results)
-            result.search_results = enriched_results
-            result.status = ScrapeStatus.NEED_SELECTION
-            result.message = f"找到 {len(adult_results)} 个匹配结果，请手动选择"
-            result.scrape_logs = scrape_logs
-            return result
-        else:
-            # Return results for manual selection
             search_step.logs.append(ScrapeLogEntry(message="获取各剧集详情..."))
             await notify_log_update()
             enriched_results = await self._enrich_search_results(adult_results)
@@ -1008,30 +1250,48 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
         # Step 4.5: Check if episode is missing
         if parsed.episode is None:
+            episode_match, localized_seasons = (
+                await self._match_episode_by_multilingual_title(
+                    file_path=file_path,
+                    tmdb_id=result.selected_id,
+                    series=series,
+                    season_hint=parsed.season,
+                )
+            )
+            if episode_match is not None:
+                parsed.season = episode_match.season
+                parsed.episode = episode_match.episode
+                result.parsed_season = episode_match.season
+                result.parsed_episode = episode_match.episode
+                detail_step.logs.append(ScrapeLogEntry(
+                    message=(
+                        f"跨语言集标题匹配: S{episode_match.season:02d}"
+                        f"E{episode_match.episode:02d} "
+                        f"“{episode_match.matched_title}” "
+                        f"(score={episode_match.score:.2f}, "
+                        f"margin={episode_match.margin:.2f})"
+                    )
+                ))
+                await notify_log_update()
             # 如果剧集只有1集，自动选择
             total_episodes = series.number_of_episodes or 0
-            if total_episodes == 1:
+            if parsed.episode is None and total_episodes == 1:
                 parsed.episode = 1
                 logger.info("剧集只有1集，自动选择 E01")
-            else:
-                # 多集需要手动选择，先获取季详情
+            elif parsed.episode is None:
+                # 匹配分数或领先幅度不足，保留人工选择。
                 result.series_info = series
-                season_num = parsed.season if parsed.season is not None else 1
-                try:
-                    season_detail = await self.tmdb_service.get_season_by_api(
-                        result.selected_id, season_num
-                    )
-                    # 更新 series 中对应季的 episodes 信息
-                    for i, s in enumerate(series.seasons):
-                        if s.season_number == season_num:
+                for season_detail in localized_seasons:
+                    for i, existing_season in enumerate(series.seasons):
+                        if existing_season.season_number == season_detail.season_number:
                             series.seasons[i] = season_detail
                             break
-                    result.series_info = series
-                except Exception as e:
-                    logger.warning(f"获取季度详情失败: {e}")
+                result.series_info = series
 
                 result.status = ScrapeStatus.NEED_SEASON_EPISODE
-                result.message = f"剧集共 {total_episodes} 集，请手动选择"
+                result.message = (
+                    f"剧集共 {total_episodes} 集，集标题匹配不足以自动采用，请手动选择"
+                )
                 result.scrape_logs = scrape_logs
                 return result
 
@@ -1397,6 +1657,11 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         file_path = request.file_path
         path = Path(file_path)
         scrape_logs: list[ScrapeLogStep] = []
+        manual_parsed_title = (
+            self.parser_service.parse(path.name, file_path).series_name
+            if self.parser_service is not None
+            else None
+        )
 
         async def notify_log_update():
             """通知日志更新。"""
@@ -1572,6 +1837,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                         link_mode=request.link_mode,
                     )
                     result.nfo_path = nfo_path_str or None
+                    await self._remember_confirmed_aliases(
+                        file_path=file_path,
+                        parsed_title=manual_parsed_title,
+                        tmdb_id=request.tmdb_id,
+                        season=request.season,
+                        episode=request.episode,
+                        series=series,
+                        source="manual",
+                    )
                     result.status = ScrapeStatus.SUCCESS
                     result.message = "刮削完成"
                     result.scrape_logs = scrape_logs
@@ -1727,6 +2001,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             season=request.season,
             episode=request.episode,
             title=series.name,
+        )
+        await self._remember_confirmed_aliases(
+            file_path=file_path,
+            parsed_title=manual_parsed_title,
+            tmdb_id=request.tmdb_id,
+            season=request.season,
+            episode=request.episode,
+            series=series,
+            source="manual",
         )
         result.status = ScrapeStatus.SUCCESS
         result.message = "刮削完成"

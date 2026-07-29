@@ -23,8 +23,8 @@ EPISODE_MARKERS = [
     r"[Ee][Pp]?\d{1,3}",                       # EP01, E01
 
     # ===== 中文格式 =====
-    r"第\d+[季集话回章弾話幕]",               # 第1季, 第1集, 第1話
-    r"第[一二三四五六七八九十百]+[季集话回章弾話幕]",  # 第一季, 第一集
+    r"第\d+[季集话回章弾話幕巻卷夜]",               # 第1季, 第1集, 第一夜
+    r"第[一二三四五六七八九十百]+[季集话回章弾話幕巻卷夜]",
 
     # ===== 日语格式 =====
     r"お家賃\s*\d+\s*突き目",                 # お家賃6突き目
@@ -39,6 +39,10 @@ EPISODE_MARKERS = [
     r"巻\s*\d+",                              # 巻1
     r"Episode\s*\d+",                         # Episode 1
     r"Act\.?\s*\d+",                          # Act 1
+    r"(?:ATTACK\s*NO|Insert|Reason|Desire|Memorial|anime)\s*[.:：．#＃]?\s*\d+",
+    r"理由\s*\d+",
+    r"\b\d+(?:st|nd|rd|th)\b",
+    r"\d+\s*枚目",
     r"\[\d{1,3}\]",                           # [01]
     r"\(\d{1,2}\)\s*$",                       # (1) 在末尾
     r"\s+\d{1,3}\s*［",                         # 标题 1［副标题］
@@ -113,11 +117,6 @@ class SeriesNamePlugin(ParserPlugin):
         """从清洗后的文件名提取剧名。"""
         text = cleaned
 
-        # 已由集号解析器确认的末尾裸数字不是剧名的一部分。仅处理明确位于结尾、
-        # 可选跟随编码标签的数字，避免影响标题中间的合法数字。
-        if episode is not None:
-            text = self._remove_trailing_numeric_episode(text, episode)
-
         # 找到最早的集数标记位置
         earliest_pos = len(text)
 
@@ -128,6 +127,13 @@ class SeriesNamePlugin(ParserPlugin):
                     earliest_pos = match.start()
             except re.error:
                 continue
+
+        # Only remove a trailing bare number when no richer marker was found.
+        # Removing it first would turn "ATTACK NO 3" into "ATTACK NO" and
+        # "Insert 2" into "Insert", leaving release markers in the series name.
+        if earliest_pos == len(text) and episode is not None:
+            text = self._remove_trailing_numeric_episode(text, episode)
+            earliest_pos = len(text)
 
         # 检查年份位置
         year_match = re.search(YEAR_PATTERN, text)

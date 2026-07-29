@@ -105,6 +105,20 @@ async def lifespan(app: FastAPI):
     # Initialize database with connection pool
     await init_database()
 
+    # Learn confirmed title/episode aliases from historical manual matches.
+    # The backfill is idempotent and never replaces a conflicting alias.
+    from server.services.media_alias_service import MediaAliasService
+    try:
+        learned_aliases = await MediaAliasService().backfill_confirmed_history()
+        if learned_aliases:
+            logger.info(
+                "Learned %s confirmed media aliases from history",
+                learned_aliases,
+            )
+    except Exception as exc:
+        # Alias learning is an optimization and must never prevent startup.
+        logger.warning("Unable to backfill confirmed media aliases: %s", exc)
+
     # Initialize authentication configuration from database
     from server.core.config import init_auth_config
     await init_auth_config()

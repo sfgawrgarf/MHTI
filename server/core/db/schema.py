@@ -168,9 +168,14 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
             poster_url TEXT,
             thumb_url TEXT,
             release_date TEXT,
-            rating REAL
+            rating REAL,
+            scrape_logs TEXT
         )
     """)
+    cursor = await db.execute("PRAGMA table_info(history_records)")
+    history_columns = {row[1] for row in await cursor.fetchall()}
+    if "scrape_logs" not in history_columns:
+        await db.execute("ALTER TABLE history_records ADD COLUMN scrape_logs TEXT")
 
     # Scrape jobs table
     await db.execute("""
@@ -313,4 +318,23 @@ async def _create_media_identity_tables(db: aiosqlite.Connection) -> None:
     """)
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_media_versions_identity ON media_versions(identity_key)"
+    )
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS media_aliases (
+            alias_type TEXT NOT NULL,
+            normalized_alias TEXT NOT NULL,
+            display_alias TEXT NOT NULL,
+            tmdb_id INTEGER NOT NULL,
+            season INTEGER,
+            episode INTEGER,
+            source TEXT NOT NULL DEFAULT 'manual',
+            confirmed INTEGER NOT NULL DEFAULT 0,
+            use_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(alias_type, normalized_alias)
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_media_aliases_tmdb ON media_aliases(tmdb_id)"
     )

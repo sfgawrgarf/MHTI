@@ -321,6 +321,57 @@ class TestJapaneseEpisodeParser:
         assert result.season == 1
         assert result.episode == expected_episode
 
+    @pytest.mark.parametrize(
+        "filename,expected_name,expected_episode",
+        [
+            (
+                "[Maho.sub]花粉少女注意報！～THE ANIMATION～ "
+                "ATTACK NO.3「女のコ何人シテるかな？」[10bit].strm",
+                "花粉少女注意報！",
+                3,
+            ),
+            (
+                "[Maho.sub]不良にハメられて受精する巨乳お母さん "
+                "THE ANIMATION Insert.2『じゃあね…バイバイ』.strm",
+                "不良にハメられて受精する巨乳お母さん",
+                2,
+            ),
+            (
+                "[Maho.sub]彼女が見舞いに来ない理由（わけ） "
+                "理由3「擦り切れゆく想い」.strm",
+                "彼女が見舞いに来ない理由（わけ）",
+                3,
+            ),
+            (
+                "[Maho.sub]HHH トリプルエッチ 3rd. みゆき編.strm",
+                "HHH トリプルエッチ",
+                3,
+            ),
+            (
+                "[Maho.sub]ヴァンパイア 第二夜【720P】.strm",
+                "ヴァンパイア",
+                2,
+            ),
+            (
+                "[Maho.sub]学園催眠隷奴 anime：03 "
+                "いやっ、絶対まだ妊娠なんてしてないっ.strm",
+                "学園催眠隷奴",
+                3,
+            ),
+        ],
+    )
+    def test_parse_adult_ova_installment_markers(
+        self,
+        parser_service,
+        filename,
+        expected_name,
+        expected_episode,
+    ):
+        result = parser_service.parse(filename)
+        assert result.series_name == expected_name
+        assert result.season == 1
+        assert result.episode == expected_episode
+
     # ===== 罗马数字测试 =====
     @pytest.mark.parametrize(
         "filename,expected_episode",

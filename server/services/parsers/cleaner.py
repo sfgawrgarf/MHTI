@@ -110,9 +110,13 @@ SUBTITLE_PATTERNS = [
 # 集数标记模式（用于定位副标题起始位置）
 # ============================================================================
 EPISODE_MARKERS_FOR_SUBTITLE = [
-    r"第\s*[\d一二三四五六七八九十]+\s*[話话集回章弾幕]",  # 第1話, 第二話
+    r"第\s*[\d一二三四五六七八九十]+\s*[話话集回章弾幕巻卷夜]",  # 第1話, 第二夜
     r"[＃#♯]\s*\d+",                                      # ＃2, #2
     r"[Vv]ol\.?\s*\d+",                                   # Vol.1
+    r"(?:ATTACK\s*NO|Insert|Reason|Desire|Memorial|anime)[.:：．]?\s*\d+",
+    r"理由\s*\d+",
+    r"\b\d+(?:st|nd|rd|th)\b",
+    r"\d+\s*枚目",
     r"(?:お家賃\s*)?\d+\s*突き目",                         # お家賃6突き目
     r"\s+\d{1,3}\s*［",                                    # 标题 1［副标题］
     r"前編|後編|前篇|後篇|上巻|下巻",                      # 前編/後編
@@ -196,8 +200,11 @@ class CleanerPlugin(ParserPlugin):
 
         # 8. 规范化空白和分隔符
         cleaned = re.sub(r"[._]+", " ", cleaned)
+        # Removing "THE ANIMATION" from "～THE ANIMATION～" must not leave
+        # a pair of dangling wave-dash delimiters in the TMDB query.
+        cleaned = re.sub(r"[～〜~]\s*[～〜~]", " ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned)
-        cleaned = cleaned.strip(" -")
+        cleaned = cleaned.strip(" -～〜~")
 
         ctx.cleaned_filename = cleaned
         ctx.matched_patterns.append(f"{self.name}:cleaned")
@@ -211,6 +218,12 @@ class CleanerPlugin(ParserPlugin):
             text = re.sub(rf"\[[^\]]*{group_pattern}[^\]]*\]", "", text, flags=re.I)
         text = re.sub(
             r"\[\s*(?:\d{3,4}p|4k|uhd|fhd|hd|gb|big5|chs|cht|jpn|x26[45]|h\.?26[45]|hevc|aac|flac)(?:[\s._-]+[\w.-]+)*\s*\]",
+            "",
+            text,
+            flags=re.I,
+        )
+        text = re.sub(
+            r"【\s*(?:\d{3,4}p|4k|uhd|fhd|hd|10bit|8bit|x26[45]|h\.?26[45]|hevc|aac|flac|mkv|mp4)(?:[^】]*)】",
             "",
             text,
             flags=re.I,
