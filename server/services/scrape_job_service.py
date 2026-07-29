@@ -148,20 +148,21 @@ class ScrapeJobService:
                 logger.info(f"文件已有待处理任务，跳过: {job.file_path}")
                 return None
 
-            # "Deleted" keeps an audit row and remains explicitly retryable,
-            # but it is a tombstone for automatic watcher delivery.  Without
-            # this guard a container restart scans the unchanged source again
-            # and recreates a second pending_action history record.
+            # Skipped/deleted records keep an audit row and remain explicitly
+            # retryable, but both are tombstones for automatic watcher delivery.
+            # Without this guard a container restart scans the unchanged source
+            # again and recreates a second pending_action history record.
             if job.source == ScrapeJobSource.WATCHER:
                 from server.services.history_service import HistoryService
 
                 file_fingerprint = calculate_fingerprint(job.file_path)
                 history_service = HistoryService(db_path=self.db_path)
-                if await history_service.is_auto_scrape_blocked_by_deleted_record(
-                    job.file_path,
-                    file_fingerprint,
+                if await history_service.is_auto_scrape_blocked_by_user_suppressed_record(
+                    job.file_path, file_fingerprint
                 ):
-                    logger.info(f"文件已有已删除记录，跳过监控重复任务: {job.file_path}")
+                    logger.info(
+                        f"文件已有用户跳过或删除记录，跳过监控重复任务: {job.file_path}"
+                    )
                     return None
 
             # 监控任务只投递尚未完成整理的文件。手动任务仍允许用户显式重试。

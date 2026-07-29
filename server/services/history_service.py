@@ -299,36 +299,40 @@ class HistoryService:
 
         return {row[0] for row in rows if row[0]}
 
-    async def is_auto_scrape_blocked_by_deleted_record(
+    async def is_auto_scrape_blocked_by_user_suppressed_record(
         self,
         file_path: str,
         file_fingerprint: str | None = None,
     ) -> bool:
-        """Return whether a deleted record suppresses watcher reprocessing.
+        """Return whether a skipped/deleted record suppresses watcher reprocessing.
 
-        A deleted history row is retained for audit and may still be retried
-        explicitly by the user.  It must not, however, be recreated by a
-        watcher restart while the source file remains in the watched folder.
+        Skipped and deleted history rows are explicit user decisions retained
+        for audit.  They may still be retried manually, but a watcher restart
+        must not recreate them while the source remains in the watched folder.
         Local sources are matched by fingerprint when available; provider
         sources without a local fingerprint fall back to their source path.
         """
         await self._ensure_db()
 
+        blocked_statuses = (
+            TaskStatus.SKIPPED.value,
+            TaskStatus.DELETED.value,
+        )
         if file_fingerprint:
             where_clause = (
                 "(file_fingerprint = ? "
                 "OR (file_fingerprint IS NULL AND folder_path = ?))"
             )
-            params = (TaskStatus.DELETED.value, file_fingerprint, file_path)
+            params = (*blocked_statuses, file_fingerprint, file_path)
         else:
             where_clause = "folder_path = ?"
-            params = (TaskStatus.DELETED.value, file_path)
+            params = (*blocked_statuses, file_path)
 
         async with aiosqlite.connect(self.db_path) as db:
             await _configure_connection(db)
             cursor = await db.execute(
                 f"""SELECT 1 FROM history_records
-                    WHERE status = ? AND {where_clause}
+                    WHERE status IN (?, ?) AND {where_clause}
                     LIMIT 1""",
                 params,
             )
@@ -736,7 +740,9 @@ class HistoryService:
             await _configure_connection(db)
             await db.execute(
                 """UPDATE history_records SET
-                   status = ?, folder_path = ?, duration_seconds = ?, success_count = 1,
+                   status = ?, folder_path = ?, duration_seconds = ?,
+                   success_count = 1, failed_count = 0,
+                   error_message = NULL, conflict_type = NULL, conflict_data = NULL,
                    title = ?, original_title = ?, plot = ?, poster_url = ?,
                    release_date = ?, rating = ?, tags = ?,
                    season_number = ?, episode_number = ?, episode_title = ?,
@@ -747,6 +753,13 @@ class HistoryService:
                  release_date, rating, tags_json,
                  season_number, episode_number, episode_title,
                  episode_overview, episode_still_url, episode_air_date, record_id),
+            )
+            await db.execute(
+                """UPDATE scrape_jobs
+                   SET status = ?, error_message = NULL,
+                       finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+                   WHERE history_record_id = ?""",
+                (TaskStatus.SUCCESS.value, record_id),
             )
             await db.commit()
 

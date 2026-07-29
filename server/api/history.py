@@ -2,21 +2,22 @@
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
-from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from server.core.auth import require_auth
 from server.core.container import get_history_service
 from server.models.history import (
     ConflictType,
+    HistoryListResponse,
     HistoryRecord,
     HistoryRecordCreate,
     HistoryRecordDetail,
-    HistoryListResponse,
     TaskStatus,
 )
 from server.services.history_service import HistoryService
@@ -251,7 +252,7 @@ class ResolveConflictRequest(BaseModel):
     episode: int | None = None
     # FILE_CONFLICT: 处理方式
     file_action: str | None = None  # "overwrite" | "skip" | "rename"
-    # FILE_CONFLICT: 放弃原匹配结果，使用用户重新选择的剧集/季/集
+    # 放弃原匹配结果，使用用户重新选择的剧集/季/集
     resolution_action: str | None = None  # "rematch"
 
 
@@ -263,10 +264,9 @@ async def _execute_scrape_and_update(
 ) -> dict:
     """执行刮削并更新记录状态（公共逻辑）"""
     from server.core.container import get_scraper_service
-    from server.services.manual_job_service import ManualJobService
-    from server.models.manual_job import ManualJobStatus
-    from server.models.history import ScrapeLogStep, ScrapeLogEntry
+    from server.models.history import ScrapeLogEntry, ScrapeLogStep
     from server.models.scraper import ScrapeStatus
+    from server.services.manual_job_service import ManualJobService
 
     scraper = get_scraper_service()
 
@@ -291,7 +291,9 @@ async def _execute_scrape_and_update(
         combined_logs = existing_logs + logs
         await history_service.update_scrape_logs(record_id, combined_logs)
 
+    scrape_started_at = time.monotonic()
     result = await scraper.scrape_by_id(scrape_request, on_log_update=on_log_update)
+    scrape_duration = time.monotonic() - scrape_started_at
 
     # 清理日志缓存
     history_service.clear_log_cache(record_id)
@@ -299,10 +301,14 @@ async def _execute_scrape_and_update(
     if result.status.value == "success":
         series = result.series_info
         episode = result.episode_info
-        await history_service.update_record(
+        source_path = (record.folder_path if record else scrape_request.file_path).split(
+            " => ", 1
+        )[0]
+        destination = result.dest_path or scrape_request.output_dir or source_path
+        await history_service.update_record_on_success(
             record_id,
-            status=TaskStatus.SUCCESS,
-            error_message=None,
+            folder_path=f"{source_path} => {destination}",
+            duration_seconds=scrape_duration,
             title=series.name if series else None,
             original_title=series.original_name if series else None,
             plot=series.overview if series else None,
@@ -400,6 +406,34 @@ async def resolve_conflict(
     # 恢复 locator（支持 115 等云端文件重试）
     locators = await _restore_locators_from_scrape_job(record)
 
+    # 所有保留冲突上下文的状态都允许放弃旧匹配，
+    # 并显式指定新的剧集/季/集。
+    # 这必须在具体冲突分支之前处理，避免 NEED_SEASON_EPISODE 等分支
+    # 继续从 conflict_data 读取旧的 TMDB ID。
+    if request.resolution_action == "rematch":
+        if request.tmdb_id is None:
+            raise HTTPException(status_code=400, detail="请选择 TMDB ID")
+        if request.season is None or request.episode is None:
+            raise HTTPException(status_code=400, detail="请提供季/集号")
+
+        user_log = (
+            f"用户重新匹配: TMDB ID {request.tmdb_id}, "
+            f"S{request.season:02d}E{request.episode:02d}"
+        )
+        scrape_request = ScrapeByIdRequest(
+            file_path=record.folder_path,
+            tmdb_id=request.tmdb_id,
+            season=request.season,
+            episode=request.episode,
+            output_dir=output_dir,
+            metadata_dir=metadata_dir,
+            link_mode=link_mode,
+            **locators,
+        )
+        return await _execute_scrape_and_update(
+            history_service, record_id, scrape_request, user_log
+        )
+
     # 根据冲突类型处理
     if request.conflict_type == ConflictType.NEED_SELECTION:
         if request.tmdb_id is None:
@@ -454,30 +488,6 @@ async def resolve_conflict(
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
 
     elif request.conflict_type == ConflictType.FILE_CONFLICT:
-        if request.resolution_action == "rematch":
-            if request.tmdb_id is None:
-                raise HTTPException(status_code=400, detail="请选择 TMDB ID")
-            if request.season is None or request.episode is None:
-                raise HTTPException(status_code=400, detail="请提供季/集号")
-
-            user_log = (
-                f"用户重新匹配: TMDB ID {request.tmdb_id}, "
-                f"S{request.season:02d}E{request.episode:02d}"
-            )
-            scrape_request = ScrapeByIdRequest(
-                file_path=record.folder_path,
-                tmdb_id=request.tmdb_id,
-                season=request.season,
-                episode=request.episode,
-                output_dir=output_dir,
-                metadata_dir=metadata_dir,
-                link_mode=link_mode,
-                **locators,
-            )
-            return await _execute_scrape_and_update(
-                history_service, record_id, scrape_request, user_log
-            )
-
         if request.file_action not in ("overwrite", "skip", "rename"):
             raise HTTPException(status_code=400, detail="无效的处理方式")
 
