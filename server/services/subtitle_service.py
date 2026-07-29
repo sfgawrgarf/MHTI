@@ -4,6 +4,7 @@ import re
 import shutil
 from pathlib import Path
 
+from server.core.path_security import PathSecurityError, validate_media_path
 from server.models.subtitle import (
     BatchSubtitleRenameResponse,
     SubtitleAssociateResponse,
@@ -74,7 +75,10 @@ class SubtitleService:
         Returns:
             Response with list of found subtitle files.
         """
-        folder = Path(folder_path)
+        try:
+            folder = validate_media_path(folder_path, must_exist=True)
+        except PathSecurityError:
+            return SubtitleScanResponse(subtitles=[], total=0)
         if not folder.exists() or not folder.is_dir():
             return SubtitleScanResponse(subtitles=[], total=0)
 
@@ -100,7 +104,10 @@ class SubtitleService:
         Returns:
             Response with video-subtitle associations.
         """
-        folder = Path(folder_path)
+        try:
+            folder = validate_media_path(folder_path, must_exist=True)
+        except PathSecurityError:
+            return SubtitleAssociateResponse(associations=[])
         if not folder.exists():
             return SubtitleAssociateResponse(associations=[])
 
@@ -156,14 +163,26 @@ class SubtitleService:
         Returns:
             Result of the rename operation.
         """
-        source = Path(subtitle_path)
-
-        if not source.exists():
+        try:
+            source = validate_media_path(
+                subtitle_path,
+                must_exist=True,
+                require_file=True,
+            )
+        except PathSecurityError as exc:
             return SubtitleRenameResult(
                 source_path=subtitle_path,
                 dest_path="",
                 success=False,
-                error=f"Subtitle file not found: {subtitle_path}",
+                error=str(exc),
+            )
+
+        if source.suffix.lower() not in SUBTITLE_EXTENSIONS:
+            return SubtitleRenameResult(
+                source_path=subtitle_path,
+                dest_path="",
+                success=False,
+                error=f"Unsupported subtitle file: {subtitle_path}",
             )
 
         # Parse original subtitle
@@ -176,6 +195,15 @@ class SubtitleService:
         new_filename = f"{new_filename}{subtitle_info.extension}"
 
         dest = source.parent / new_filename
+        try:
+            dest = validate_media_path(str(dest))
+        except PathSecurityError as exc:
+            return SubtitleRenameResult(
+                source_path=subtitle_path,
+                dest_path=str(dest),
+                success=False,
+                error=str(exc),
+            )
 
         # Check if destination exists
         if dest.exists() and dest != source:

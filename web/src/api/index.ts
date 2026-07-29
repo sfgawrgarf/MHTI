@@ -14,9 +14,8 @@ const REFRESH_TOKEN_KEY = 'refresh_token'
 const SESSION_ID_KEY = 'session_id'
 const EXPIRES_AT_KEY = 'expires_at'
 
-// Token 刷新状态管理
-let isRefreshing = false
-let refreshSubscribers: Array<(token: string) => void> = []
+// 所有并发请求共享同一次刷新，并且无论成功或失败都会被 settle。
+let refreshPromise: Promise<string | null> | null = null
 
 // 获取 token
 function getToken(): string | null {
@@ -57,17 +56,6 @@ function clearTokens() {
   localStorage.removeItem(EXPIRES_AT_KEY)
 }
 
-// 添加请求到等待队列
-function subscribeTokenRefresh(callback: (token: string) => void) {
-  refreshSubscribers.push(callback)
-}
-
-// 通知所有等待的请求
-function onTokenRefreshed(token: string) {
-  refreshSubscribers.forEach((callback) => callback(token))
-  refreshSubscribers = []
-}
-
 // 刷新 token
 async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = getRefreshToken()
@@ -93,6 +81,15 @@ async function refreshAccessToken(): Promise<string | null> {
   }
 }
 
+function getSharedRefresh(): Promise<string | null> {
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
 // 请求拦截器
 api.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
@@ -114,31 +111,9 @@ api.interceptors.request.use(
     // 检查 token 是否即将过期
     if (isTokenExpiringSoon()) {
       console.log('[API] Token 即将过期，尝试刷新')
-
-      if (isRefreshing) {
-        // 如果正在刷新，等待刷新完成
-        console.log('[API] 等待其他请求的刷新完成')
-        return new Promise((resolve) => {
-          subscribeTokenRefresh((newToken: string) => {
-            config.headers.Authorization = `Bearer ${newToken}`
-            resolve(config)
-          })
-        })
-      }
-
-      isRefreshing = true
-      try {
-        const newToken = await refreshAccessToken()
-        if (newToken) {
-          config.headers.Authorization = `Bearer ${newToken}`
-          onTokenRefreshed(newToken)
-        } else {
-          // 刷新失败，使用旧 token 继续（可能会 401）
-          config.headers.Authorization = `Bearer ${token}`
-        }
-      } finally {
-        isRefreshing = false
-      }
+      const newToken = await getSharedRefresh()
+      // 刷新失败时使用旧 token 继续，让响应拦截器统一完成登出。
+      config.headers.Authorization = `Bearer ${newToken || token}`
     } else {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -170,29 +145,12 @@ api.interceptors.response.use(
         return Promise.reject(error)
       }
 
-      // 尝试刷新 token 并重试请求
-      if (isRefreshing) {
-        // 如果正在刷新，等待刷新完成后重试
-        return new Promise((resolve, reject) => {
-          subscribeTokenRefresh((newToken: string) => {
-            originalRequest.headers.Authorization = `Bearer ${newToken}`
-            resolve(api(originalRequest))
-          })
-          // 设置超时，避免无限等待
-          setTimeout(() => {
-            reject(new Error('Token refresh timeout'))
-          }, 10000)
-        })
-      }
-
       originalRequest._retry = true
-      isRefreshing = true
 
       try {
-        const newToken = await refreshAccessToken()
+        const newToken = await getSharedRefresh()
         if (newToken) {
           originalRequest.headers.Authorization = `Bearer ${newToken}`
-          onTokenRefreshed(newToken)
           return api(originalRequest)
         } else {
           // 刷新失败，跳转登录
@@ -210,8 +168,6 @@ api.interceptors.response.use(
           window.location.href = '/login'
         }
         return Promise.reject(error)
-      } finally {
-        isRefreshing = false
       }
     }
 

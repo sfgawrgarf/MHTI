@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
+from server.core.auth import require_auth
 from server.core.container import get_rename_service
 from server.models.rename import (
     BatchRenameRequest,
@@ -12,7 +13,11 @@ from server.models.rename import (
 )
 from server.services.rename_service import RenameService
 
-router = APIRouter(prefix="/api/rename", tags=["rename"])
+router = APIRouter(
+    prefix="/api/rename",
+    tags=["rename"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 @router.post("/preview", response_model=RenamePreview)

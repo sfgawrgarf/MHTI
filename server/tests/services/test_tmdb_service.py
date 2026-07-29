@@ -148,7 +148,13 @@ class TestTMDBServiceAPIToken:
     @pytest.mark.asyncio
     async def test_test_proxy_socks5_missing_support(self, tmdb_service):
         """Test SOCKS5 proxy reports missing runtime support clearly."""
-        success, message, latency = await tmdb_service.test_proxy("socks5://127.0.0.1:1080")
+        with patch(
+            "server.services.tmdb_service.httpx.AsyncClient",
+            side_effect=ImportError("Using SOCKS proxy, but the 'socksio' package is not installed"),
+        ):
+            success, message, latency = await tmdb_service.test_proxy(
+                "socks5://127.0.0.1:1080"
+            )
 
         assert success is False
         assert latency is None

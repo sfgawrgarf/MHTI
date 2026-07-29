@@ -181,6 +181,52 @@ class ManualJobService:
 
         return created_job
 
+    async def prepare_recovery(self) -> list[int]:
+        """Reset interrupted manual scans and return persisted pending IDs."""
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await _configure_connection(db)
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                """
+                UPDATE manual_jobs
+                SET status = 'pending', started_at = NULL, finished_at = NULL,
+                    error_message = NULL
+                WHERE status = 'running'
+                """
+            )
+            cursor = await db.execute(
+                """
+                SELECT id FROM manual_jobs
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                """
+            )
+            rows = await cursor.fetchall()
+            await db.commit()
+        return [int(row[0]) for row in rows]
+
+    async def claim_job(self, job_id: int) -> bool:
+        """Atomically claim a pending manual job for one worker."""
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await _configure_connection(db)
+            cursor = await db.execute(
+                """
+                UPDATE manual_jobs
+                SET status = ?, started_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    ManualJobStatus.RUNNING.value,
+                    datetime.now().isoformat(),
+                    job_id,
+                    ManualJobStatus.PENDING.value,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
     async def list_jobs(
         self,
         limit: int = 20,
@@ -402,6 +448,10 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
     from server.services.scrape_job_service import ScrapeJobService
     from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
 
+    if not await service.claim_job(job_id):
+        logger.info(f"ManualJob {job_id} 已被其他 worker 领取或无需执行")
+        return
+
     job = await service.get_job(job_id)
     if job is None:
         logger.error(f"Job {job_id} not found")
@@ -409,9 +459,7 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
 
     logger.info(f"Starting manual job {job_id}: {job.scan_path}")
 
-    # 更新状态为运行中
     started_at = datetime.now()
-    await service.update_job_status(job_id, ManualJobStatus.RUNNING, started_at=started_at)
 
     try:
         # 扫描文件
@@ -546,3 +594,15 @@ async def shutdown_workers() -> None:
         await asyncio.gather(_worker_task, return_exceptions=True)
     _worker_task = None
     logger.info("Manual job worker cancelled")
+
+
+async def recover_pending_jobs() -> int:
+    """Requeue persisted manual jobs after a process restart."""
+    service = ManualJobService()
+    job_ids = await service.prepare_recovery()
+    for job_id in job_ids:
+        await _job_queue.put(job_id)
+    if job_ids:
+        _ensure_worker()
+        logger.info(f"Recovered {len(job_ids)} manual jobs from database")
+    return len(job_ids)

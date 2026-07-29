@@ -5,6 +5,11 @@ from pathlib import Path
 
 import httpx
 
+from server.core.path_security import (
+    PathSecurityError,
+    validate_image_url,
+    validate_media_path,
+)
 from server.models.image import (
     BatchDownloadResponse,
     ImageDownloadRequest,
@@ -21,6 +26,7 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 class ImageService:
@@ -83,7 +89,16 @@ class ImageService:
         Returns:
             ImageDownloadResult with success status.
         """
-        full_path = Path(save_path) / filename
+        try:
+            safe_url = validate_image_url(str(url))
+            full_path = validate_media_path(str(Path(save_path) / filename))
+        except PathSecurityError as exc:
+            return ImageDownloadResult(
+                url=str(url),
+                save_path=str(Path(save_path) / filename),
+                success=False,
+                error=str(exc),
+            )
         last_error: str | None = None
 
         config = await self._get_system_config()
@@ -94,17 +109,32 @@ class ImageService:
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
-                    response = await client.get(url, headers=self._headers)
+                    response = await client.get(safe_url, headers=self._headers)
 
                     if response.status_code == 404:
                         return ImageDownloadResult(
-                            url=url,
+                            url=str(url),
                             save_path=str(full_path),
                             success=False,
                             error="Image not found (404)",
                         )
 
                     response.raise_for_status()
+                    content_type = response.headers.get("content-type", "").lower()
+                    if not content_type.startswith("image/"):
+                        return ImageDownloadResult(
+                            url=str(url),
+                            save_path=str(full_path),
+                            success=False,
+                            error="Remote response is not an image",
+                        )
+                    if len(response.content) > MAX_IMAGE_BYTES:
+                        return ImageDownloadResult(
+                            url=str(url),
+                            save_path=str(full_path),
+                            success=False,
+                            error="Image exceeds 20 MB limit",
+                        )
 
                     # Ensure directory exists
                     full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +144,7 @@ class ImageService:
                         f.write(response.content)
 
                     return ImageDownloadResult(
-                        url=url,
+                        url=str(url),
                         save_path=str(full_path),
                         success=True,
                     )
@@ -128,7 +158,7 @@ class ImageService:
             except OSError as e:
                 # File system error - don't retry
                 return ImageDownloadResult(
-                    url=url,
+                    url=str(url),
                     save_path=str(full_path),
                     success=False,
                     error=f"File system error: {str(e)}",
@@ -140,7 +170,7 @@ class ImageService:
                 await asyncio.sleep(delay)
 
         return ImageDownloadResult(
-            url=url,
+            url=str(url),
             save_path=str(full_path),
             success=False,
             error=last_error,

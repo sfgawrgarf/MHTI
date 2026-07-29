@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from server.core.auth import get_client_ip
 from server.core.exceptions import AppException, ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 "path": path,
                 "status_code": response.status_code,
                 "response_time_ms": round(process_time, 1),
-                "client_ip": self._get_client_ip(request),
+                "client_ip": get_client_ip(request),
             },
         )
 
@@ -97,15 +98,6 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         response.headers["X-Response-Time"] = f"{process_time:.1f}ms"
 
         return response
-
-    @staticmethod
-    def _get_client_ip(request: Request) -> str:
-        """Extract client IP from request."""
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
-
 
 class CORSDebugMiddleware(BaseHTTPMiddleware):
     """

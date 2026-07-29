@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
+from server.core.auth import require_auth
 from server.core.container import get_subtitle_service
 from server.models.subtitle import (
     BatchSubtitleRenameRequest,
@@ -15,7 +16,11 @@ from server.models.subtitle import (
 )
 from server.services.subtitle_service import SubtitleService
 
-router = APIRouter(prefix="/api/subtitles", tags=["subtitles"])
+router = APIRouter(
+    prefix="/api/subtitles",
+    tags=["subtitles"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 @router.post("/scan", response_model=SubtitleScanResponse)

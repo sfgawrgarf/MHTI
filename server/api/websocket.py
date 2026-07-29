@@ -6,6 +6,7 @@ import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from server.core.auth import authenticate_access_token
 from server.services.websocket_manager import get_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/ws", tags=["websocket"])
 # 心跳配置
 HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
 CLIENT_TIMEOUT = 90  # 客户端超时时间（秒）
+AUTH_TIMEOUT = 5
 
 
 @router.websocket("")
@@ -27,7 +29,27 @@ async def websocket_endpoint(websocket: WebSocket):
     manager = get_ws_manager()
     client_id = str(uuid.uuid4())[:8]
 
-    await manager.connect(client_id, websocket)
+    await websocket.accept()
+    try:
+        auth_message = await asyncio.wait_for(
+            websocket.receive_json(),
+            timeout=AUTH_TIMEOUT,
+        )
+    except WebSocketDisconnect:
+        return
+    except (asyncio.TimeoutError, ValueError):
+        await websocket.close(code=4401, reason="Authentication required")
+        return
+
+    if not isinstance(auth_message, dict) or auth_message.get("type") != "auth":
+        await websocket.close(code=4401, reason="Authentication required")
+        return
+    auth = await authenticate_access_token(str(auth_message.get("token") or ""))
+    if auth is None:
+        await websocket.close(code=4401, reason="Invalid or revoked token")
+        return
+
+    manager.connect(client_id, websocket, auth.session_id)
 
     # 创建心跳任务和超时检测任务
     heartbeat_task = None

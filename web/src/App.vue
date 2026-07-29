@@ -1,22 +1,32 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { NConfigProvider, NMessageProvider, NDialogProvider, zhCN, dateZhCN } from 'naive-ui'
 import { useTheme } from '@/composables/useTheme'
 import { useWebSocket } from '@/composables/useWebSocket'
+import { useAuthStore } from '@/stores/auth'
 import AppLayout from '@/components/layout/AppLayout.vue'
 
 const route = useRoute()
 const { theme, themeOverrides } = useTheme()
-const { connect } = useWebSocket()
+const { connect, disconnect } = useWebSocket()
+const authStore = useAuthStore()
 
 // 登录页面不显示布局
 const showLayout = computed(() => route.name !== 'login')
 
-// 初始化 WebSocket 连接
-onMounted(() => {
-  connect()
-})
+// 只为已认证会话建立连接，注销后立即断开。
+watch(
+  () => authStore.isAuthenticated,
+  (authenticated) => {
+    if (authenticated) {
+      connect()
+    } else {
+      disconnect()
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>

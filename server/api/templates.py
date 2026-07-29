@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
+from server.core.auth import require_auth
 from server.core.container import get_template_service
 from server.models.template import (
     NamingTemplate,
@@ -11,7 +12,11 @@ from server.models.template import (
 )
 from server.services.template_service import TemplateService
 
-router = APIRouter(prefix="/api/templates", tags=["templates"])
+router = APIRouter(
+    prefix="/api/templates",
+    tags=["templates"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 @router.get("/default", response_model=NamingTemplate)

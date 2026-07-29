@@ -374,6 +374,139 @@ async def test_execute_job_forwards_locators_to_scrape_job_create(
 
 
 @pytest.mark.asyncio
+async def test_scrape_job_recovery_resets_running_and_claims_once(
+    temp_db: Path,
+) -> None:
+    """Interrupted scrape jobs are requeued and can only be claimed once."""
+    await _initialize_test_db(temp_db)
+    async with aiosqlite.connect(temp_db) as db:
+        await db.execute(
+            """
+            INSERT INTO history_records (
+                id, task_name, folder_path, executed_at, status,
+                total_files, success_count, failed_count, duration_seconds
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "history1",
+                "interrupted",
+                "/incoming/recover.mp4",
+                "2026-07-29T10:00:00",
+                "running",
+                1,
+                0,
+                0,
+                0,
+            ),
+        )
+        await db.execute(
+            """
+            INSERT INTO scrape_jobs (
+                id, file_path, output_dir, source, status, created_at, started_at,
+                history_record_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "recover1",
+                "/incoming/recover.mp4",
+                "/library",
+                "manual",
+                "running",
+                "2026-07-29T10:00:00",
+                "2026-07-29T10:01:00",
+                "history1",
+            ),
+        )
+        await db.commit()
+
+    service = ScrapeJobService(db_path=temp_db)
+    assert await service.prepare_recovery() == ["recover1"]
+    recovered = await service.get_job("recover1")
+    assert recovered is not None
+    assert recovered.status.value == "pending"
+    assert recovered.started_at is None
+    assert recovered.history_record_id is None
+    async with aiosqlite.connect(temp_db) as db:
+        cursor = await db.execute(
+            "SELECT status, error_message FROM history_records WHERE id = ?",
+            ("history1",),
+        )
+        history_status, error_message = await cursor.fetchone()
+    assert history_status == "failed"
+    assert "服务重启" in error_message
+    assert await service.claim_job("recover1") is True
+    assert await service.claim_job("recover1") is False
+
+
+@pytest.mark.asyncio
+async def test_manual_job_recovery_resets_running_and_claims_once(
+    temp_db: Path,
+) -> None:
+    """Interrupted manual scans are also restored exactly once."""
+    await _initialize_test_db(temp_db)
+    async with aiosqlite.connect(temp_db) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO manual_jobs (
+                scan_path, target_folder, link_mode, created_at, status, started_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "/incoming",
+                "/library",
+                LinkMode.MOVE.value,
+                "2026-07-29T10:00:00",
+                "running",
+                "2026-07-29T10:01:00",
+            ),
+        )
+        await db.commit()
+        job_id = int(cursor.lastrowid)
+
+    service = ManualJobService(db_path=temp_db)
+    assert await service.prepare_recovery() == [job_id]
+    recovered = await service.get_job(job_id)
+    assert recovered is not None
+    assert recovered.status.value == "pending"
+    assert recovered.started_at is None
+    assert await service.claim_job(job_id) is True
+    assert await service.claim_job(job_id) is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_scrape_job_create_is_atomic(
+    temp_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two simultaneous deliveries create only one active job for a path."""
+    import asyncio
+
+    await _initialize_test_db(temp_db)
+    monkeypatch.setattr(scrape_job_service_module, "_ensure_worker", lambda: None)
+
+    class FakeNotifier:
+        async def notify_job_created(self, *args, **kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(scrape_job_service_module, "get_notifier", lambda: FakeNotifier())
+    service = ScrapeJobService(db_path=temp_db)
+    request = ScrapeJobCreate(
+        file_path="/incoming/concurrent.mp4",
+        output_dir="/library",
+        source=ScrapeJobSource.MANUAL,
+    )
+
+    first, second = await asyncio.gather(
+        service.create_job(request),
+        service.create_job(request),
+    )
+    assert sum(item is not None for item in (first, second)) == 1
+    jobs, total = await service.list_jobs()
+    assert total == 1
+    assert jobs[0].file_path == request.file_path
+
+
+@pytest.mark.asyncio
 async def test_execute_job_builds_file_locator_for_p115_source(
     temp_db: Path,
     tmp_path: Path,

@@ -100,6 +100,9 @@ class HistoryService:
 
         async with aiosqlite.connect(self.db_path) as db:
             await _configure_connection(db)
+            # Keep display_id allocation and insert in one serialized write
+            # transaction so concurrent workers cannot allocate the same value.
+            await db.execute("BEGIN IMMEDIATE")
             # 获取下一个 display_id
             cursor = await db.execute(
                 "SELECT COALESCE(MAX(display_id), 0) + 1 FROM history_records"

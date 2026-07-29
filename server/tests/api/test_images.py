@@ -11,7 +11,7 @@ from server.models.image import ImageDownloadResult, BatchDownloadResponse
 
 
 @pytest.fixture
-def client():
+def client(override_auth):
     """Provide a test client."""
     return TestClient(app)
 

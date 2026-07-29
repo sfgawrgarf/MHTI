@@ -59,6 +59,22 @@ def _generate_device_name(user_agent: str | None, ip_address: str | None) -> str
 class SessionService:
     """Service for managing user sessions with database connection pool."""
 
+    async def is_session_active(self, session_id: str, username: str) -> bool:
+        """Return whether a non-expired session still belongs to the JWT subject."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with db_context() as db:
+            cursor = await db.execute(
+                """
+                SELECT 1
+                FROM sessions AS s
+                JOIN admin AS a ON a.id = s.user_id
+                WHERE s.id = ? AND a.username = ? AND s.expires_at > ?
+                LIMIT 1
+                """,
+                (session_id, username, now),
+            )
+            return await cursor.fetchone() is not None
+
     async def _get_max_sessions(self) -> int:
         """Get max sessions from config."""
         from server.services.auth_config_service import get_auth_config_service_async

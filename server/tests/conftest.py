@@ -19,6 +19,13 @@ from server.core.auth import AuthContext, require_auth
 from server.main import app
 
 
+@pytest.fixture(autouse=True)
+def test_media_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Allow isolated pytest temporary directories for file-operation tests."""
+    monkeypatch.setenv("MHTI_ALLOWED_MEDIA_ROOTS", tempfile.gettempdir())
+    monkeypatch.setenv("MHTI_ALLOWED_IMAGE_HOSTS", "image.tmdb.org,example.com")
+
+
 # =============================================================================
 # Authentication Fixtures
 # =============================================================================
