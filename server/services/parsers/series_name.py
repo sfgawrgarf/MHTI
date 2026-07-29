@@ -93,7 +93,7 @@ class SeriesNamePlugin(ParserPlugin):
 
     def parse(self, ctx: ParseContext) -> ParseContext:
         # 从清洗后的文件名提取
-        name = self._extract_from_cleaned(ctx.cleaned_filename)
+        name = self._extract_from_cleaned(ctx.cleaned_filename, ctx.episode)
 
         if name:
             ctx.series_name = name
@@ -109,9 +109,14 @@ class SeriesNamePlugin(ParserPlugin):
 
         return ctx
 
-    def _extract_from_cleaned(self, cleaned: str) -> str | None:
+    def _extract_from_cleaned(self, cleaned: str, episode: int | None = None) -> str | None:
         """从清洗后的文件名提取剧名。"""
         text = cleaned
+
+        # 已由集号解析器确认的末尾裸数字不是剧名的一部分。仅处理明确位于结尾、
+        # 可选跟随编码标签的数字，避免影响标题中间的合法数字。
+        if episode is not None:
+            text = self._remove_trailing_numeric_episode(text, episode)
 
         # 找到最早的集数标记位置
         earliest_pos = len(text)
@@ -139,6 +144,12 @@ class SeriesNamePlugin(ParserPlugin):
         name = self._clean_name(name)
 
         return name if name and len(name) >= 2 else None
+
+    @staticmethod
+    def _remove_trailing_numeric_episode(text: str, episode: int) -> str:
+        """移除已确认的末尾数字集号及其后的编码标签。"""
+        pattern = rf"[\s._-]+0?{episode}(?:\s*\[[^\]]+\])?\s*$"
+        return re.sub(pattern, "", text)
 
     def _clean_name(self, name: str) -> str:
         """清理剧名。"""
