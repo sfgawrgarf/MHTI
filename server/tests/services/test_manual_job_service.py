@@ -6,6 +6,8 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+import server.services.manual_job_service as manual_job_service_module
+import server.services.scrape_job_service as scrape_job_service_module
 from server.core.db import create_all_tables
 from server.models.history import HistoryRecordCreate, TaskStatus
 from server.models.manual_job import JobSource, LinkMode, ManualJobCreate
@@ -14,8 +16,6 @@ from server.models.storage import StorageLocator, StorageProvider
 from server.services.history_service import HistoryService
 from server.services.manual_job_service import ManualJobService
 from server.services.scrape_job_service import ScrapeJobService
-import server.services.manual_job_service as manual_job_service_module
-import server.services.scrape_job_service as scrape_job_service_module
 
 
 async def _initialize_test_db(db_path: Path) -> None:
@@ -496,11 +496,10 @@ async def test_concurrent_scrape_job_create_is_atomic(
         source=ScrapeJobSource.MANUAL,
     )
 
-    first, second = await asyncio.gather(
-        service.create_job(request),
-        service.create_job(request),
+    results = await asyncio.gather(
+        *(service.create_job(request) for _ in range(8)),
     )
-    assert sum(item is not None for item in (first, second)) == 1
+    assert sum(item is not None for item in results) == 1
     jobs, total = await service.list_jobs()
     assert total == 1
     assert jobs[0].file_path == request.file_path

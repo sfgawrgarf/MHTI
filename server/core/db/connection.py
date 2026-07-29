@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -13,6 +14,23 @@ logger = logging.getLogger(__name__)
 # Project root and database path
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.resolve()
 DATABASE_PATH = _PROJECT_ROOT / "data" / "scraper.db"
+
+# SQLite allows only one connection to change journal mode at a time. Keep the
+# lock scoped to the active event loop so it is safe across pytest/application
+# loop lifecycles while serializing concurrent connections within each loop.
+_journal_mode_locks: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop,
+    asyncio.Lock,
+] = weakref.WeakKeyDictionary()
+
+
+def _get_journal_mode_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _journal_mode_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _journal_mode_locks[loop] = lock
+    return lock
 
 
 class DatabaseManager:
@@ -110,8 +128,13 @@ class DatabaseManager:
 
 async def configure_connection(db: aiosqlite.Connection) -> None:
     """Configure database connection with optimal settings."""
-    await db.execute("PRAGMA journal_mode=WAL")
+    # Configure the busy handler before requesting WAL mode. Switching a new
+    # database to WAL takes a write lock, so concurrent first-use connections
+    # must be able to wait instead of failing immediately with "database is
+    # locked".
     await db.execute("PRAGMA busy_timeout=30000")
+    async with _get_journal_mode_lock():
+        await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA synchronous=NORMAL")
     await db.execute("PRAGMA cache_size=-64000")  # 64MB cache
     await db.execute("PRAGMA temp_store=MEMORY")

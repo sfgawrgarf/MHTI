@@ -23,7 +23,7 @@ on:
       version:
         description: '版本号 (如 1.0.0，不带 v 前缀)'
         required: true
-        default: '2.0.3'
+        default: '2.0.4'
       prerelease:
         description: '是否为预发布版本'
         required: false
