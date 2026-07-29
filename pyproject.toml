@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mhti"
-version = "2.0.2"
+version = "2.0.3"
 description = "MHTI - TV Series metadata scraper with TMDB integration"
 authors = ["Developer"]
 readme = "README.md"
