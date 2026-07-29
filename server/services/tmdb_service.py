@@ -1,5 +1,6 @@
 """TMDB service for API-based metadata retrieval."""
 
+import unicodedata
 from datetime import date, datetime
 
 import httpx
@@ -304,6 +305,8 @@ class TMDBService:
         Returns:
             TMDBSearchResponse with search results.
         """
+        query = unicodedata.normalize("NFC", query).strip()
+
         if language is None:
             language = await self._get_language()
 

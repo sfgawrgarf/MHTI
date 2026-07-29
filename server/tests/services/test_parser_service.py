@@ -1,5 +1,7 @@
 """Unit tests for ParserService."""
 
+import unicodedata
+
 import pytest
 
 from server.services.parser_service import ParserService
@@ -151,6 +153,25 @@ class TestParserService:
 
         assert result.episode == 1
         assert result.is_parsed is True
+
+    @pytest.mark.parametrize(
+        "filename,expected_episode",
+        [
+            ("[Maho.sub][WHITE BEAR]ツンデレ淫乱少女すくみ 1.strm", 1),
+            ("[Maho.sub][WHITE BEAR]ツンデレ淫乱少女すくみ 2[10bit].strm", 2),
+        ],
+    )
+    def test_parse_normalizes_unicode_and_strm_trailing_episode(
+        self, parser_service, filename, expected_episode
+    ):
+        """Decomposed Japanese titles and .strm suffixes retain only the series title."""
+        result = parser_service.parse(filename)
+
+        assert result.original_filename == filename
+        assert result.series_name == "ツンデレ淫乱少女すくみ"
+        assert unicodedata.is_normalized("NFC", result.series_name)
+        assert result.season == 1
+        assert result.episode == expected_episode
 
     # Test empty batch
     def test_parse_batch_empty(self, parser_service):

@@ -211,6 +211,31 @@ class TestTMDBServiceSearch:
             assert result.results[0].name == "Breaking Bad"
 
     @pytest.mark.asyncio
+    async def test_search_series_by_api_normalizes_unicode_query(self, tmdb_service):
+        """TMDB receives NFC-normalized title queries."""
+        with patch.object(
+            tmdb_service, "_make_api_request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"results": [], "total_results": 0}
+            mock_request.return_value = mock_response
+
+            result = await tmdb_service.search_series_by_api(
+                "  ツンデレ淫乱少女すくみ  ", language="ja-JP"
+            )
+
+            assert result.query == "ツンデレ淫乱少女すくみ"
+            mock_request.assert_awaited_once_with(
+                "/search/tv",
+                params={
+                    "query": "ツンデレ淫乱少女すくみ",
+                    "language": "ja-JP",
+                    "include_adult": "true",
+                },
+            )
+
+    @pytest.mark.asyncio
     async def test_search_series_by_api_timeout(self, tmdb_service):
         """Test search with timeout."""
         import httpx

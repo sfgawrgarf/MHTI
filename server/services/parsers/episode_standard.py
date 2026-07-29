@@ -37,9 +37,9 @@ class EpisodeStandardPlugin(ParserPlugin):
         if self.should_skip(ctx):
             return ctx
 
-        # 从文件名解析
+        # Cleaner 已移除扩展名与常见发布标签，使用其结果可识别 .strm 等文件的末尾集号。
         for pattern, pattern_type in STANDARD_PATTERNS:
-            match = re.search(pattern, ctx.original_filename, re.I)
+            match = re.search(pattern, ctx.cleaned_filename, re.I)
             if match:
                 if pattern_type == "season_episode":
                     ctx.season = int(match.group(1))

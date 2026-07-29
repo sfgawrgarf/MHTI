@@ -1,5 +1,7 @@
 """Filename parsing service using plugin architecture."""
 
+import unicodedata
+
 from server.models.parser import ParsedInfo
 from server.services.parsers import DEFAULT_PLUGINS, ParseContext, ParserPlugin
 
@@ -32,9 +34,12 @@ class ParserService:
         Returns:
             ParsedInfo with extracted information.
         """
+        # 仅在解析期间规范化 Unicode；不修改磁盘上的原始文件名。
+        normalized_filename = unicodedata.normalize("NFC", filename)
+
         # 创建解析上下文
         ctx = ParseContext(
-            original_filename=filename,
+            original_filename=normalized_filename,
             filepath=filepath,
         )
 
