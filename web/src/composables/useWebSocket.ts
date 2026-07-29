@@ -219,20 +219,33 @@ function connect(): void {
     return
   }
 
+  const token = localStorage.getItem('access_token')
+  if (!token) {
+    return
+  }
+
   try {
     state.ws = new WebSocket(WS_URL)
 
     state.ws.onopen = () => {
-      console.log('[WS] 连接成功')
-      state.isConnected.value = true
-      startHeartbeat()
+      state.ws?.send(JSON.stringify({ type: 'auth', token }))
     }
 
-    state.ws.onclose = () => {
+    state.ws.onclose = (event) => {
       console.log('[WS] 连接关闭')
       state.isConnected.value = false
       state.clientId = null
       stopHeartbeat()
+      if (event.code === 4401) {
+        localStorage.removeItem('access_token')
+        localStorage.removeItem('refresh_token')
+        localStorage.removeItem('session_id')
+        localStorage.removeItem('expires_at')
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
+        return
+      }
       scheduleReconnect()
     }
 
@@ -263,6 +276,8 @@ function handleMessage(msg: WSMessage): void {
   switch (type) {
     case 'connected':
       state.clientId = payload?.client_id || msg.client_id
+      state.isConnected.value = true
+      startHeartbeat()
       console.log('[WS] 客户端 ID:', state.clientId)
       break
 
@@ -414,6 +429,7 @@ function stopHeartbeat(): void {
  * 安排重连
  */
 function scheduleReconnect(): void {
+  if (!localStorage.getItem('access_token')) return
   if (state.reconnectTimer) return
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null

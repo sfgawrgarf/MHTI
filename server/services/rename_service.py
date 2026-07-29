@@ -5,6 +5,7 @@ import os
 import shutil
 from pathlib import Path
 
+from server.core.path_security import PathSecurityError, validate_media_path
 from server.models.organize import OrganizeMode
 from server.models.rename import (
     BatchRenameRequest,
@@ -34,6 +35,8 @@ class RenameService:
         Returns:
             Preview of the rename operation.
         """
+        # Preview is also used for provider-native (for example 115) paths and
+        # never touches the filesystem.  Execution performs the strict checks.
         source_path = Path(request.source_path)
         extension = source_path.suffix
         active_template = self._template_service.get_active_template()
@@ -98,7 +101,19 @@ class RenameService:
         Returns:
             Result of the rename operation.
         """
-        source_path = Path(request.source_path)
+        try:
+            source_path = validate_media_path(
+                request.source_path,
+                must_exist=True,
+                require_file=True,
+            )
+        except PathSecurityError as exc:
+            return RenameResult(
+                source_path=request.source_path,
+                dest_path="",
+                success=False,
+                error=str(exc),
+            )
 
         logger.info(f"execute_rename: 源文件 = {source_path}")
 
@@ -113,9 +128,26 @@ class RenameService:
             )
 
         # Get preview for paths
-        preview = self.preview_rename(request)
+        try:
+            preview = self.preview_rename(request)
+        except PathSecurityError as exc:
+            return RenameResult(
+                source_path=str(source_path),
+                dest_path="",
+                success=False,
+                error=str(exc),
+            )
         dest_path = Path(preview.dest_path)
         dest_folder = Path(preview.dest_folder)
+        try:
+            validate_media_path(str(dest_path))
+        except PathSecurityError as exc:
+            return RenameResult(
+                source_path=str(source_path),
+                dest_path=str(dest_path),
+                success=False,
+                error=str(exc),
+            )
 
         logger.info(f"execute_rename: 目标文件夹 = {dest_folder}")
         logger.info(f"execute_rename: 目标路径 = {dest_path}")

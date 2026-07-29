@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
+from server.core.auth import require_auth
 from server.core.container import get_image_service
 from server.models.image import (
     BatchDownloadRequest,
@@ -11,7 +12,11 @@ from server.models.image import (
 )
 from server.services.image_service import ImageService
 
-router = APIRouter(prefix="/api/images", tags=["images"])
+router = APIRouter(
+    prefix="/api/images",
+    tags=["images"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 @router.post("/download", response_model=ImageDownloadResult)

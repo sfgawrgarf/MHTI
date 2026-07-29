@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from server import __version__
 # 日志目录
 LOG_DIR = Path(__file__).parent.parent / "data" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,6 +113,22 @@ async def lifespan(app: FastAPI):
     # Initialize service container
     await init_services()
 
+    # Recover persisted work before the watcher performs its initial scan.
+    from server.services.scrape_job_service import (
+        recover_pending_jobs as recover_scrape_jobs,
+    )
+    from server.services.manual_job_service import (
+        recover_pending_jobs as recover_manual_jobs,
+    )
+    recovered_scrape = await recover_scrape_jobs()
+    recovered_manual = await recover_manual_jobs()
+    if recovered_scrape or recovered_manual:
+        logger.info(
+            "Recovered persisted jobs: scrape=%s, manual=%s",
+            recovered_scrape,
+            recovered_manual,
+        )
+
     # Initialize and start log service
     from server.core.container import get_log_service
     log_service = get_log_service()
@@ -177,7 +194,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MHTI API",
     description="API for scanning and scraping TV series metadata",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -319,7 +336,7 @@ async def root() -> dict[str, str]:
     """Root endpoint with API information."""
     return {
         "name": "MHTI API",
-        "version": "1.0.0",
+        "version": __version__,
         "docs": "/api/docs",
     }
 

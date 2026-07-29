@@ -191,6 +191,23 @@ class ScrapeJobService:
 
         async with aiosqlite.connect(self.db_path) as db:
             await _configure_connection(db)
+            # Serialize the final duplicate check and insert.  The earlier checks
+            # avoid unnecessary work; this check closes the concurrent-create race.
+            await db.execute("BEGIN IMMEDIATE")
+            if not skip_duplicate_check:
+                cursor = await db.execute(
+                    """
+                    SELECT 1 FROM scrape_jobs
+                    WHERE file_path = ?
+                      AND status IN ('pending', 'running', 'pending_action')
+                    LIMIT 1
+                    """,
+                    (job.file_path,),
+                )
+                if await cursor.fetchone():
+                    await db.rollback()
+                    logger.info(f"文件已有并发创建的待处理任务，跳过: {job.file_path}")
+                    return None
             await db.execute(
                 """
                 INSERT INTO scrape_jobs
@@ -261,6 +278,67 @@ class ScrapeJobService:
         await notifier.notify_job_created(job_id, job.file_path, ScrapeJobStatus.PENDING.value)
 
         return created_job
+
+    async def prepare_recovery(self) -> list[str]:
+        """Reset interrupted jobs and return all persisted pending job IDs."""
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await _configure_connection(db)
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                """
+                UPDATE history_records
+                SET status = 'failed',
+                    error_message = COALESCE(
+                        error_message,
+                        '任务因服务重启中断，已重新排队'
+                    )
+                WHERE id IN (
+                    SELECT history_record_id FROM scrape_jobs
+                    WHERE status = 'running' AND history_record_id IS NOT NULL
+                )
+                  AND status = 'running'
+                """
+            )
+            await db.execute(
+                """
+                UPDATE scrape_jobs
+                SET status = 'pending', started_at = NULL, finished_at = NULL,
+                    error_message = NULL, history_record_id = NULL
+                WHERE status = 'running'
+                """
+            )
+            cursor = await db.execute(
+                """
+                SELECT id FROM scrape_jobs
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                """
+            )
+            rows = await cursor.fetchall()
+            await db.commit()
+        return [str(row[0]) for row in rows]
+
+    async def claim_job(self, job_id: str) -> bool:
+        """Atomically claim a pending job for one worker."""
+        await self._ensure_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await _configure_connection(db)
+            cursor = await db.execute(
+                """
+                UPDATE scrape_jobs
+                SET status = ?, started_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    ScrapeJobStatus.RUNNING.value,
+                    datetime.now().isoformat(),
+                    job_id,
+                    ScrapeJobStatus.PENDING.value,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
 
     async def list_jobs(
         self,
@@ -528,6 +606,10 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     from server.models.scraper import ScrapeByIdRequest, ScrapeRequest, ScrapeStatus
     from server.models.history import HistoryRecordCreate, TaskStatus, ConflictType, TaskSource
 
+    if not await service.claim_job(job_id):
+        logger.info(f"ScrapeJob {job_id} 已被其他 worker 领取或无需执行")
+        return
+
     job = await service.get_job(job_id)
     if job is None:
         logger.error(f"ScrapeJob {job_id} not found")
@@ -543,9 +625,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     system_config = await config_service.get_system_config()
     timeout_seconds = system_config.task_timeout
 
-    # 更新状态为运行中
     started_at = datetime.now()
-    await service.update_job(job_id, status=ScrapeJobStatus.RUNNING, started_at=started_at)
 
     # 发送开始执行通知
     await notifier.notify_progress(job_id, "starting", 0, f"开始处理: {Path(job.file_path).name}")
@@ -909,3 +989,15 @@ async def shutdown_workers() -> None:
     await asyncio.gather(*_worker_tasks, return_exceptions=True)
     _worker_tasks = []
     logger.info("Scrape workers cancelled")
+
+
+async def recover_pending_jobs() -> int:
+    """Requeue persisted jobs after a clean or unclean process restart."""
+    service = ScrapeJobService()
+    job_ids = await service.prepare_recovery()
+    for job_id in job_ids:
+        await _scrape_queue.put(job_id)
+    if job_ids:
+        _ensure_worker()
+        logger.info(f"Recovered {len(job_ids)} scrape jobs from database")
+    return len(job_ids)

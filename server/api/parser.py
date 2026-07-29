@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
+from server.core.auth import require_auth
 from server.core.container import get_parser_service
 from server.models.parser import (
     BatchParseRequest,
@@ -11,7 +12,11 @@ from server.models.parser import (
 )
 from server.services.parser_service import ParserService
 
-router = APIRouter(prefix="/api", tags=["parser"])
+router = APIRouter(
+    prefix="/api",
+    tags=["parser"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 @router.post("/parse", response_model=ParseResponse)

@@ -12,7 +12,7 @@ from server.services.template_service import TemplateService
 
 
 @pytest.fixture
-def client(temp_db):
+def client(temp_db, override_auth):
     """Provide a test client."""
     rename_service = RenameService(template_service=TemplateService(db_path=temp_db))
 

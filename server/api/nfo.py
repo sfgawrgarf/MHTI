@@ -2,11 +2,16 @@
 
 from fastapi import APIRouter, Depends
 
+from server.core.auth import require_auth
 from server.core.container import get_nfo_service
 from server.models.nfo import EpisodeNFO, NFOResponse, SeasonNFO, TVShowNFO
 from server.services.nfo_service import NFOService
 
-router = APIRouter(prefix="/api/nfo", tags=["nfo"])
+router = APIRouter(
+    prefix="/api/nfo",
+    tags=["nfo"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 @router.post("/tvshow", response_model=NFOResponse)

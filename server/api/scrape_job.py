@@ -1,7 +1,7 @@
 """Scrape job API endpoints - 文件刮削任务 API"""
 from server.core.auth import require_auth
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from server.models.scrape_job import (
     ScrapeJob,
@@ -26,7 +26,13 @@ async def create_job(
     service: ScrapeJobService = Depends(get_service),
 ) -> ScrapeJob:
     """创建文件刮削任务"""
-    return await service.create_job(job)
+    created = await service.create_job(job)
+    if created is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该文件已有待处理任务",
+        )
+    return created
 
 
 @router.get("", response_model=ScrapeJobListResponse)
@@ -50,13 +56,16 @@ async def list_jobs(
     return ScrapeJobListResponse(jobs=jobs, total=total)
 
 
-@router.get("/{job_id}", response_model=ScrapeJob | None)
+@router.get("/{job_id}", response_model=ScrapeJob)
 async def get_job(
     job_id: str,
     service: ScrapeJobService = Depends(get_service),
-) -> ScrapeJob | None:
+) -> ScrapeJob:
     """获取文件刮削任务详情"""
-    return await service.get_job(job_id)
+    job = await service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="刮削任务不存在")
+    return job
 
 
 @router.delete("")

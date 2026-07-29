@@ -16,21 +16,24 @@ class ConnectionManager:
     def __init__(self):
         # client_id -> WebSocket
         self.active_connections: dict[str, WebSocket] = {}
+        # client_id -> authenticated session_id
+        self.client_sessions: dict[str, str] = {}
         # job_id -> set of client_ids (订阅关系)
         self.subscriptions: dict[str, set[str]] = {}
         # 用于等待用户响应的 Future
         self.pending_actions: dict[str, asyncio.Future] = {}
 
-    async def connect(self, client_id: str, websocket: WebSocket) -> None:
-        """接受新连接"""
-        await websocket.accept()
+    def connect(self, client_id: str, websocket: WebSocket, session_id: str) -> None:
+        """Register a connection only after the endpoint authenticated it."""
         self.active_connections[client_id] = websocket
+        self.client_sessions[client_id] = session_id
         logger.info(f"WebSocket 连接: {client_id}")
 
     def disconnect(self, client_id: str) -> None:
         """断开连接"""
         if client_id in self.active_connections:
             del self.active_connections[client_id]
+            self.client_sessions.pop(client_id, None)
             # 清理订阅关系
             for job_id in list(self.subscriptions.keys()):
                 self.subscriptions[job_id].discard(client_id)

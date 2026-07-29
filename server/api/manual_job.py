@@ -1,7 +1,7 @@
 """Manual job API endpoints."""
 from server.core.auth import require_auth
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from server.models.manual_job import (
     ManualJob,
@@ -52,9 +52,12 @@ async def list_jobs(
 async def get_job(
     job_id: int,
     service: ManualJobService = Depends(get_service),
-) -> ManualJob | None:
+) -> ManualJob:
     """Get a manual job by ID."""
-    return await service.get_job(job_id)
+    job = await service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="手动任务不存在")
+    return job
 
 
 @router.delete("")

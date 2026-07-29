@@ -9,7 +9,7 @@ from server.main import app
 
 
 @pytest.fixture
-def client():
+def client(override_auth):
     """Provide a test client."""
     return TestClient(app)
 

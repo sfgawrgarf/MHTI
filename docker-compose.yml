@@ -35,6 +35,7 @@ services:
     environment:
       - DATA_DIR=/app/data
       - TZ=Asia/Shanghai
+      - MHTI_ALLOWED_MEDIA_ROOTS=/media,/output
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
