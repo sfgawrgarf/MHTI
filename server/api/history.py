@@ -354,6 +354,8 @@ async def _execute_scrape_and_update(
             "requires_action": True,
             "message": result.message or "目标文件已存在，请选择处理方式",
             "dest_path": result.dest_path,
+            "conflict_type": ConflictType.FILE_CONFLICT.value,
+            "conflict_data": conflict_data,
         }
     else:
         await history_service.update_record(

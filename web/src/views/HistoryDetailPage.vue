@@ -97,6 +97,10 @@ const handleSuccess = async () => {
   message.success('处理完成')
 }
 
+const handleRequiresAction = (updatedRecord: HistoryRecordDetail) => {
+  record.value = updatedRecord
+}
+
 // ========== END 处理弹窗 ==========
 
 // 显示的日志（优先使用实时日志）
@@ -589,6 +593,7 @@ onUnmounted(() => {
       :record="record"
       :mode="handleMode"
       @success="handleSuccess"
+      @requires-action="handleRequiresAction"
     />
   </div>
 </template>
