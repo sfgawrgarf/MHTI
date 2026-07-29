@@ -378,6 +378,11 @@ const onResolveSuccess = () => {
   loadRecords()
 }
 
+const onResolveRequiresAction = (record: HistoryRecordDetail) => {
+  resolveRecord.value = record
+  resolveMode.value = 'resolve'
+}
+
 // 行点击跳转详情
 const rowProps = (row: HistoryRecord) => ({
   style: 'cursor: pointer',
@@ -622,6 +627,7 @@ watch(manualJobId, () => {
       :record="resolveRecord"
       :mode="resolveMode"
       @success="onResolveSuccess"
+      @requires-action="onResolveRequiresAction"
     />
   </div>
 </template>

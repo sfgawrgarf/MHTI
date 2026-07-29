@@ -1,5 +1,12 @@
 import api from './index'
-import type { HistoryRecordDetail, HistoryListResponse, ResolveConflictRequest, RetryRequest, ScrapeLogStep } from './types'
+import type {
+  HistoryRecordDetail,
+  HistoryListResponse,
+  ResolveConflictRequest,
+  RetryRequest,
+  ScrapeLogStep,
+  HistoryActionResponse,
+} from './types'
 
 // 获取 API 基础 URL
 const getBaseUrl = () => {
@@ -75,8 +82,8 @@ export const historyApi = {
   async resolveConflict(
     recordId: string,
     request: ResolveConflictRequest
-  ): Promise<{ success: boolean; message: string; dest_path?: string; requires_action?: boolean }> {
-    const response = await api.put<{ success: boolean; message: string; dest_path?: string; requires_action?: boolean }>(
+  ): Promise<HistoryActionResponse> {
+    const response = await api.put<HistoryActionResponse>(
       `/history/${recordId}/resolve`,
       request
     )
@@ -89,8 +96,8 @@ export const historyApi = {
   async retryRecord(
     recordId: string,
     request: RetryRequest
-  ): Promise<{ success: boolean; message: string; dest_path?: string }> {
-    const response = await api.post<{ success: boolean; message: string; dest_path?: string }>(
+  ): Promise<HistoryActionResponse> {
+    const response = await api.post<HistoryActionResponse>(
       `/history/${recordId}/retry`,
       request
     )

@@ -334,6 +334,11 @@ async def test_manual_match_file_conflict_becomes_pending_action(monkeypatch):
     )
 
     assert result["requires_action"] is True
+    assert result["conflict_type"] == ConflictType.FILE_CONFLICT.value
+    assert result["conflict_data"]["tmdb_id"] == 123
+    assert result["conflict_data"]["season"] == 1
+    assert result["conflict_data"]["episode"] == 1
+    assert result["conflict_data"]["dest_path"] == conflict_path
     update = history_service.update_record.await_args
     assert update.kwargs["status"] == TaskStatus.PENDING_ACTION
     assert update.kwargs["conflict_type"] == ConflictType.FILE_CONFLICT

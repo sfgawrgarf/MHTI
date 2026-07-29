@@ -341,6 +341,15 @@ export interface RetryRequest {
   episode: number
 }
 
+export interface HistoryActionResponse {
+  success: boolean
+  message: string
+  dest_path?: string
+  requires_action?: boolean
+  conflict_type?: ConflictType
+  conflict_data?: Record<string, unknown>
+}
+
 export interface HistoryListResponse {
   records: HistoryRecord[]
   total: number

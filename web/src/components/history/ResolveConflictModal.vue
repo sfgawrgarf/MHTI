@@ -32,7 +32,15 @@ import {
 } from '@vicons/ionicons5'
 import { historyApi } from '@/api/history'
 import { tmdbApi } from '@/api/tmdb'
-import type { HistoryRecordDetail, ConflictType, TMDBSearchResult, TMDBSeason, TMDBEpisode, TMDBSeries } from '@/api/types'
+import type {
+  HistoryRecordDetail,
+  HistoryActionResponse,
+  ConflictType,
+  TMDBSearchResult,
+  TMDBSeason,
+  TMDBEpisode,
+  TMDBSeries,
+} from '@/api/types'
 import EmptyState from '@/components/common/EmptyState.vue'
 
 const props = defineProps<{
@@ -44,6 +52,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:show': [value: boolean]
   success: []
+  'requires-action': [record: HistoryRecordDetail]
 }>()
 
 const message = useMessage()
@@ -459,6 +468,28 @@ const startRematch = () => {
   selectedEpisode.value = null
 }
 
+const showRequiredAction = (response: HistoryActionResponse) => {
+  if (!props.record) return
+
+  const conflictType = response.conflict_type || 'file_conflict'
+  const conflictData = response.conflict_data || {
+    ...(props.record.conflict_data || {}),
+    dest_path: response.dest_path,
+  }
+
+  rematchMode.value = false
+  manualStep.value = 1
+  fileAction.value = 'skip'
+  emit('requires-action', {
+    ...props.record,
+    status: 'pending_action',
+    error_message: response.message,
+    conflict_type: conflictType,
+    conflict_data: conflictData,
+  })
+  message.warning('目标文件已存在，请选择覆盖、跳过或重命名')
+}
+
 // 重置表单
 watch(() => props.show, (show) => {
   if (show && props.record) {
@@ -522,7 +553,7 @@ const handleSubmit = async () => {
 
     loading.value = true
     try {
-      let response: { success: boolean; message: string; requires_action?: boolean } | undefined
+      let response: HistoryActionResponse | undefined
       if (isSuccessRematchMode.value) {
         await historyApi.rematchSuccessfulRecord(props.record.id, {
           tmdb_id: selectedTmdbId.value,
@@ -540,17 +571,17 @@ const handleSubmit = async () => {
           episode: selectedEpisode.value,
         })
       } else {
-        await historyApi.retryRecord(props.record.id, {
+        response = await historyApi.retryRecord(props.record.id, {
           tmdb_id: selectedTmdbId.value,
           season: selectedSeason.value,
           episode: selectedEpisode.value,
         })
       }
       if (response?.requires_action) {
-        message.warning('目标文件已存在，请选择覆盖、跳过或重命名')
-      } else {
-        message.success(isSuccessRematchMode.value ? '已创建纠正任务，成功后会替代原记录' : (rematchMode.value ? '重新匹配已提交' : '重试成功'))
+        showRequiredAction(response)
+        return
       }
+      message.success(isSuccessRematchMode.value ? '已创建纠正任务，成功后会替代原记录' : (rematchMode.value ? '重新匹配已提交' : '重试成功'))
       emit('success')
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } } }
@@ -628,10 +659,10 @@ const handleSubmit = async () => {
       file_action: fileActionValue,
     })
     if (response.requires_action) {
-      message.warning('目标文件已存在，请选择覆盖、跳过或重命名')
-    } else {
-      message.success('处理成功')
+      showRequiredAction(response)
+      return
     }
+    message.success('处理成功')
     emit('success')
   } catch (error: unknown) {
     const err = error as { response?: { data?: { detail?: string } } }
