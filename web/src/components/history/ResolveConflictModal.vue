@@ -88,6 +88,13 @@ const rematchMode = ref(false)
 const isRetryMode = computed(() => props.mode === 'retry')
 const isSuccessRematchMode = computed(() => props.mode === 'success_rematch')
 const isManualMatchMode = computed(() => isRetryMode.value || isSuccessRematchMode.value || rematchMode.value)
+const canRematchConflict = computed(() => {
+  const conflictType = props.record?.conflict_type
+  return conflictType
+    ? ['need_selection', 'need_season_episode', 'file_conflict', 'emby_conflict']
+        .includes(conflictType)
+    : false
+})
 
 // 冲突类型标题
 const modalTitle = computed(() => {
@@ -717,6 +724,17 @@ const getYear = (date: string | null) => {
             该记录缺少冲突类型信息，无法处理。请删除此记录后重新刮削。
           </div>
 
+          <NButton
+            v-if="canRematchConflict && !isManualMatchMode"
+            type="primary"
+            secondary
+            block
+            @click="startRematch"
+          >
+            <template #icon><NIcon :component="SearchOutline" /></template>
+            重新匹配（支持 TMDB ID）
+          </NButton>
+
           <!-- 重试模式 - 复用手动匹配三步流程 -->
           <template v-if="isManualMatchMode">
             <!-- 步骤 1: 搜索 -->
@@ -1069,10 +1087,6 @@ const getYear = (date: string | null) => {
           <template v-else-if="record.conflict_type === 'file_conflict'">
             <div class="conflict-options">
               <div class="option-title">选择处理方式</div>
-              <NButton type="primary" block style="margin-bottom: 12px" @click="startRematch">
-                <template #icon><NIcon :component="SearchOutline" /></template>
-                重新匹配
-              </NButton>
               <NRadioGroup v-model:value="fileAction" class="radio-group">
                 <div class="radio-option" :class="{ active: fileAction === 'skip' }" @click="fileAction = 'skip'">
                   <NRadio value="skip" />

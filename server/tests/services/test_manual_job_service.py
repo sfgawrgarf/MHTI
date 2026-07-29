@@ -13,6 +13,7 @@ from server.models.history import HistoryRecordCreate, TaskStatus
 from server.models.manual_job import JobSource, LinkMode, ManualJobCreate
 from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
 from server.models.storage import StorageLocator, StorageProvider
+from server.services.fingerprint_service import calculate_fingerprint
 from server.services.history_service import HistoryService
 from server.services.manual_job_service import ManualJobService
 from server.services.scrape_job_service import ScrapeJobService
@@ -182,12 +183,14 @@ async def test_scrape_job_create_and_get_persist_locator_fields(
 
 
 @pytest.mark.asyncio
-async def test_watcher_does_not_recreate_deleted_history_record(
+@pytest.mark.parametrize("status", [TaskStatus.SKIPPED, TaskStatus.DELETED])
+async def test_watcher_does_not_recreate_user_suppressed_history_record(
     temp_db: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    status: TaskStatus,
 ) -> None:
-    """A restart scan must not resurrect a source the user deleted."""
+    """A restart scan must not resurrect a source the user skipped or deleted."""
     await _initialize_test_db(temp_db)
     monkeypatch.setattr(scrape_job_service_module, "_ensure_worker", lambda: None)
 
@@ -197,25 +200,26 @@ async def test_watcher_does_not_recreate_deleted_history_record(
 
     monkeypatch.setattr(scrape_job_service_module, "get_notifier", lambda: FakeNotifier())
 
-    video_path = tmp_path / "deleted-source.mp4"
-    video_path.write_bytes(b"deleted source video")
+    video_path = tmp_path / "suppressed-source.mp4"
+    video_path.write_bytes(b"suppressed source video")
 
     history_service = HistoryService(db_path=temp_db)
     record = await history_service.create_record(
         HistoryRecordCreate(
-            task_name="deleted-source",
-            folder_path=str(video_path),
-            status=TaskStatus.DELETED,
+            task_name="suppressed-source",
+            folder_path=str(tmp_path / "previous-location.mp4"),
+            status=status,
             total_files=1,
             success_count=0,
             failed_count=0,
             duration_seconds=0,
+            file_fingerprint=calculate_fingerprint(str(video_path)),
         )
     )
 
-    # The worker normally saves the local fingerprint when the history row is
-    # created; use the path fallback here to also cover older retained rows.
-    assert record.status == TaskStatus.DELETED
+    # A retained fingerprint still blocks the watcher if the same source is
+    # rediscovered through a different path spelling or location.
+    assert record.status == status
     service = ScrapeJobService(db_path=temp_db)
     created = await service.create_job(
         ScrapeJobCreate(
@@ -232,21 +236,23 @@ async def test_watcher_does_not_recreate_deleted_history_record(
 
 
 @pytest.mark.asyncio
-async def test_watcher_does_not_recreate_deleted_p115_history_record(
+@pytest.mark.parametrize("status", [TaskStatus.SKIPPED, TaskStatus.DELETED])
+async def test_watcher_does_not_recreate_user_suppressed_p115_history_record(
     temp_db: Path,
     monkeypatch: pytest.MonkeyPatch,
+    status: TaskStatus,
 ) -> None:
-    """Provider sources fall back to their retained source path."""
+    """Provider sources use the retained path for skipped and deleted rows."""
     await _initialize_test_db(temp_db)
     monkeypatch.setattr(scrape_job_service_module, "_ensure_worker", lambda: None)
 
     history_service = HistoryService(db_path=temp_db)
-    source_path = "/115网盘/待整理/deleted-source.mp4"
+    source_path = "/115网盘/待整理/suppressed-source.mp4"
     await history_service.create_record(
         HistoryRecordCreate(
-            task_name="deleted-p115-source",
+            task_name="suppressed-p115-source",
             folder_path=source_path,
-            status=TaskStatus.DELETED,
+            status=status,
             total_files=1,
             success_count=0,
             failed_count=0,
@@ -273,12 +279,14 @@ async def test_watcher_does_not_recreate_deleted_p115_history_record(
 
 
 @pytest.mark.asyncio
-async def test_manual_job_can_explicitly_reprocess_deleted_history_record(
+@pytest.mark.parametrize("status", [TaskStatus.SKIPPED, TaskStatus.DELETED])
+async def test_manual_job_can_explicitly_reprocess_user_suppressed_history_record(
     temp_db: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    status: TaskStatus,
 ) -> None:
-    """Explicit manual reprocessing remains available after deletion."""
+    """Explicit manual reprocessing remains available after skip or deletion."""
     await _initialize_test_db(temp_db)
     monkeypatch.setattr(scrape_job_service_module, "_ensure_worker", lambda: None)
 
@@ -288,14 +296,14 @@ async def test_manual_job_can_explicitly_reprocess_deleted_history_record(
 
     monkeypatch.setattr(scrape_job_service_module, "get_notifier", lambda: FakeNotifier())
 
-    video_path = tmp_path / "deleted-source.mp4"
-    video_path.write_bytes(b"deleted source video")
+    video_path = tmp_path / "suppressed-source.mp4"
+    video_path.write_bytes(b"suppressed source video")
     history_service = HistoryService(db_path=temp_db)
     await history_service.create_record(
         HistoryRecordCreate(
-            task_name="deleted-source",
+            task_name="suppressed-source",
             folder_path=str(video_path),
-            status=TaskStatus.DELETED,
+            status=status,
             total_files=1,
             success_count=0,
             failed_count=0,
