@@ -94,8 +94,8 @@ _KANJI_CHAR_CLASS = f"[{re.escape(KANJI_CHARS)}]"
 
 DYNAMIC_EPISODE_PATTERNS = [
     # ===== 第X話/集/回/章/弾/幕 =====
-    (r"第\s*(\d+)\s*[話话集回章弾幕]", "digit"),
-    (rf"第\s*({_KANJI_CHAR_CLASS}+)\s*[話话集回章弾幕]", "kanji"),
+    (r"第\s*(\d+)\s*[話话集回章弾幕巻卷夜]", "digit"),
+    (rf"第\s*({_KANJI_CHAR_CLASS}+)\s*[話话集回章弾幕巻卷夜]", "kanji"),
 
     # ===== 其の/其ノ/其之/其乃 + 数字（日语古风）=====
     (r"其[のノ之乃]\s*(\d+)", "digit"),
@@ -121,6 +121,16 @@ DYNAMIC_EPISODE_PATTERNS = [
     # ===== Act N / Scene N（舞台剧风格）=====
     (r"[Aa]ct\.?\s*(\d+)", "digit"),
     (r"[Ss]cene\.?\s*(\d+)", "digit"),
+
+    # ===== 成人 OVA 常见发行编号 =====
+    (
+        r"(?:ATTACK\s*NO|Insert|Reason|Desire|Memorial|anime)"
+        r"\s*[.:：．#＃]?\s*(\d+)",
+        "digit",
+    ),
+    (r"理由\s*(\d+)", "digit"),
+    (r"\b(\d+)(?:st|nd|rd|th)\b", "digit"),
+    (r"(\d+)\s*枚目", "digit"),
 
     # ===== 話/集/回/章 + 数字（后置形式）=====
     (r"(\d+)\s*[話话集回章](?:\s|$|[^\d])", "digit"),
