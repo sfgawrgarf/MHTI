@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-2.0.6-blue.svg)
+![Version](https://img.shields.io/badge/version-2.0.7-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.12+-green.svg)
 ![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-MIT-orange.svg)
@@ -334,7 +334,7 @@ cd MHTI
 mkdir -p data media output
 
 # 默认固定为当前发布版；升级时先修改为目标版本号
-export MHTI_VERSION=2.0.6
+export MHTI_VERSION=2.0.7
 
 # 拉取已发布镜像并启动服务（Docker Compose v2）
 docker compose pull
@@ -355,7 +355,7 @@ docker compose logs -f mhti
 ```yaml
 services:
   mhti:
-    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.0.6}
+    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.0.7}
     container_name: mhti
     restart: unless-stopped
     ports:
@@ -372,7 +372,7 @@ services:
 
 生产环境可将 `./media` 和 `./output` 替换为宿主机绝对路径，例如 `/srv/media:/media:ro` 与 `/srv/mhti-output:/output`。文件移动、重命名、字幕处理和图片写入只允许发生在 `MHTI_ALLOWED_MEDIA_ROOTS` 列出的容器内目录；使用 `/incoming`、`/library` 或其他自定义挂载时，需要把相应容器路径加入这个逗号分隔的变量。TMDB 图片默认只允许从 `image.tmdb.org` 下载，如确需其他可信图片域名，可通过 `MHTI_ALLOWED_IMAGE_HOSTS` 显式配置。不要把 API Key 写入 Compose 文件，请在网页“设置 → AI 识别”中保存。
 
-默认配置引用 GitHub Container Registry（GHCR）的当前稳定版 `2.0.6`，不会因新的 `latest` 镜像自动升级。升级前请先查看 Release，再在项目目录的 `.env` 写入目标版本，例如 `MHTI_VERSION=2.0.7`，然后执行 `docker compose pull && docker compose up -d`。如需回滚，只需将该值改回原版本并重新拉取启动。
+默认配置引用 GitHub Container Registry（GHCR）的当前稳定版 `2.0.7`，不会因新的 `latest` 镜像自动升级。升级前请先查看 Release，再在项目目录的 `.env` 写入目标版本，例如 `MHTI_VERSION=2.0.8`，然后执行 `docker compose pull && docker compose up -d`。如需回滚，只需将该值改回原版本并重新拉取启动。
 
 当前开发中的 AI 辅助代码尚未发布时，使用本地构建覆盖文件测试：
 
