@@ -15,6 +15,14 @@ name: CI
 
 on:
   workflow_call:
+  # A branch rule should stop direct pushes, but keep this as a safety net for
+  # administrators and for repositories that have not enabled that rule yet.
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
   pull_request:
     branches: [main, master]
     paths-ignore:
