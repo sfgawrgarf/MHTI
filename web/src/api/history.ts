@@ -116,8 +116,14 @@ export const historyApi = {
     return response.data
   },
 
-  async retryNoMatchWithAI(recordIds: string[]): Promise<{ queued_job_ids: string[]; skipped: Array<{ id: string; reason: string }> }> {
-    const response = await api.post('/history/ai-retry', { record_ids: recordIds })
+  async retryNoMatchWithAI(request: {
+    recordIds?: string[]
+    allPending?: boolean
+  } = {}): Promise<{ queued_job_ids: string[]; skipped: Array<{ id: string; reason: string }> }> {
+    const response = await api.post('/history/ai-retry', {
+      record_ids: request.recordIds,
+      all_pending: request.allPending ?? false,
+    })
     return response.data
   },
 

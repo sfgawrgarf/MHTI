@@ -98,6 +98,29 @@ class AIRetryRequest(BaseModel):
 
     record_ids: list[str] | None = None
     limit: int = 100
+    all_pending: bool = False
+
+
+async def _list_all_pending_record_ids(
+    history_service: HistoryService,
+) -> list[str]:
+    """Collect every pending history ID without inheriting UI pagination."""
+    batch_size = 500
+    offset = 0
+    record_ids: list[str] = []
+
+    while True:
+        records, total = await history_service.list_records(
+            limit=batch_size,
+            offset=offset,
+            status=TaskStatus.PENDING_ACTION,
+        )
+        record_ids.extend(record.id for record in records)
+        offset += len(records)
+        if not records or offset >= total:
+            break
+
+    return record_ids
 
 
 @router.post("/ai-retry")
@@ -115,7 +138,15 @@ async def retry_no_match_with_ai(
     if request.limit < 1 or request.limit > 500:
         raise HTTPException(status_code=400, detail="limit 必须在 1 到 500 之间")
 
-    if request.record_ids:
+    if request.all_pending and request.record_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="all_pending 与 record_ids 不能同时使用",
+        )
+
+    if request.all_pending:
+        candidate_ids = await _list_all_pending_record_ids(history_service)
+    elif request.record_ids:
         candidate_ids = request.record_ids[:request.limit]
     else:
         records, _ = await history_service.list_records(

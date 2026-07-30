@@ -327,7 +327,15 @@ const loadRecord = async (showLoading = true) => {
   }
 }
 
-const goBack = () => router.push('/history')
+const returnToList = computed(() => {
+  const returnTo = route.query.return_to
+  if (typeof returnTo !== 'string') return '/history'
+
+  const resolved = router.resolve(returnTo)
+  return resolved.path === '/history' ? resolved.fullPath : '/history'
+})
+
+const goBack = () => router.push(returnToList.value)
 
 onMounted(loadRecord)
 
