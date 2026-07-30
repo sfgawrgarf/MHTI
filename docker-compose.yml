@@ -18,7 +18,7 @@ services:
   mhti:
     # Pin the default deployment to this release. Override MHTI_VERSION in a
     # local .env file when deliberately upgrading to a newer release.
-    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.0.6}
+    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.0.7}
     container_name: mhti
     restart: unless-stopped
 
