@@ -40,10 +40,35 @@ const message = useMessage()
 const loading = ref(false)
 const records = ref<HistoryRecord[]>([])
 const total = ref(0)
-const page = ref(1)
 const pageSize = ref(20)
-const search = ref('')
-const statusFilter = ref<TaskStatus | null>(null)
+
+const taskStatuses = new Set<TaskStatus>([
+  'success',
+  'failed',
+  'running',
+  'pending_action',
+  'timeout',
+  'skipped',
+  'deleted',
+  'cancelled',
+  'replaced',
+])
+
+const getQueryString = (value: unknown) => typeof value === 'string' ? value : null
+
+const getInitialPage = () => {
+  const value = Number(getQueryString(route.query.page))
+  return Number.isInteger(value) && value > 0 ? value : 1
+}
+
+const getInitialStatus = (): TaskStatus | null => {
+  const value = getQueryString(route.query.status)
+  return value && taskStatuses.has(value as TaskStatus) ? value as TaskStatus : null
+}
+
+const page = ref(getInitialPage())
+const search = ref(getQueryString(route.query.search) ?? '')
+const statusFilter = ref<TaskStatus | null>(getInitialStatus())
 
 // WebSocket 实时更新
 const { registerHandler, unregisterHandler } = useWebSocket()
@@ -57,8 +82,8 @@ const resolveLoading = ref(false)
 
 // 从 URL 获取 manual_job_id
 const manualJobId = computed(() => {
-  const id = route.query.manual_job_id
-  return id ? Number(id) : null
+  const id = Number(getQueryString(route.query.manual_job_id))
+  return Number.isInteger(id) && id > 0 ? id : null
 })
 
 // 状态筛选选项
@@ -95,23 +120,39 @@ const loadRecords = async () => {
   }
 }
 
+const syncListStateToRoute = async () => {
+  const query = { ...route.query }
+  delete query.page
+  delete query.search
+  delete query.status
+
+  if (page.value > 1) query.page = String(page.value)
+  if (search.value) query.search = search.value
+  if (statusFilter.value) query.status = statusFilter.value
+
+  await router.replace({ path: '/history', query })
+}
+
 // 搜索
-const handleSearch = () => {
+const handleSearch = async () => {
   page.value = 1
-  loadRecords()
+  await syncListStateToRoute()
+  await loadRecords()
 }
 
 // 状态筛选
-const handleStatusChange = (value: TaskStatus | null) => {
+const handleStatusChange = async (value: TaskStatus | null) => {
   statusFilter.value = value
   page.value = 1
-  loadRecords()
+  await syncListStateToRoute()
+  await loadRecords()
 }
 
 // 分页
-const handlePageChange = (p: number) => {
+const handlePageChange = async (p: number) => {
   page.value = p
-  loadRecords()
+  await syncListStateToRoute()
+  await loadRecords()
 }
 
 // 返回手动任务列表
@@ -143,16 +184,15 @@ const clearAllRecords = async () => {
   }
 }
 
-const retryVisibleNoMatchesWithAI = async () => {
-  const candidates = records.value.filter(record => record.status === 'pending_action').map(record => record.id)
-  if (!candidates.length) {
-    message.info('当前页没有待处理记录')
-    return
-  }
+const retryAllNoMatchesWithAI = async () => {
   loading.value = true
   try {
-    const result = await historyApi.retryNoMatchWithAI(candidates)
-    message.success(`已创建 ${result.queued_job_ids.length} 个 AI 重试任务`)
+    const result = await historyApi.retryNoMatchWithAI({ allPending: true })
+    if (result.queued_job_ids.length) {
+      message.success(`已为全部待处理记录创建 ${result.queued_job_ids.length} 个 AI 重试任务`)
+    } else if (!result.skipped.length) {
+      message.info('没有可执行 AI 重试的待处理记录')
+    }
     if (result.skipped.length) message.warning(`${result.skipped.length} 条记录未满足重试条件`)
     await loadRecords()
   } catch (error) {
@@ -161,6 +201,14 @@ const retryVisibleNoMatchesWithAI = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const openRecordDetail = (recordId: string) => {
+  router.push({
+    name: 'history-detail',
+    params: { id: recordId },
+    query: { return_to: route.fullPath },
+  })
 }
 
 // 导出记录
@@ -386,7 +434,7 @@ const onResolveRequiresAction = (record: HistoryRecordDetail) => {
 // 行点击跳转详情
 const rowProps = (row: HistoryRecord) => ({
   style: 'cursor: pointer',
-  onClick: () => router.push(`/history/${row.id}`),
+  onClick: () => openRecordDetail(row.id),
 })
 
 // WebSocket 消息处理 - 使用节流避免频繁刷新
@@ -487,9 +535,14 @@ watch(manualJobId, () => {
           />
         </div>
         <div class="toolbar-right">
-          <NButton type="primary" secondary @click="retryVisibleNoMatchesWithAI">
-            AI 重试待处理
-          </NButton>
+          <NPopconfirm @positive-click="retryAllNoMatchesWithAI">
+            <template #trigger>
+              <NButton type="primary" secondary>
+                AI 重试全部待处理
+              </NButton>
+            </template>
+            将处理所有分页中的待处理记录；非 no_match 或源文件缺失的记录会安全跳过。继续吗？
+          </NPopconfirm>
           <NButton quaternary @click="loadRecords">
             <template #icon><NIcon :component="RefreshOutline" /></template>
           </NButton>
@@ -525,7 +578,7 @@ watch(manualJobId, () => {
             :key="record.id"
             clickable
             class="record-card"
-            @click="router.push(`/history/${record.id}`)"
+            @click="openRecordDetail(record.id)"
           >
             <div class="record-card-content">
               <div class="record-header">

@@ -1,7 +1,7 @@
 """History API regression tests."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import aiosqlite
 import pytest
@@ -12,6 +12,60 @@ from server.core.db import configure_connection, create_all_tables
 from server.models.history import ConflictType, HistoryRecordCreate, TaskStatus
 from server.models.scraper import ScrapeByIdRequest, ScrapeResult, ScrapeStatus
 from server.services.history_service import HistoryService
+
+
+@pytest.mark.asyncio
+async def test_list_all_pending_record_ids_reads_every_backend_page():
+    """The all-pending action must not inherit the UI's 20-row page."""
+    first_page = [SimpleNamespace(id=f"record-{index}") for index in range(500)]
+    second_page = [SimpleNamespace(id=f"record-{index}") for index in range(500, 503)]
+    history_service = AsyncMock()
+    history_service.list_records.side_effect = [
+        (first_page, 503),
+        (second_page, 503),
+    ]
+
+    record_ids = await history_api._list_all_pending_record_ids(history_service)
+
+    assert record_ids == [f"record-{index}" for index in range(503)]
+    assert history_service.list_records.await_args_list == [
+        call(limit=500, offset=0, status=TaskStatus.PENDING_ACTION),
+        call(limit=500, offset=500, status=TaskStatus.PENDING_ACTION),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ai_retry_all_pending_uses_backend_collection(monkeypatch):
+    """The explicit all-pending mode sends every collected ID through validation."""
+    collect_ids = AsyncMock(return_value=["record-1", "record-2"])
+    monkeypatch.setattr(history_api, "_list_all_pending_record_ids", collect_ids)
+    history_service = AsyncMock()
+    history_service.get_record.side_effect = [None, None]
+
+    result = await history_api.retry_no_match_with_ai(
+        history_api.AIRetryRequest(all_pending=True),
+        history_service,
+    )
+
+    collect_ids.assert_awaited_once_with(history_service)
+    assert [item["id"] for item in result["skipped"]] == ["record-1", "record-2"]
+    assert result["queued_job_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_ai_retry_rejects_ambiguous_all_pending_request():
+    history_service = AsyncMock()
+
+    with pytest.raises(HTTPException, match="不能同时使用") as error:
+        await history_api.retry_no_match_with_ai(
+            history_api.AIRetryRequest(
+                record_ids=["record-1"],
+                all_pending=True,
+            ),
+            history_service,
+        )
+
+    assert error.value.status_code == 400
 
 
 @pytest.mark.asyncio
