@@ -23,7 +23,6 @@ on:
       version:
         description: '版本号 (如 1.0.0，不带 v 前缀)'
         required: true
-        default: '2.0.6'
       prerelease:
         description: '是否为预发布版本'
         required: false
@@ -50,6 +49,16 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
     steps:
+      - name: 检出发布源码
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: 确定版本号
         id: version
         run: |
@@ -69,6 +78,62 @@ jobs:
           echo "📦 版本: $VERSION"
           echo "🏷️ 标签: v$VERSION"
           echo "🚀 预发布: $IS_PRERELEASE"
+
+      - name: 验证发布来源与版本一致性
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "版本号格式无效: $VERSION" >&2
+            exit 1
+          fi
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "手动发布只能从 main 运行，当前为 $GITHUB_REF" >&2
+              exit 1
+            fi
+          else
+            git fetch --no-tags origin main
+            TAG_COMMIT="$(git rev-list -n 1 "$GITHUB_REF")"
+            if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+              echo "发布标签必须指向 main 历史中的提交" >&2
+              exit 1
+            fi
+          fi
+
+          python - "$VERSION" <<'PY'
+          import json
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          version = sys.argv[1]
+          root = Path.cwd()
+
+          def matched(path: str, pattern: str) -> str:
+              result = re.search(pattern, (root / path).read_text(encoding="utf-8"))
+              if not result:
+                  raise SystemExit(f"无法从 {path} 读取版本号")
+              return result.group(1)
+
+          declared_versions = {
+              "pyproject.toml": tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["poetry"]["version"],
+              "server/__init__.py": matched("server/__init__.py", r'__version__\s*=\s*["\']([^"\']+)["\']'),
+              "web/package.json": json.loads((root / "web/package.json").read_text(encoding="utf-8"))["version"],
+              "Dockerfile": matched("Dockerfile", r'org\.opencontainers\.image\.version=["\']([^"\']+)["\']'),
+              "docker-compose.yml": matched("docker-compose.yml", r'MHTI_VERSION:-([^}]+)'),
+          }
+
+          mismatches = {path: value for path, value in declared_versions.items() if value != version}
+          if mismatches:
+              formatted = ", ".join(f"{path}={value}" for path, value in mismatches.items())
+              raise SystemExit(f"发布版本 {version} 与源码声明不一致: {formatted}")
+          print(f"版本一致性验证通过: {version}")
+          PY
 
   # ===========================================================================
   # 构建并推送 Docker 镜像到 GitHub Container Registry
