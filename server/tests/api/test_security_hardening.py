@@ -46,7 +46,7 @@ def test_frontend_config_remains_public_and_reports_release_version(
     """The login page can read runtime config without reopening private APIs."""
     response = client.get("/api/config/frontend")
     assert response.status_code == 200
-    assert response.json()["version"] == "2.0.5"
+    assert response.json()["version"] == "2.0.6"
 
 
 @pytest.mark.asyncio
