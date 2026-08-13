@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
+from server import __version__
 from server.core.auth import AuthContext, authenticate_access_token, get_client_ip
 from server.core.path_security import (
     PathSecurityError,
@@ -46,7 +47,7 @@ def test_frontend_config_remains_public_and_reports_release_version(
     """The login page can read runtime config without reopening private APIs."""
     response = client.get("/api/config/frontend")
     assert response.status_code == 200
-    assert response.json()["version"] == "2.0.7"
+    assert response.json()["version"] == __version__
 
 
 @pytest.mark.asyncio
