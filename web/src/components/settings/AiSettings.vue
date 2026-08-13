@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpace, NSwitch, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NButtonGroup, NCard, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpace, NSwitch, NTag, useMessage } from 'naive-ui'
 import { aiApi, type AiConfig, type AiRecognitionResult } from '@/api/ai'
 
 const message = useMessage()
@@ -11,6 +11,7 @@ const testPath = ref('')
 const result = ref<AiRecognitionResult | null>(null)
 const config = ref<AiConfig>({
   enabled: false,
+  usage_mode: 'assist_use',
   base_url: 'https://api.openai.com/v1',
   model: '',
   timeout_seconds: 30,
@@ -74,6 +75,20 @@ onMounted(load)
     <NForm label-placement="left" label-width="150">
       <NFormItem label="启用 AI">
         <NSwitch v-model:value="config.enabled" />
+      </NFormItem>
+      <NFormItem label="AI 使用模式">
+        <NSpace vertical>
+          <NButtonGroup>
+            <NButton :type="config.usage_mode === 'assist_use' ? 'primary' : 'default'" @click="config.usage_mode = 'assist_use'">辅助使用</NButton>
+            <NButton :type="config.usage_mode === 'force_use' ? 'warning' : 'default'" @click="config.usage_mode = 'force_use'">强制使用</NButton>
+          </NButtonGroup>
+          <NAlert v-if="config.usage_mode === 'assist_use'" type="info" :bordered="false">
+            常规 TMDB 搜索没有成人候选时才调用 AI；AI 不可用时继续常规刮削。
+          </NAlert>
+          <NAlert v-else type="warning" :bordered="false">
+            未命中已确认别名的文件都会调用 AI。若 AI 未给出高置信度候选或请求失败，将转为人工确认，不会回退为常规自动选择。
+          </NAlert>
+        </NSpace>
       </NFormItem>
       <NFormItem label="兼容接口地址">
         <NInput v-model:value="config.base_url" placeholder="https://api.openai.com/v1" />

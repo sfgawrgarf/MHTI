@@ -29,7 +29,7 @@ from server.models.scraper import (
 )
 from server.models.storage import StorageLocator, StorageProvider
 from server.models.tmdb import TMDBSearchResult, TMDBSeason, TMDBSeries
-from server.models.ai import AICandidate, AIRecognitionResult
+from server.models.ai import AICandidate, AIRecognitionResult, AIUsageMode
 from server.services.ai_provider_service import AIProviderError, AIProviderService
 from server.services.config_service import ConfigService
 from server.services.emby_service import EmbyService
@@ -80,6 +80,23 @@ def _can_auto_apply_ai_result(result: AIRecognitionResult) -> bool:
     but they must not alter the title or episode data consumed by a worker.
     """
     return not result.needs_confirmation
+
+
+def _should_use_ai(
+    usage_mode: AIUsageMode,
+    *,
+    has_confirmed_alias: bool,
+    has_adult_candidates: bool,
+) -> bool:
+    """Return whether AI should run for the current scrape.
+
+    Assist mode is a fallback for filenames that ordinary TMDB searching could
+    not resolve. Force mode mirrors CMS's ``force_use`` behavior: every source
+    without a confirmed local alias must pass through AI recognition.
+    """
+    if has_confirmed_alias:
+        return False
+    return usage_mode == AIUsageMode.FORCE_USE or not has_adult_candidates
 
 
 class _P115StorageProvider:
@@ -1004,8 +1021,17 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         ai_selected: TMDBSearchResult | None = None
         ai_provider = AIProviderService(self.config_service)
         ai_config = await ai_provider.get_config()
-        if alias_match is None and ai_config.enabled:
-            ai_step = ScrapeLogStep(name="AI 辅助识别", logs=[])
+        force_ai = ai_config.enabled and ai_config.usage_mode == AIUsageMode.FORCE_USE
+        ai_required_but_failed = False
+        if ai_config.enabled and _should_use_ai(
+            ai_config.usage_mode,
+            has_confirmed_alias=alias_match is not None,
+            has_adult_candidates=bool(adult_results),
+        ):
+            ai_step = ScrapeLogStep(
+                name="AI 强制识别" if force_ai else "AI 辅助识别",
+                logs=[],
+            )
             scrape_logs.append(ai_step)
             candidates = [
                 AICandidate(
@@ -1113,12 +1139,18 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     ai_step.logs.append(ScrapeLogEntry(message=ai_result.reason or "AI 未给出可用候选", level=LogLevel.WARNING))
                 await notify_log_update()
             except AIProviderError as exc:
-                ai_step.logs.append(ScrapeLogEntry(message=f"AI 识别失败，回退到常规刮削: {exc}", level=LogLevel.WARNING))
+                ai_required_but_failed = force_ai
+                fallback = "等待人工确认" if force_ai else "回退到常规刮削"
+                ai_step.logs.append(ScrapeLogEntry(message=f"AI 识别失败，{fallback}: {exc}", level=LogLevel.WARNING))
                 ai_step.completed = False
                 await notify_log_update()
             except (httpx.TimeoutException, httpx.RequestError) as exc:
+                ai_required_but_failed = force_ai
                 ai_step.logs.append(ScrapeLogEntry(
-                    message=f"AI 建议标题的 TMDB 搜索失败: {exc}",
+                    message=(
+                        f"AI 建议标题的 TMDB 搜索失败，"
+                        f"{'等待人工确认' if force_ai else '回退到常规刮削'}: {exc}"
+                    ),
                     level=LogLevel.WARNING,
                 ))
                 ai_step.completed = False
@@ -1141,6 +1173,17 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         elif request.auto_select and ai_selected is not None:
             selected = ai_selected
             result.selected_id = selected.id
+        elif request.auto_select and force_ai:
+            search_step.logs.append(ScrapeLogEntry(message="获取各剧集详情..."))
+            await notify_log_update()
+            result.search_results = await self._enrich_search_results(adult_results)
+            result.status = ScrapeStatus.NEED_SELECTION
+            if ai_required_but_failed:
+                result.message = "AI 强制识别失败，已禁止常规自动选择，请手动确认"
+            else:
+                result.message = "AI 强制识别未给出高置信度候选，请手动确认"
+            result.scrape_logs = scrape_logs
+            return result
         elif request.auto_select:
             ranked_match = select_series_candidate(
                 adult_results,

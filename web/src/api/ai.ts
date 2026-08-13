@@ -1,9 +1,11 @@
 import api from './index'
 
 export type VersionPolicy = 'coexist' | 'prefer_best' | 'skip' | 'archive'
+export type AiUsageMode = 'assist_use' | 'force_use'
 
 export interface AiConfig {
   enabled: boolean
+  usage_mode: AiUsageMode
   base_url: string
   model: string
   timeout_seconds: number

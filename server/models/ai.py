@@ -13,8 +13,16 @@ class VersionPolicy(str, Enum):
     ARCHIVE = "archive"
 
 
+class AIUsageMode(str, Enum):
+    """Control when the configured AI participates in a scrape."""
+
+    ASSIST_USE = "assist_use"
+    FORCE_USE = "force_use"
+
+
 class AIConfig(BaseModel):
     enabled: bool = False
+    usage_mode: AIUsageMode = AIUsageMode.ASSIST_USE
     base_url: str = "https://api.openai.com/v1"
     model: str = ""
     timeout_seconds: int = Field(default=30, ge=5, le=180)
@@ -25,6 +33,7 @@ class AIConfig(BaseModel):
 
 class AIConfigUpdate(BaseModel):
     enabled: bool = False
+    usage_mode: AIUsageMode = AIUsageMode.ASSIST_USE
     base_url: str = "https://api.openai.com/v1"
     model: str = ""
     timeout_seconds: int = Field(default=30, ge=5, le=180)
@@ -35,6 +44,7 @@ class AIConfigUpdate(BaseModel):
 
 class AIConfigResponse(BaseModel):
     enabled: bool
+    usage_mode: AIUsageMode
     base_url: str
     model: str
     timeout_seconds: int
