@@ -38,6 +38,7 @@ async def get_ai_config(provider: AIProviderService = Depends(get_ai_provider)) 
     config = await provider.get_config()
     return AIConfigResponse(
         enabled=config.enabled,
+        usage_mode=config.usage_mode,
         base_url=config.base_url,
         model=config.model,
         timeout_seconds=config.timeout_seconds,
@@ -60,6 +61,7 @@ async def save_ai_config(
     await provider.save_config(config)
     return AIConfigResponse(
         enabled=config.enabled,
+        usage_mode=config.usage_mode,
         base_url=config.base_url,
         model=config.model,
         timeout_seconds=config.timeout_seconds,
