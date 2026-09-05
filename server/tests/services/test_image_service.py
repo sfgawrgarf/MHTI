@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import httpx
 
-from server.services.image_service import ImageService, RETRY_DELAYS
+from server.services.image_service import ImageService
 from server.models.image import ImageDownloadRequest, ImageSize
 from server.models.system import SystemConfig
 from server.models.config import ProxyConfig

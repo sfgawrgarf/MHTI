@@ -9,12 +9,10 @@ from fastapi.responses import PlainTextResponse
 from server.core.auth import require_auth
 from server.core.container import get_log_service
 from server.models.log import (
-    LogConfig,
     LogConfigUpdate,
     LogEntry,
     LogLevel,
     LogQuery,
-    LogStats,
 )
 from server.services.log_service import LogService
 

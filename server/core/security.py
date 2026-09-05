@@ -16,9 +16,20 @@ def get_encryption_key() -> bytes:
     _KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     if _KEY_FILE.exists():
+        _KEY_FILE.chmod(0o600)
         return _KEY_FILE.read_bytes()
+
     key = Fernet.generate_key()
-    _KEY_FILE.write_bytes(key)
+    try:
+        fd = os.open(_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Another process created the key between the existence check and open.
+        _KEY_FILE.chmod(0o600)
+        return _KEY_FILE.read_bytes()
+
+    with os.fdopen(fd, "wb") as key_file:
+        os.fchmod(key_file.fileno(), 0o600)
+        key_file.write(key)
     return key
 
 

@@ -7,8 +7,16 @@
 # - Automatic gzip compression
 
 :8000 {
-    # Gzip compression
-    encode gzip
+    # Prefer Zstandard where supported and retain gzip compatibility.
+    encode zstd gzip
+
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "same-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
 
     # API proxy
     handle /api/* {

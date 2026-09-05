@@ -14,7 +14,26 @@ RUN npm ci --silent
 COPY web/ .
 RUN npm run build
 
-# Stage 2: Runtime environment
+# Stage 2: Build Python dependencies outside the runtime image
+FROM python:3.12-slim AS python-builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv
+
+RUN python -m venv "$VIRTUAL_ENV" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gcc g++ libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+COPY requirements.lock ./
+RUN pip install --require-hashes -r requirements.lock
+
+# Stage 3: Obtain the static Caddy binary without adding an APT repository.
+FROM caddy:2-alpine AS caddy
+
+# Stage 4: Minimal runtime environment
 FROM python:3.12-slim AS runtime
 
 LABEL org.opencontainers.image.title="MHTI"
@@ -30,27 +49,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install system dependencies + Caddy + build tools (for p115cipher/orjson C extensions)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    gnupg \
-    debian-keyring \
-    debian-archive-keyring \
-    apt-transport-https \
-    gcc \
-    g++ \
-    libffi-dev \
-    && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
-    && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list \
-    && apt-get update \
-    && apt-get install -y caddy \
-    && rm -rf /var/lib/apt/lists/*
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
 
-# Copy dependency files and install Python dependencies
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && apt-get purge -y --auto-remove gcc g++ libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=python-builder /opt/venv /opt/venv
+COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
 
 # Copy backend source code
 COPY server/ ./server/
@@ -70,7 +73,7 @@ RUN mkdir -p /app/data && chmod 755 /app/data
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" || exit 1
 
 # Expose ports
 EXPOSE 8000

@@ -479,7 +479,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
     async def _resolve_p115_output_locator(self, locator: StorageLocator) -> StorageLocator:
         """输出目录缺少 file_id 时，按路径解析出真实的 115 目录 id。"""
-        from server.services.p115_service import P115Service, VIRTUAL_115_ROOT_PATH
+        from server.services.p115_service import P115Service
         svc = P115Service(self.config_service)
         config = await svc.config_service.get_115_config()
         if not config.is_logged_in:

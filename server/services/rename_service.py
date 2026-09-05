@@ -155,7 +155,7 @@ class RenameService:
         try:
             # Create destination directory
             dest_folder.mkdir(parents=True, exist_ok=True)
-            logger.info(f"execute_rename: 目录已创建/存在")
+            logger.info("execute_rename: 目录已创建/存在")
 
             # Create backup if requested
             backup_path = None
@@ -183,7 +183,7 @@ class RenameService:
             # Move/rename the file based on link_mode
             logger.info(f"execute_rename: 正在处理文件，模式: {request.link_mode or 'move(默认)'}...")
             self._execute_file_operation(source_path, dest_path, request.link_mode)
-            logger.info(f"execute_rename: 文件处理成功!")
+            logger.info("execute_rename: 文件处理成功!")
 
             return RenameResult(
                 source_path=str(source_path),

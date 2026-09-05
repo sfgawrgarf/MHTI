@@ -58,7 +58,7 @@ CORS_ORIGINS = [
 ]
 
 # Allow all private network origins (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL", "true").lower() == "true"
+CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL", "false").lower() == "true"
 
 # Allow additional origins from environment
 if extra_origins := os.getenv("CORS_ORIGINS"):

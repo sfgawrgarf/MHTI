@@ -17,7 +17,6 @@ from server.models.config import (
     ProxyConfigRequest,
     ProxyConfigResponse,
     ProxyTestResponse,
-    ProxyType,
     SUPPORTED_LANGUAGES,
 )
 from server.models.organize import OrganizeConfig

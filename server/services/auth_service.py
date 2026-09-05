@@ -6,7 +6,8 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 
 from server.core.database import get_db_manager
 from server.models.auth import ExpireOption, EXPIRE_HOURS_MAP, AuthConfig
@@ -227,7 +228,7 @@ class AuthService:
             username = payload.get("sub")
             session_id = payload.get("sid")
             return username, session_id
-        except JWTError as e:
+        except InvalidTokenError as e:
             logger.debug(f"Token verification failed: {e}")
             return None, None
 

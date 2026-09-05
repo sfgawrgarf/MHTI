@@ -10,7 +10,6 @@
 import tempfile
 from pathlib import Path
 from typing import Generator
-from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient

@@ -26,8 +26,8 @@ KANJI_NUMBERS = {
     "佰": 100, "仟": 1000,
 
     # ===== 中国繁体大写数字 =====
-    "壹": 1, "貳": 2, "參": 3, "叁": 3, "肆": 4, "伍": 5,
-    "陆": 6, "柒": 7, "捌": 8, "玖": 9, "拾": 10,
+    "壹": 1, "貳": 2, "參": 3, "叁": 3,
+    "陆": 6, "柒": 7,
 
     # ===== 日语古文/变体字形 =====
     "弍": 2,   # 弐的变体
@@ -36,9 +36,6 @@ KANJI_NUMBERS = {
     "贰": 2,   # 简化变体
     "叄": 3,   # 参的变体
     "仨": 3,   # 口语三
-    "陆": 6,   # 陸的简化
-    "柒": 7,   # 漆的变体（更常用）
-
     # ===== 全角数字 =====
     "０": 0, "１": 1, "２": 2, "３": 3, "４": 4,
     "５": 5, "６": 6, "７": 7, "８": 8, "９": 9,
@@ -178,8 +175,6 @@ def kanji_to_number(kanji_str: str) -> int | None:
     # 组合汉字数字（如 十二 = 12, 二十三 = 23, 一百二十三 = 123）
     result = 0
     temp = 0
-    last_unit = 1
-
     for char in kanji_str:
         num = KANJI_NUMBERS.get(char)
         if num is None:
@@ -191,7 +186,6 @@ def kanji_to_number(kanji_str: str) -> int | None:
                 temp = 1
             result += temp * num
             temp = 0
-            last_unit = num
         else:
             temp = num
 
