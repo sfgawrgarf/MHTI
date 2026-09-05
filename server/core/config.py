@@ -4,9 +4,7 @@ import asyncio
 import logging
 import secrets
 from pathlib import Path
-from functools import lru_cache
 
-import aiosqlite
 
 from server.models.auth import AuthConfig
 

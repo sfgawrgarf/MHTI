@@ -11,12 +11,12 @@ fastapi = ">=0.109,<1.0"
 uvicorn = {extras = ["standard"], version = ">=0.27,<1.0"}
 pydantic = ">=2.6,<3.0"
 aiosqlite = ">=0.19,<1.0"
-cryptography = ">=42.0,<43.0"
+cryptography = ">=49.0,<51.0"
 httpx = {extras = ["socks"], version = ">=0.27,<1.0"}
 croniter = ">=2.0,<3.0"
 sse-starlette = ">=2.0,<3.0"
 watchdog = ">=4.0,<5.0"
-python-jose = {extras = ["cryptography"], version = ">=3.3,<4.0"}
+pyjwt = ">=2.10,<3.0"
 p115client = "0.0.9.6.5.1"
 
 [tool.poetry.group.dev.dependencies]

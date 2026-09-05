@@ -4,11 +4,10 @@ import asyncio
 import logging
 import secrets
 from datetime import datetime, timezone
-from functools import lru_cache
 
 import aiosqlite
 
-from server.core.database import DATABASE_PATH, get_db_manager
+from server.core.database import get_db_manager
 from server.core.security import encrypt_value, decrypt_value
 from server.models.auth import AuthConfig
 

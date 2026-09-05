@@ -376,20 +376,17 @@ class TestJapaneseEpisodeParser:
     @pytest.mark.parametrize(
         "filename,expected_episode",
         [
-            ("剧名 Ⅰ.mp4", 1),
-            ("剧名 Ⅱ.mp4", 2),
-            ("剧名 Ⅲ.mp4", 3),
-            ("剧名 Ⅳ.mp4", 4),
-            ("剧名 Ⅴ.mp4", 5),
+            ("剧名 第Ⅰ話.mp4", 1),
+            ("剧名 第Ⅱ話.mp4", 2),
+            ("剧名 第Ⅲ話.mp4", 3),
+            ("剧名 第Ⅳ話.mp4", 4),
+            ("剧名 第Ⅴ話.mp4", 5),
         ],
     )
     def test_parse_roman_numerals(self, parser_service, filename, expected_episode):
         """Test Roman numeral episode parsing."""
-        # Note: Roman numerals are in KANJI_NUMBERS but need specific pattern to match
-        # This test documents expected behavior
         result = parser_service.parse(filename)
-        # Roman numerals might not be matched without explicit pattern
-        # assert result.episode == expected_episode or result.episode is None
+        assert result.episode == expected_episode
 
     # ===== 全角数字测试 =====
     @pytest.mark.parametrize(

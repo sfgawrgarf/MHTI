@@ -9,12 +9,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
-import httpx
 
 from server.main import app
-from server.core.auth import require_auth, AuthContext
 from server.core.container import get_tmdb_service
-from server.core.exceptions import TMDBTimeoutError, TMDBConnectionError, TMDBNotFoundError
+from server.core.exceptions import TMDBTimeoutError, TMDBConnectionError
 from server.services.config_service import ConfigService
 from server.services.tmdb_service import TMDBService
 from server.models.tmdb import (

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from enum import Enum, auto
-from typing import TypeVar, Type, Callable, Any, overload
+from typing import TypeVar, Type, Callable, Any
 
 logger = logging.getLogger(__name__)
 

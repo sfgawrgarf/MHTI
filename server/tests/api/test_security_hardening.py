@@ -1,5 +1,6 @@
 """Regression tests for authentication and file-operation boundaries."""
 
+import stat
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,13 +9,13 @@ from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
 from server import __version__
+from server.core import security as security_module
 from server.core.auth import AuthContext, authenticate_access_token, get_client_ip
 from server.core.path_security import (
     PathSecurityError,
     validate_image_url,
     validate_media_path,
 )
-from server.main import app
 from server.models.image import ImageDownloadRequest
 from server.models.subtitle import SubtitleRenameRequest
 
@@ -131,6 +132,19 @@ def test_image_download_hosts_are_allowlisted(monkeypatch: pytest.MonkeyPatch) -
         validate_image_url("http://127.0.0.1/admin")
     with pytest.raises(PathSecurityError):
         validate_image_url("https://example.com/image.jpg")
+
+
+def test_encryption_key_is_created_with_private_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Secret material must not be readable by other host users."""
+    key_path = tmp_path / ".secret_key"
+    monkeypatch.setattr(security_module, "_KEY_FILE", key_path)
+
+    first_key = security_module.get_encryption_key()
+    assert security_module.get_encryption_key() == first_key
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
 
 
 def test_forwarded_ip_uses_trusted_edge_entry(monkeypatch: pytest.MonkeyPatch) -> None:

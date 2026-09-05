@@ -4,12 +4,10 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
-import aiosqlite
 
-from server.core.db.connection import DATABASE_PATH, get_db_manager
+from server.core.db.connection import get_db_manager
 from server.models.log import (
     LogConfig,
     LogConfigUpdate,

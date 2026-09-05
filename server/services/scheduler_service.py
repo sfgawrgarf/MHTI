@@ -1,6 +1,5 @@
 """Scheduler service for managing scheduled tasks."""
 
-import json
 import uuid
 from datetime import datetime
 from pathlib import Path

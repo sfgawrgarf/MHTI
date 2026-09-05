@@ -634,9 +634,6 @@ class WatcherService:
 
     async def get_status(self) -> WatcherStatusResponse:
         """Get watcher status."""
-        folders, _ = await self.list_folders()
-        active = sum(1 for f in folders if f.enabled)
-
         return WatcherStatusResponse(
             status=self._status,
             active_watchers=len(self._strategies),

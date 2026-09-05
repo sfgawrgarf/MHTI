@@ -1,7 +1,6 @@
 """Unit tests for NFO API endpoints."""
 
 import pytest
-from datetime import date
 from fastapi.testclient import TestClient
 
 from server.main import app

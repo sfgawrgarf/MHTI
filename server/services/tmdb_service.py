@@ -8,7 +8,6 @@ import httpx
 from server.core.exceptions import (
     TMDBConnectionError,
     TMDBNotConfiguredError,
-    TMDBNotFoundError,
     TMDBTimeoutError,
 )
 from server.models.config import ApiTokenStatus

@@ -1,7 +1,7 @@
 """Base repository for data access layer."""
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Any
+from typing import Generic, TypeVar
 
 T = TypeVar("T")
 
