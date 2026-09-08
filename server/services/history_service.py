@@ -10,7 +10,9 @@ from pathlib import Path
 
 import aiosqlite
 
-from server.core.database import DATABASE_PATH, _configure_connection
+from server.core.database import DATABASE_PATH
+from server.core.db.connection import DatabaseManager, db_connection
+from server.core.db.schema import migrate_history_table
 from server.models.history import (
     ConflictType,
     HistoryRecord,
@@ -34,49 +36,32 @@ class HistoryService:
     def __init__(self, db_path: Path | None = None):
         """Initialize history service."""
         self.db_path = db_path or DATABASE_PATH
+        self._db_ready = False
+        self._migration_lock = asyncio.Lock()
 
     async def _ensure_db(self) -> None:
-        """Ensure database directory exists and run migrations."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
-            # 添加新列（如果不存在）- 迁移逻辑
-            new_columns = [
-                ("display_id", "INTEGER"),
-                ("manual_job_id", "INTEGER"),
-                ("title", "TEXT"),
-                ("original_title", "TEXT"),
-                ("plot", "TEXT"),
-                ("tags", "TEXT"),
-                ("cover_url", "TEXT"),
-                ("poster_url", "TEXT"),
-                ("thumb_url", "TEXT"),
-                ("release_date", "TEXT"),
-                ("rating", "REAL"),
-                ("votes", "INTEGER"),
-                ("translator", "TEXT"),
-                ("scrape_logs", "TEXT"),
-                ("conflict_type", "TEXT"),
-                ("conflict_data", "TEXT"),
-                # 季/集信息
-                ("season_number", "INTEGER"),
-                ("episode_number", "INTEGER"),
-                ("episode_title", "TEXT"),
-                ("episode_overview", "TEXT"),
-                ("episode_still_url", "TEXT"),
-                ("episode_air_date", "TEXT"),
-                ("source", "TEXT DEFAULT 'manual'"),
-                ("scrape_job_id", "TEXT"),
-                ("file_fingerprint", "TEXT"),  # 文件指纹，用于去重
-            ]
-            for col_name, col_type in new_columns:
-                try:
-                    await db.execute(
-                        f"ALTER TABLE history_records ADD COLUMN {col_name} {col_type}"
-                    )
-                except Exception:
-                    pass  # 列已存在
-            await db.commit()
+        """Production migration runs at startup; custom databases migrate once."""
+        if self._db_ready:
+            return
+        async with self._migration_lock:
+            if self._db_ready:
+                return
+            manager = DatabaseManager._instance
+            if (
+                self.db_path.resolve() == DATABASE_PATH.resolve()
+                and manager is not None
+                and manager._initialized
+                and manager._loop is asyncio.get_running_loop()
+            ):
+                self._db_ready = True
+                return
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            async with db_connection(self.db_path) as db:
+                await db.execute("BEGIN IMMEDIATE")
+                await migrate_history_table(db)
+                await db.commit()
+            # Failed migrations are visible and may be retried after repair.
+            self._db_ready = True
 
     async def create_record(self, record: HistoryRecordCreate) -> HistoryRecord:
         """Create a new history record."""
@@ -98,8 +83,7 @@ class HistoryService:
                 ensure_ascii=False
             )
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             # Keep display_id allocation and insert in one serialized write
             # transaction so concurrent workers cannot allocate the same value.
             await db.execute("BEGIN IMMEDIATE")
@@ -196,8 +180,7 @@ class HistoryService:
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             # 优化：第一页且无筛选条件时使用快速模式
@@ -256,8 +239,7 @@ class HistoryService:
         """Get a history record by ID with full details."""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM history_records WHERE id = ?",
@@ -285,8 +267,7 @@ class HistoryService:
 
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             placeholders = ",".join("?" * len(fingerprints))
             cursor = await db.execute(
                 f"""SELECT DISTINCT file_fingerprint FROM history_records
@@ -326,8 +307,7 @@ class HistoryService:
             where_clause = "folder_path = ?"
             params = (*blocked_statuses, file_path)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 f"""SELECT 1 FROM history_records
                     WHERE status IN (?, ?) AND {where_clause}
@@ -428,8 +408,7 @@ class HistoryService:
 
         params.append(record_id)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 f"UPDATE history_records SET {', '.join(updates)} WHERE id = ?",
                 params,
@@ -474,8 +453,7 @@ class HistoryService:
         """Clear history records and associated scrape jobs."""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             if before_days is not None:
                 from datetime import timedelta
                 cutoff = (datetime.now() - timedelta(days=before_days)).isoformat()
@@ -660,8 +638,7 @@ class HistoryService:
             [log.model_dump() for log in logs],
             ensure_ascii=False
         )
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 "UPDATE history_records SET scrape_logs = ? WHERE id = ?",
                 (scrape_logs_json, record_id),
@@ -734,8 +711,7 @@ class HistoryService:
 
         tags_json = json.dumps(tags, ensure_ascii=False) if tags else None
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 """UPDATE history_records SET
                    status = ?, folder_path = ?, duration_seconds = ?,

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import aiosqlite
 
+from server.core.db.connection import db_connection
 from server.core.database import DATABASE_PATH
 from server.core.security import decrypt, encrypt
 from server.models.config import LanguageConfig, ProxyConfig, ProxyType, ApiTokenStatus
@@ -49,7 +50,7 @@ class ConfigService:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         # For testing with custom db_path, create table directly
         if self.db_path != DATABASE_PATH:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with db_connection(self.db_path) as db:
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS config (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +66,7 @@ class ConfigService:
     async def get(self, key: str, encrypted: bool = False) -> str | None:
         """Get a configuration value."""
         await self._ensure_db()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT value, encrypted FROM config WHERE key = ?",
@@ -83,7 +84,7 @@ class ConfigService:
         """Set a configuration value."""
         await self._ensure_db()
         stored_value = encrypt(value) if encrypted else value
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO config (key, value, encrypted, updated_at)
@@ -100,7 +101,7 @@ class ConfigService:
     async def delete(self, key: str) -> bool:
         """Delete a configuration value."""
         await self._ensure_db()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute("DELETE FROM config WHERE key = ?", (key,))
             await db.commit()
             return cursor.rowcount > 0
@@ -108,7 +109,7 @@ class ConfigService:
     async def exists(self, key: str) -> bool:
         """Check if a configuration key exists."""
         await self._ensure_db()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT 1 FROM config WHERE key = ?",
                 (key,),

@@ -9,8 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import aiosqlite
-
+from server.core.db.connection import db_connection
 from server.core.exceptions import ConfigurationError, FolderNotFoundError, InvalidFolderError
 from server.models.cloud_115 import (
     Cloud115Config,
@@ -591,7 +590,7 @@ class P115Service:
     async def _delete_all_qr_payloads(self) -> None:
         """Remove every persisted QR payload so login cannot resume after logout."""
         await self.config_service._ensure_db()
-        async with aiosqlite.connect(self.config_service.db_path) as db:
+        async with db_connection(self.config_service.db_path) as db:
             await db.execute(
                 "DELETE FROM config WHERE substr(key, 1, ?) = ?",
                 (len(QRCODE_PAYLOAD_PREFIX), QRCODE_PAYLOAD_PREFIX),

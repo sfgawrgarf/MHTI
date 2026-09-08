@@ -8,7 +8,8 @@ from pathlib import Path
 
 import aiosqlite
 
-from server.core.database import DATABASE_PATH, _configure_connection
+from server.core.db.connection import db_connection
+from server.core.database import DATABASE_PATH
 from server.models.manual_job import (
     JobSource,
     LinkMode,
@@ -80,8 +81,7 @@ class ManualJobService:
     async def _ensure_db(self) -> None:
         """Ensure database directory exists and run migrations."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             # 添加新列（如果不存在）- 迁移逻辑
             try:
                 await db.execute("ALTER TABLE manual_jobs ADD COLUMN metadata_dir TEXT DEFAULT ''")
@@ -126,8 +126,7 @@ class ManualJobService:
         target_locator_json = _serialize_locator(job.target_locator)
         metadata_locator_json = _serialize_locator(job.metadata_locator)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 """
                 INSERT INTO manual_jobs
@@ -184,8 +183,7 @@ class ManualJobService:
     async def prepare_recovery(self) -> list[int]:
         """Reset interrupted manual scans and return persisted pending IDs."""
         await self._ensure_db()
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
                 """
@@ -209,8 +207,7 @@ class ManualJobService:
     async def claim_job(self, job_id: int) -> bool:
         """Atomically claim a pending manual job for one worker."""
         await self._ensure_db()
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 """
                 UPDATE manual_jobs
@@ -250,8 +247,7 @@ class ManualJobService:
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             # Get total count
@@ -280,8 +276,7 @@ class ManualJobService:
         """Get a manual job by ID."""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM manual_jobs WHERE id = ?",
@@ -304,8 +299,7 @@ class ManualJobService:
             return 0
 
         placeholders = ",".join("?" * len(ids))
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             # 级联删除关联的刮削记录
             await db.execute(
                 f"DELETE FROM history_records WHERE manual_job_id IN ({placeholders})",
@@ -360,8 +354,7 @@ class ManualJobService:
 
         params.append(job_id)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 f"UPDATE manual_jobs SET {', '.join(updates)} WHERE id = ?",
                 params,

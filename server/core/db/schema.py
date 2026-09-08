@@ -3,6 +3,46 @@
 import aiosqlite
 
 
+HISTORY_COLUMNS = (
+    ("display_id", "INTEGER"),
+    ("manual_job_id", "INTEGER"),
+    ("title", "TEXT"),
+    ("original_title", "TEXT"),
+    ("plot", "TEXT"),
+    ("tags", "TEXT"),
+    ("cover_url", "TEXT"),
+    ("poster_url", "TEXT"),
+    ("thumb_url", "TEXT"),
+    ("release_date", "TEXT"),
+    ("rating", "REAL"),
+    ("votes", "INTEGER"),
+    ("translator", "TEXT"),
+    ("scrape_logs", "TEXT"),
+    ("conflict_type", "TEXT"),
+    ("conflict_data", "TEXT"),
+    ("season_number", "INTEGER"),
+    ("episode_number", "INTEGER"),
+    ("episode_title", "TEXT"),
+    ("episode_overview", "TEXT"),
+    ("episode_still_url", "TEXT"),
+    ("episode_air_date", "TEXT"),
+    ("source", "TEXT DEFAULT 'manual'"),
+    ("scrape_job_id", "TEXT"),
+    ("file_fingerprint", "TEXT"),
+)
+
+
+async def migrate_history_table(db: aiosqlite.Connection) -> None:
+    """Add only missing columns; the caller owns the migration transaction."""
+    async with db.execute("PRAGMA table_info(history_records)") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if not columns:
+        raise aiosqlite.OperationalError("Missing history_records table")
+    for name, column_type in HISTORY_COLUMNS:
+        if name not in columns:
+            await db.execute(f"ALTER TABLE history_records ADD COLUMN {name} {column_type}")
+
+
 async def create_all_tables(db: aiosqlite.Connection) -> None:
     """Create all database tables."""
     await _create_core_tables(db)
@@ -172,10 +212,7 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
             scrape_logs TEXT
         )
     """)
-    cursor = await db.execute("PRAGMA table_info(history_records)")
-    history_columns = {row[1] for row in await cursor.fetchall()}
-    if "scrape_logs" not in history_columns:
-        await db.execute("ALTER TABLE history_records ADD COLUMN scrape_logs TEXT")
+    await migrate_history_table(db)
 
     # Scrape jobs table
     await db.execute("""

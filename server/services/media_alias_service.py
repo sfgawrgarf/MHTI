@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from server.core.db.connection import DATABASE_PATH
+from server.core.db.connection import DATABASE_PATH, db_connection
 from server.services.recognition_service import normalize_search_text
 
 logger = logging.getLogger(__name__)
@@ -52,16 +52,6 @@ class MediaAliasService:
     def __init__(self, db_path: Path | None = None) -> None:
         self.db_path = db_path or DATABASE_PATH
 
-    async def _connect(self) -> aiosqlite.Connection:
-        db = await aiosqlite.connect(self.db_path)
-        try:
-            db.row_factory = aiosqlite.Row
-            await db.execute("PRAGMA busy_timeout=30000")
-        except Exception:
-            await db.close()
-            raise
-        return db
-
     async def lookup(
         self,
         *,
@@ -75,8 +65,8 @@ class MediaAliasService:
         if parsed_title:
             lookups.append(("series", normalize_alias(parsed_title)))
 
-        db = await self._connect()
-        try:
+        async with db_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             for alias_type, normalized in lookups:
                 if not normalized:
                     continue
@@ -110,8 +100,6 @@ class MediaAliasService:
                     source=row["source"],
                     confirmed=bool(row["confirmed"]),
                 )
-        finally:
-            await db.close()
         return None
 
     async def remember_confirmed(
@@ -137,9 +125,9 @@ class MediaAliasService:
             if title
         )
 
-        db = await self._connect()
         inserted = 0
-        try:
+        async with db_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             for alias_type, display_alias, alias_season, alias_episode in aliases:
                 inserted += await self._remember_one(
                     db,
@@ -152,8 +140,6 @@ class MediaAliasService:
                     confirmed=True,
                 )
             await db.commit()
-        finally:
-            await db.close()
         return inserted
 
     async def _remember_one(
@@ -247,50 +233,49 @@ class MediaAliasService:
 
     async def backfill_confirmed_history(self) -> int:
         """Idempotently learn aliases from successful manual history rows."""
-        db = await self._connect()
         inserted = 0
         try:
-            cursor = await db.execute(
-                """
-                SELECT folder_path, title, original_title, scrape_logs
-                FROM history_records
-                WHERE status = 'success'
-                  AND scrape_logs LIKE '%用户手动输入 TMDB ID:%'
-                """
-            )
-            rows = await cursor.fetchall()
-            for row in rows:
-                extracted = self._extract_history_mapping(row["scrape_logs"])
-                if extracted is None:
-                    continue
-                file_path, parsed_title, tmdb_id, season, episode = extracted
-                aliases: list[tuple[str, str, int | None, int | None]] = [
-                    ("release", release_alias_from_path(file_path), season, episode),
-                ]
-                if parsed_title:
-                    aliases.append(("series", parsed_title, None, None))
-                for title in (row["title"], row["original_title"]):
-                    if title:
-                        aliases.append(("series", title, None, None))
-                for alias_type, display_alias, alias_season, alias_episode in aliases:
-                    inserted += await self._remember_one(
-                        db,
-                        alias_type=alias_type,
-                        display_alias=display_alias,
-                        tmdb_id=tmdb_id,
-                        season=alias_season,
-                        episode=alias_episode,
-                        source="history_backfill",
-                        confirmed=True,
-                    )
-            await db.commit()
+            async with db_connection(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    """
+                    SELECT folder_path, title, original_title, scrape_logs
+                    FROM history_records
+                    WHERE status = 'success'
+                      AND scrape_logs LIKE '%用户手动输入 TMDB ID:%'
+                    """
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    extracted = self._extract_history_mapping(row["scrape_logs"])
+                    if extracted is None:
+                        continue
+                    file_path, parsed_title, tmdb_id, season, episode = extracted
+                    aliases: list[tuple[str, str, int | None, int | None]] = [
+                        ("release", release_alias_from_path(file_path), season, episode),
+                    ]
+                    if parsed_title:
+                        aliases.append(("series", parsed_title, None, None))
+                    for title in (row["title"], row["original_title"]):
+                        if title:
+                            aliases.append(("series", title, None, None))
+                    for alias_type, display_alias, alias_season, alias_episode in aliases:
+                        inserted += await self._remember_one(
+                            db,
+                            alias_type=alias_type,
+                            display_alias=display_alias,
+                            tmdb_id=tmdb_id,
+                            season=alias_season,
+                            episode=alias_episode,
+                            source="history_backfill",
+                            confirmed=True,
+                        )
+                await db.commit()
         except aiosqlite.OperationalError as exc:
             # Fresh or legacy test databases may not have history yet.
             error = str(exc).lower()
             if "no such table" not in error and "no such column" not in error:
                 raise
-        finally:
-            await db.close()
         return inserted
 
     @staticmethod

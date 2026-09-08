@@ -134,6 +134,25 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: false
+          load: true
           tags: mhti:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: 启动最终镜像并检查 HTTP 服务
+        run: |
+          docker run -d --name mhti-smoke -p 127.0.0.1:18000:8000 mhti:test
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18000/health; then
+              curl --fail --silent http://127.0.0.1:18000/ | grep -qi '<!doctype html'
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: 输出容器日志并清理
+        if: always()
+        run: |
+          docker logs mhti-smoke 2>&1 || true
+          docker rm -f mhti-smoke 2>/dev/null || true

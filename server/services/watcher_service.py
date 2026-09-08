@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 import aiosqlite
+
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedEvent
 
+from server.core.db.connection import db_connection
 from server.core.database import DATABASE_PATH
 from server.models.watcher import (
     DetectedFile,
@@ -457,7 +459,7 @@ class WatcherService:
     async def _ensure_db(self) -> None:
         """Ensure database directory exists and run migrations."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             # 兼容旧数据库：添加缺失列
             cursor = await db.execute("PRAGMA table_info(watched_folders)")
             columns = [row[1] for row in await cursor.fetchall()]
@@ -478,7 +480,7 @@ class WatcherService:
         folder_id = str(uuid.uuid4())[:8]
         now = datetime.now()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO watched_folders
@@ -526,7 +528,7 @@ class WatcherService:
         """List all watched folders."""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             cursor = await db.execute("SELECT COUNT(*) as count FROM watched_folders")
@@ -545,7 +547,7 @@ class WatcherService:
         """Get a watched folder by ID."""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM watched_folders WHERE id = ?",
@@ -601,7 +603,7 @@ class WatcherService:
 
         if updates:
             values.append(folder_id)
-            async with aiosqlite.connect(self.db_path) as db:
+            async with db_connection(self.db_path) as db:
                 await db.execute(
                     f"UPDATE watched_folders SET {', '.join(updates)} WHERE id = ?",
                     values,
@@ -624,7 +626,7 @@ class WatcherService:
         if folder_id in self._strategies:
             await self._stop_folder_watch(folder_id)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 "DELETE FROM watched_folders WHERE id = ?",
                 (folder_id,),
@@ -749,7 +751,7 @@ class WatcherService:
                     except OSError:
                         continue
 
-            async with aiosqlite.connect(self.db_path) as db:
+            async with db_connection(self.db_path) as db:
                 await db.execute(
                     "UPDATE watched_folders SET last_scan = ? WHERE id = ?",
                     (datetime.now().isoformat(), folder.id),
@@ -787,7 +789,7 @@ class WatcherService:
                 )
             )
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 "UPDATE watched_folders SET last_scan = ? WHERE id = ?",
                 (datetime.now().isoformat(), folder.id),
