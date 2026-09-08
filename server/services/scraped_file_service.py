@@ -7,6 +7,7 @@ from pathlib import Path
 
 import aiosqlite
 
+from server.core.db.connection import db_connection
 from server.core.database import DATABASE_PATH
 from server.models.scraped_file import ScrapedFile, ScrapedFileCreate
 
@@ -30,7 +31,7 @@ class ScrapedFileService:
         record_id = str(uuid.uuid4())[:8]
         now = datetime.now()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             # 使用 INSERT OR REPLACE 实现 upsert
             await db.execute(
                 """
@@ -67,7 +68,7 @@ class ScrapedFileService:
         """检查文件是否已刮削"""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT 1 FROM scraped_files WHERE source_path = ? LIMIT 1",
                 (source_path,),
@@ -84,7 +85,7 @@ class ScrapedFileService:
         await self._ensure_db()
 
         placeholders = ",".join("?" * len(paths))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 f"SELECT source_path FROM scraped_files WHERE source_path IN ({placeholders})",
                 paths,
@@ -97,7 +98,7 @@ class ScrapedFileService:
         """根据源路径获取记录"""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM scraped_files WHERE source_path = ?",
@@ -125,7 +126,7 @@ class ScrapedFileService:
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             cursor = await db.execute(
@@ -156,7 +157,7 @@ class ScrapedFileService:
         await self._ensure_db()
 
         placeholders = ",".join("?" * len(ids))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 f"DELETE FROM scraped_files WHERE id IN ({placeholders})",
                 ids,
@@ -172,7 +173,7 @@ class ScrapedFileService:
         await self._ensure_db()
 
         placeholders = ",".join("?" * len(paths))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 f"DELETE FROM scraped_files WHERE source_path IN ({placeholders})",
                 paths,
@@ -184,7 +185,7 @@ class ScrapedFileService:
         """清空所有记录"""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute("DELETE FROM scraped_files")
             await db.commit()
             return cursor.rowcount

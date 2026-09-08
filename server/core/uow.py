@@ -16,17 +16,21 @@ class UnitOfWork:
 
     def __init__(self):
         self._connection = None
+        self._context = None
 
     async def __aenter__(self) -> "UnitOfWork":
         manager = await get_db_manager()
-        self._connection = await manager.get_connection().__aenter__()
+        self._context = manager.get_connection()
+        self._connection = await self._context.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            await self.rollback()
-        if self._connection:
-            await self._connection.__aexit__(exc_type, exc_val, exc_tb)
+        try:
+            if self._context is not None:
+                await self._context.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._connection = None
+            self._context = None
 
     async def commit(self):
         """Commit the current transaction."""

@@ -5,8 +5,10 @@ from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
+
 from croniter import croniter
 
+from server.core.db.connection import db_connection
 from server.core.database import DATABASE_PATH
 from server.models.scheduler import (
     ScheduledTask,
@@ -50,7 +52,7 @@ class SchedulerService:
         now = datetime.now()
         next_run = self._calculate_next_run(task.cron_expression) if task.enabled else None
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO scheduled_tasks (id, name, folder_path, cron_expression, enabled, next_run, created_at)
@@ -82,7 +84,7 @@ class SchedulerService:
         """Get a scheduled task by ID."""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM scheduled_tasks WHERE id = ?",
@@ -99,7 +101,7 @@ class SchedulerService:
         """List all scheduled tasks."""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM scheduled_tasks ORDER BY created_at DESC"
@@ -127,7 +129,7 @@ class SchedulerService:
         # Recalculate next run
         next_run = self._calculate_next_run(task.cron_expression) if task.enabled else None
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 """
                 UPDATE scheduled_tasks
@@ -152,7 +154,7 @@ class SchedulerService:
         """Delete a scheduled task."""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 "DELETE FROM scheduled_tasks WHERE id = ?",
                 (task_id,),

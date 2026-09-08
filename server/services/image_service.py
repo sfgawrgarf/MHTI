@@ -1,6 +1,9 @@
 """Image download service with retry and concurrency support."""
 
 import asyncio
+import os
+import stat
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -107,47 +110,56 @@ class ImageService:
         proxy_url = await self._get_proxy_url()
 
         for attempt in range(max_retries):
+            temporary_path: Path | None = None
             try:
                 async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
-                    response = await client.get(safe_url, headers=self._headers)
+                    async with client.stream("GET", safe_url, headers=self._headers) as response:
+                        if response.status_code == 404:
+                            return ImageDownloadResult(
+                                url=str(url), save_path=str(full_path), success=False,
+                                error="Image not found (404)",
+                            )
 
-                    if response.status_code == 404:
+                        response.raise_for_status()
+                        content_type = response.headers.get("content-type", "").lower()
+                        if not content_type.startswith("image/"):
+                            return ImageDownloadResult(
+                                url=str(url), save_path=str(full_path), success=False,
+                                error="Remote response is not an image",
+                            )
+                        content_length = response.headers.get("content-length", "")
+                        if content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
+                            return ImageDownloadResult(
+                                url=str(url), save_path=str(full_path), success=False,
+                                error="Image exceeds 20 MB limit",
+                            )
+
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        # The same directory makes the final replacement atomic.
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb", dir=full_path.parent, prefix=".mhti-image-",
+                            suffix=".part", delete=False,
+                        ) as image_file:
+                            temporary_path = Path(image_file.name)
+                            received = 0
+                            async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                                received += len(chunk)
+                                if received > MAX_IMAGE_BYTES:
+                                    return ImageDownloadResult(
+                                        url=str(url), save_path=str(full_path), success=False,
+                                        error="Image exceeds 20 MB limit",
+                                    )
+                                image_file.write(chunk)
+
+                        # Preserve existing permissions; new posters remain readable
+                        # by media servers running under a different user.
+                        mode = stat.S_IMODE(full_path.stat().st_mode) if full_path.exists() else 0o644
+                        temporary_path.chmod(mode)
+                        os.replace(temporary_path, full_path)
+                        temporary_path = None
                         return ImageDownloadResult(
-                            url=str(url),
-                            save_path=str(full_path),
-                            success=False,
-                            error="Image not found (404)",
+                            url=str(url), save_path=str(full_path), success=True,
                         )
-
-                    response.raise_for_status()
-                    content_type = response.headers.get("content-type", "").lower()
-                    if not content_type.startswith("image/"):
-                        return ImageDownloadResult(
-                            url=str(url),
-                            save_path=str(full_path),
-                            success=False,
-                            error="Remote response is not an image",
-                        )
-                    if len(response.content) > MAX_IMAGE_BYTES:
-                        return ImageDownloadResult(
-                            url=str(url),
-                            save_path=str(full_path),
-                            success=False,
-                            error="Image exceeds 20 MB limit",
-                        )
-
-                    # Ensure directory exists
-                    full_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    # Write image data
-                    with open(full_path, "wb") as f:
-                        f.write(response.content)
-
-                    return ImageDownloadResult(
-                        url=str(url),
-                        save_path=str(full_path),
-                        success=True,
-                    )
 
             except httpx.TimeoutException:
                 last_error = "Download timeout"
@@ -156,15 +168,15 @@ class ImageService:
             except httpx.RequestError as e:
                 last_error = f"Connection error: {str(e)}"
             except OSError as e:
-                # File system error - don't retry
                 return ImageDownloadResult(
-                    url=str(url),
-                    save_path=str(full_path),
-                    success=False,
+                    url=str(url), save_path=str(full_path), success=False,
                     error=f"File system error: {str(e)}",
                 )
+            finally:
+                # Runs for rejection, retry, cancellation and write failure.
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
 
-            # Wait before retry (if not last attempt)
             if attempt < max_retries - 1:
                 delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
                 await asyncio.sleep(delay)

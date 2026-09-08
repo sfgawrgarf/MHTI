@@ -9,7 +9,8 @@ from pathlib import Path
 
 import aiosqlite
 
-from server.core.database import DATABASE_PATH, _configure_connection
+from server.core.db.connection import db_connection
+from server.core.database import DATABASE_PATH
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.scrape_job import (
     ScrapeJob,
@@ -59,8 +60,7 @@ class ScrapeJobService:
     async def _ensure_db(self) -> None:
         """确保数据库目录存在并运行迁移"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             # 迁移：为旧表添加 link_mode 列
             try:
                 await db.execute("ALTER TABLE scrape_jobs ADD COLUMN link_mode TEXT")
@@ -111,8 +111,7 @@ class ScrapeJobService:
         """
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """SELECT * FROM scrape_jobs
@@ -128,8 +127,7 @@ class ScrapeJobService:
         """获取所有待处理任务的文件路径"""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT file_path FROM scrape_jobs WHERE status IN ('pending', 'running', 'pending_action')"
             )
@@ -168,8 +166,7 @@ class ScrapeJobService:
             # 监控任务只投递尚未完成整理的文件。手动任务仍允许用户显式重试。
             if job.source == ScrapeJobSource.WATCHER and not job.file_locator:
                 source_fingerprint = MediaIdentityService.fingerprint(job.file_path)
-                async with aiosqlite.connect(self.db_path) as db:
-                    await _configure_connection(db)
+                async with db_connection(self.db_path) as db:
                     cursor = await db.execute(
                         "SELECT 1 FROM media_versions WHERE source_fingerprint = ? LIMIT 1",
                         (source_fingerprint,),
@@ -190,8 +187,7 @@ class ScrapeJobService:
         output_locator_json = _serialize_locator(job.output_locator)
         metadata_locator_json = _serialize_locator(job.metadata_locator)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             # Serialize the final duplicate check and insert.  The earlier checks
             # avoid unnecessary work; this check closes the concurrent-create race.
             await db.execute("BEGIN IMMEDIATE")
@@ -283,8 +279,7 @@ class ScrapeJobService:
     async def prepare_recovery(self) -> list[str]:
         """Reset interrupted jobs and return all persisted pending job IDs."""
         await self._ensure_db()
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
                 """
@@ -323,8 +318,7 @@ class ScrapeJobService:
     async def claim_job(self, job_id: str) -> bool:
         """Atomically claim a pending job for one worker."""
         await self._ensure_db()
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 """
                 UPDATE scrape_jobs
@@ -367,8 +361,7 @@ class ScrapeJobService:
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             cursor = await db.execute(
@@ -395,8 +388,7 @@ class ScrapeJobService:
         """获取刮削任务"""
         await self._ensure_db()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM scrape_jobs WHERE id = ?",
@@ -447,8 +439,7 @@ class ScrapeJobService:
 
         params.append(job_id)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             await db.execute(
                 f"UPDATE scrape_jobs SET {', '.join(updates)} WHERE id = ?",
                 params,
@@ -463,8 +454,7 @@ class ScrapeJobService:
             return 0
 
         placeholders = ",".join("?" * len(ids))
-        async with aiosqlite.connect(self.db_path) as db:
-            await _configure_connection(db)
+        async with db_connection(self.db_path) as db:
             cursor = await db.execute(
                 f"DELETE FROM scrape_jobs WHERE id IN ({placeholders})",
                 ids,
