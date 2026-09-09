@@ -14,8 +14,19 @@ from server.models.storage import StorageProvider
 from server.services.file_service import FileService
 from server.services.fingerprint_service import calculate_fingerprint
 from server.services.history_service import HistoryService
+from server.services.file_io import check_file_cancelled, run_file_io
 
 router = APIRouter(prefix="/api", tags=["files"], dependencies=[Depends(require_auth)])
+
+
+def _fingerprints(files) -> dict[str, str]:
+    result = {}
+    for file in files:
+        check_file_cancelled()
+        fingerprint = calculate_fingerprint(file.path)
+        if fingerprint:
+            result[file.path] = fingerprint
+    return result
 
 
 @router.post("/scan", response_model=ScanResponse)
@@ -57,14 +68,10 @@ async def scan_folder(
             files=files,
         )
 
-    files = file_service.scan_folder(request.folder_path)
+    files = await file_service.scan_folder_async(request.folder_path)
 
     # 计算文件指纹并过滤已刮削的文件
-    fingerprint_map = {}  # path -> fingerprint
-    for f in files:
-        fp = calculate_fingerprint(f.path)
-        if fp:
-            fingerprint_map[f.path] = fp
+    fingerprint_map = await run_file_io(_fingerprints, files)
 
     # 查询已存在的指纹
     existing_fps = await history_service.get_existing_fingerprints(
@@ -136,7 +143,7 @@ async def browse_directory(
             total,
             current_file_id,
             parent_file_id,
-        ) = file_service.browse_directory(
+        ) = await file_service.browse_directory_async(
             path=path,
             provider=provider,
             file_id=file_id,

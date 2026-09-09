@@ -588,7 +588,7 @@ const handleSubmit = async () => {
         showRequiredAction(response)
         return
       }
-      message.success(isSuccessRematchMode.value ? '已创建纠正任务，成功后会替代原记录' : (rematchMode.value ? '重新匹配已提交' : '重试成功'))
+      message.success(isSuccessRematchMode.value ? '已创建纠正任务，成功后会替代原记录' : (response?.message || '已加入刮削队列'))
       emit('success')
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } } }
@@ -669,7 +669,7 @@ const handleSubmit = async () => {
       showRequiredAction(response)
       return
     }
-    message.success('处理成功')
+    message.success(response.message || '已提交处理')
     emit('success')
   } catch (error: unknown) {
     const err = error as { response?: { data?: { detail?: string } } }

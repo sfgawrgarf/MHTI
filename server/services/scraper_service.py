@@ -17,6 +17,7 @@ import httpx
 from server.core.exceptions import TMDBError
 from server.core.path_security import PathSecurityError, validate_media_path
 from server.services.file_operations import write_metadata_text
+from server.services.file_io import run_file_io
 
 from server.models.emby import ConflictType
 from server.models.history import LogLevel, ScrapeLogEntry, ScrapeLogStep
@@ -632,7 +633,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     link_mode=mode,
                     year=year,
                 )
-                rename_result = self.rename_service.execute_rename(local_request)
+                rename_result = await run_file_io(self.rename_service.execute_rename, local_request)
                 if not rename_result.success:
                     raise ValueError(rename_result.error or "本地整理失败")
             return StorageLocator(
@@ -699,7 +700,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         nfo_path_str = ""
         if nfo_config["nfo_enabled"]:
             nfo_path = metadata_season_folder / f"{dest_path.stem}.nfo"
-            write_metadata_text(nfo_path, nfo_content)
+            await run_file_io(write_metadata_text, nfo_path, nfo_content)
             nfo_path_str = str(nfo_path)
             move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
 
@@ -708,14 +709,14 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 metadata_series_folder.mkdir(parents=True, exist_ok=True)
                 tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
                 tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
-                write_metadata_text(tvshow_nfo_path, tvshow_nfo_content)
+                await run_file_io(write_metadata_text, tvshow_nfo_path, tvshow_nfo_content)
                 move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
 
             season_nfo_path = metadata_season_folder / "season.nfo"
             if not season_nfo_path.exists():
                 season_nfo_data = self._get_season_nfo_data(series, season)
                 season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
-                write_metadata_text(season_nfo_path, season_nfo_content)
+                await run_file_io(write_metadata_text, season_nfo_path, season_nfo_content)
                 move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
         else:
             move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
@@ -782,7 +783,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
         await notify_log_update()
 
-        rename_result = self.rename_service.execute_rename(rename_request)
+        rename_result = await run_file_io(self.rename_service.execute_rename, rename_request)
         if not rename_result.success:
             if rename_result.error and "already exists" in rename_result.error:
                 move_step.logs.append(ScrapeLogEntry(message=f"目标文件已存在: {rename_result.dest_path}", level=LogLevel.WARNING))
@@ -1622,7 +1623,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
             if nfo_config["nfo_enabled"]:
                 nfo_path = metadata_season_folder / f"{dest_file.stem}.nfo"
-                write_metadata_text(nfo_path, nfo_content)
+                await run_file_io(write_metadata_text, nfo_path, nfo_content)
                 result.nfo_path = str(nfo_path)
                 move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
 
@@ -1632,7 +1633,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     metadata_series_folder.mkdir(parents=True, exist_ok=True)
                     tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
                     tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
-                    write_metadata_text(tvshow_nfo_path, tvshow_nfo_content)
+                    await run_file_io(write_metadata_text, tvshow_nfo_path, tvshow_nfo_content)
                     move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
 
                 # 生成 season.nfo 到季度文件夹
@@ -1640,7 +1641,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 if not season_nfo_path.exists():
                     season_nfo_data = self._get_season_nfo_data(series, season_num)
                     season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
-                    write_metadata_text(season_nfo_path, season_nfo_content)
+                    await run_file_io(write_metadata_text, season_nfo_path, season_nfo_content)
                     move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
             else:
                 move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
@@ -1679,7 +1680,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
             # 处理关联字幕文件
             if should_process_subtitles:
-                self._process_subtitles(local_source_path, str(dest_file), request.link_mode)
+                await run_file_io(self._process_subtitles, local_source_path, str(dest_file), request.link_mode)
 
         except FileExistsError:
             result.scrape_logs = scrape_logs
@@ -2002,7 +2003,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
             if nfo_config["nfo_enabled"]:
                 nfo_path = metadata_season_folder / f"{dest_file.stem}.nfo"
-                write_metadata_text(nfo_path, nfo_content)
+                await run_file_io(write_metadata_text, nfo_path, nfo_content)
                 result.nfo_path = str(nfo_path)
                 move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
 
@@ -2012,7 +2013,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     metadata_series_folder.mkdir(parents=True, exist_ok=True)
                     tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
                     tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
-                    write_metadata_text(tvshow_nfo_path, tvshow_nfo_content)
+                    await run_file_io(write_metadata_text, tvshow_nfo_path, tvshow_nfo_content)
                     move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
 
                 # 生成 season.nfo 到季度文件夹
@@ -2020,7 +2021,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 if not season_nfo_path.exists():
                     season_nfo_data = self._get_season_nfo_data(series, request.season)
                     season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
-                    write_metadata_text(season_nfo_path, season_nfo_content)
+                    await run_file_io(write_metadata_text, season_nfo_path, season_nfo_content)
                     move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
             else:
                 move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
@@ -2059,7 +2060,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
             # 处理关联字幕文件
             if should_process_subtitles:
-                self._process_subtitles(local_source_path, str(dest_file), request.link_mode)
+                await run_file_io(self._process_subtitles, local_source_path, str(dest_file), request.link_mode)
 
         except FileExistsError:
             result.scrape_logs = scrape_logs

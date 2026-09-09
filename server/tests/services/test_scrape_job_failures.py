@@ -1,5 +1,6 @@
 """Background-job regressions: preserve S00 and classify upstream outages."""
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -24,8 +25,10 @@ def worker(monkeypatch, temp_dir):
     history = Mock(
         create_record=AsyncMock(return_value=SimpleNamespace(id="test-history")),
         update_record=AsyncMock(), update_scrape_logs=AsyncMock(),
+        update_record_on_success=AsyncMock(), flush_and_clear_log_cache=AsyncMock(),
     )
-    notifier = Mock(notify_progress=AsyncMock(), notify_failed=AsyncMock(), notify_need_action=AsyncMock())
+    notifier = Mock(notify_progress=AsyncMock(), notify_failed=AsyncMock(), notify_need_action=AsyncMock(),
+                    notify_completed=AsyncMock())
     config = Mock(get_system_config=AsyncMock(return_value=SimpleNamespace(task_timeout=30)))
     monkeypatch.setattr("server.core.container.get_scraper_service", lambda: scraper)
     monkeypatch.setattr("server.services.history_service.HistoryService", lambda: history)
@@ -80,3 +83,51 @@ async def test_genuine_no_match_still_allows_manual_id_selection(worker):
     assert service.update_job.call_args.kwargs["status"] == ScrapeJobStatus.PENDING_ACTION
     notifier.notify_failed.assert_not_awaited()
     assert notifier.notify_need_action.call_args.args[1] == "need_tmdb_id"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ScrapeStatus.SUCCESS, ScrapeStatus.FILE_CONFLICT])
+async def test_manual_continuation_updates_original_history_and_forwards_choice(worker, status):
+    job, service, scraper, history, notifier = worker
+    job.continuation_history_id = "old-history"
+    job.correction_tmdb_id = 123
+    job.correction_season = 0
+    job.correction_episode = 1
+    job.file_action = "overwrite"
+    job.skip_emby_check = True
+    job.selection_log = "用户选择 S00E01"
+    history.get_record = AsyncMock(return_value=SimpleNamespace(id="old-history", scrape_logs=[]))
+    scraper.scrape_by_id.return_value = ScrapeResult(
+        file_path=job.file_path, status=status, selected_id=123, parsed_season=0,
+        parsed_episode=1, dest_path="/library/show.strm",
+    )
+    await _execute_scrape_job(service, job.id)
+    history.create_record.assert_not_awaited()
+    request = scraper.scrape_by_id.call_args.args[0]
+    assert request.file_action == "overwrite"
+    assert request.skip_emby_check is True
+    assert request.season == 0
+    assert history.update_scrape_logs.call_args.args[0] == "old-history"
+    if status == ScrapeStatus.SUCCESS:
+        update = history.update_record_on_success.call_args
+        assert update.args[0] == "old-history"
+        assert update.kwargs["folder_path"].endswith("=> /library/show.strm")
+        assert update.kwargs["season_number"] == 0
+        notifier.notify_completed.assert_awaited_once()
+    else:
+        update = history.update_record.call_args
+        assert update.args[0] == "old-history"
+        assert update.kwargs["status"] == TaskStatus.PENDING_ACTION
+        assert update.kwargs["conflict_data"]["season"] == 0
+        assert update.kwargs["conflict_data"]["dest_path"] == "/library/show.strm"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_worker_records_cancellation(worker):
+    job, service, scraper, history, _ = worker
+    scraper.scrape_file.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await _execute_scrape_job(service, job.id)
+    assert service.update_job.call_args.kwargs["status"] == ScrapeJobStatus.CANCELLED
+    assert history.update_record.call_args.kwargs["status"] == TaskStatus.CANCELLED
+    history.flush_and_clear_log_cache.assert_awaited_once()

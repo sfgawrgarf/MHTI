@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from server.services.file_io import check_file_cancelled, run_file_io
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -131,11 +132,18 @@ class CompatStrategy(WatchStrategy):
                 pass
         self._known_files.clear()
 
-    async def _init_known_files(self) -> None:
+    def _local_video_paths(self) -> set[str]:
+        paths = set()
         for root, _, files in os.walk(self.folder.path):
+            check_file_cancelled()
             for f in files:
+                check_file_cancelled()
                 if Path(f).suffix.lower() in VIDEO_EXTENSIONS:
-                    self._known_files.add(str(Path(root) / f))
+                    paths.add(str(Path(root) / f))
+        return paths
+
+    async def _init_known_files(self) -> None:
+        self._known_files = await run_file_io(self._local_video_paths)
 
     async def _scan_loop(self) -> None:
         while self._running:
@@ -143,11 +151,7 @@ class CompatStrategy(WatchStrategy):
                 await asyncio.sleep(self.folder.scan_interval_seconds)
                 if not self._running:
                     break
-                current: set[str] = set()
-                for root, _, files in os.walk(self.folder.path):
-                    for f in files:
-                        if Path(f).suffix.lower() in VIDEO_EXTENSIONS:
-                            current.add(str(Path(root) / f))
+                current = await run_file_io(self._local_video_paths)
                 for fp in current - self._known_files:
                     self.on_file_detected(fp, self.folder)
                 self._known_files = current
@@ -455,6 +459,7 @@ class WatcherService:
         self._last_detection: datetime | None = None
         self._on_files_detected: Callable[[WatcherNotification], None] | None = None
         self._process_task: asyncio.Task | None = None
+        self._initial_scan_task: asyncio.Task | None = None
 
     async def _ensure_db(self) -> None:
         """Ensure database directory exists and run migrations."""
@@ -698,7 +703,7 @@ class WatcherService:
         self._process_task = asyncio.create_task(self._process_pending_files())
 
         # 在后台执行初始扫描
-        asyncio.create_task(self._initial_scan(enabled_folders))
+        self._initial_scan_task = asyncio.create_task(self._initial_scan(enabled_folders))
 
         logger.info(f"监控服务已启动，共 {len(self._strategies)} 个文件夹")
 
@@ -715,41 +720,9 @@ class WatcherService:
                 await self._initial_scan_p115(folder, pending_paths)
                 continue
 
-            folder_path = Path(folder.path)
-            if not folder_path.exists():
-                continue
-
             logger.info(f"扫描文件夹: {folder.path}")
-            stable_files: list[DetectedFile] = []
-            current_time = time.time()
-
-            for root, _, files in os.walk(folder_path):
-                for filename in files:
-                    ext = Path(filename).suffix.lower()
-                    if ext not in VIDEO_EXTENSIONS:
-                        continue
-
-                    filepath = Path(root) / filename
-                    try:
-                        stat = filepath.stat()
-                        age = current_time - stat.st_mtime
-
-                        if age >= folder.file_stable_seconds:
-                            # 跳过已有待处理任务的文件
-                            if str(filepath) in pending_paths:
-                                continue
-                            stable_files.append(
-                                DetectedFile(
-                                    path=str(filepath),
-                                    detected_at=datetime.now(),
-                                    file_size=stat.st_size,
-                                    stable=True,
-                                )
-                            )
-                        else:
-                            self._pending_files[str(filepath)] = (str(filepath), current_time, folder)
-                    except OSError:
-                        continue
+            stable_files, unstable = await run_file_io(self._scan_initial_local, folder, pending_paths)
+            self._pending_files.update(unstable)
 
             async with db_connection(self.db_path) as db:
                 await db.execute(
@@ -761,6 +734,31 @@ class WatcherService:
             if stable_files and folder.auto_scrape:
                 logger.info(f"初始扫描发现 {len(stable_files)} 个稳定文件")
                 await self._create_jobs_for_files(stable_files, folder)
+
+    @staticmethod
+    def _scan_initial_local(folder: WatchedFolder, pending_paths: set[str]):
+        stable_files = []
+        unstable = {}
+        current_time = time.time()
+        for root, _, files in os.walk(folder.path):
+            check_file_cancelled()
+            for filename in files:
+                check_file_cancelled()
+                if Path(filename).suffix.lower() not in VIDEO_EXTENSIONS:
+                    continue
+                path = Path(root) / filename
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if current_time - stat.st_mtime >= folder.file_stable_seconds:
+                    if str(path) not in pending_paths:
+                        stable_files.append(DetectedFile(
+                            path=str(path), detected_at=datetime.now(), file_size=stat.st_size, stable=True,
+                        ))
+                else:
+                    unstable[str(path)] = (str(path), current_time, folder)
+        return stable_files, unstable
 
     async def _initial_scan_p115(self, folder: WatchedFolder, pending_paths: set[str]) -> None:
         """启动时扫描 115 目录（不走本地 os.walk）。"""
@@ -900,6 +898,11 @@ class WatcherService:
             except asyncio.CancelledError:
                 pass
             self._process_task = None
+
+        if self._initial_scan_task:
+            self._initial_scan_task.cancel()
+            await asyncio.gather(self._initial_scan_task, return_exceptions=True)
+            self._initial_scan_task = None
 
         logger.info("监控服务已停止")
 

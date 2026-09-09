@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from server.core.database import DATABASE_PATH
+from server.services.file_operations import copy_file
+from server.services.file_io import check_file_cancelled
 
 
 class CorrectionBackupService:
@@ -36,10 +38,11 @@ class CorrectionBackupService:
 
         copied = 0
         for candidate in sorted(candidates):
+            check_file_cancelled()
             if not candidate.is_file():
                 continue
             destination = backup_dir / self._backup_name(media_path, candidate)
-            shutil.copy2(candidate, destination)
+            copy_file(candidate, destination)
             copied += 1
         if copied == 0:
             raise RuntimeError("未找到可备份的当前媒体文件")

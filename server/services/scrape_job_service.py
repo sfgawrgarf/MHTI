@@ -23,14 +23,17 @@ from server.models.storage import StorageLocator
 from server.services.websocket_manager import get_notifier
 from server.services.fingerprint_service import calculate_fingerprint
 from server.services.media_identity_service import MediaIdentityService
+from server.services.file_io import run_file_io
+from server.services.task_limiter import TaskLimiter
 
 logger = logging.getLogger(__name__)
 
 # 任务队列和并发控制
 _scrape_queue: asyncio.Queue[str] = asyncio.Queue()
 _worker_tasks: list[asyncio.Task] = []
-_semaphore: asyncio.Semaphore | None = None
+_semaphore: TaskLimiter | None = None
 _current_threads: int = 0
+_initialization_task: asyncio.Task | None = None
 
 
 def _serialize_locator(locator: StorageLocator | None) -> str | None:
@@ -97,6 +100,10 @@ class ScrapeJobService:
                 ("correction_tmdb_id", "INTEGER"),
                 ("correction_season", "INTEGER"),
                 ("correction_episode", "INTEGER"),
+                ("continuation_history_id", "TEXT"),
+                ("file_action", "TEXT"),
+                ("selection_log", "TEXT"),
+                ("skip_emby_check", "INTEGER DEFAULT 0"),
             ):
                 try:
                     await db.execute(f"ALTER TABLE scrape_jobs ADD COLUMN {column} {column_type}")
@@ -153,7 +160,7 @@ class ScrapeJobService:
             if job.source == ScrapeJobSource.WATCHER:
                 from server.services.history_service import HistoryService
 
-                file_fingerprint = calculate_fingerprint(job.file_path)
+                file_fingerprint = await run_file_io(calculate_fingerprint, job.file_path)
                 history_service = HistoryService(db_path=self.db_path)
                 if await history_service.is_auto_scrape_blocked_by_user_suppressed_record(
                     job.file_path, file_fingerprint
@@ -165,7 +172,7 @@ class ScrapeJobService:
 
             # 监控任务只投递尚未完成整理的文件。手动任务仍允许用户显式重试。
             if job.source == ScrapeJobSource.WATCHER and not job.file_locator:
-                source_fingerprint = MediaIdentityService.fingerprint(job.file_path)
+                source_fingerprint = await run_file_io(MediaIdentityService.fingerprint, job.file_path)
                 async with db_connection(self.db_path) as db:
                     cursor = await db.execute(
                         "SELECT 1 FROM media_versions WHERE source_fingerprint = ? LIMIT 1",
@@ -191,6 +198,26 @@ class ScrapeJobService:
             # Serialize the final duplicate check and insert.  The earlier checks
             # avoid unnecessary work; this check closes the concurrent-create race.
             await db.execute("BEGIN IMMEDIATE")
+            if job.continuation_history_id:
+                # Claim the history record and enqueue its continuation atomically.
+                # A double click or concurrent retry must not move the same file twice.
+                cursor = await db.execute(
+                    "SELECT status FROM history_records WHERE id = ?",
+                    (job.continuation_history_id,),
+                )
+                record = await cursor.fetchone()
+                if not record or record[0] not in (
+                    "pending_action", "failed", "timeout", "cancelled", "skipped", "deleted",
+                ):
+                    await db.rollback()
+                    return None
+                cursor = await db.execute(
+                    "SELECT 1 FROM scrape_jobs WHERE file_path = ? AND status IN ('pending', 'running')",
+                    (job.file_path,),
+                )
+                if await cursor.fetchone():
+                    await db.rollback()
+                    return None
             if not skip_duplicate_check:
                 cursor = await db.execute(
                     """
@@ -211,8 +238,9 @@ class ScrapeJobService:
                 (id, file_path, output_dir, metadata_dir, link_mode, source, source_id,
                  advanced_settings, file_locator, output_locator, metadata_locator,
                  allow_local_output, replaces_job_id, correction_history_id,
-                 correction_tmdb_id, correction_season, correction_episode, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 correction_tmdb_id, correction_season, correction_episode, status, created_at,
+                 continuation_history_id, file_action, selection_log, skip_emby_check)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -234,6 +262,10 @@ class ScrapeJobService:
                     job.correction_episode,
                     ScrapeJobStatus.PENDING.value,
                     now.isoformat(),
+                    job.continuation_history_id,
+                    job.file_action,
+                    job.selection_log,
+                    int(job.skip_emby_check),
                 ),
             )
             if job.replaces_job_id:
@@ -241,6 +273,17 @@ class ScrapeJobService:
                     "UPDATE scrape_jobs SET replaced_by_job_id = ? WHERE id = ?",
                     (job_id, job.replaces_job_id),
                 )
+            if job.continuation_history_id:
+                await db.execute(
+                    "UPDATE history_records SET status = 'running', error_message = '已排队，等待处理', "
+                    "scrape_job_id = ? WHERE id = ?",
+                    (job_id, job.continuation_history_id),
+                )
+                if job.replaces_job_id:
+                    await db.execute(
+                        "UPDATE scrape_jobs SET status = 'replaced' WHERE id = ?",
+                        (job.replaces_job_id,),
+                    )
             await db.commit()
 
         created_job = ScrapeJob(
@@ -263,6 +306,10 @@ class ScrapeJobService:
             correction_tmdb_id=job.correction_tmdb_id,
             correction_season=job.correction_season,
             correction_episode=job.correction_episode,
+            continuation_history_id=job.continuation_history_id,
+            file_action=job.file_action,
+            selection_log=job.selection_log,
+            skip_emby_check=job.skip_emby_check,
         )
 
         # 加入队列
@@ -532,12 +579,16 @@ class ScrapeJobService:
             correction_tmdb_id=row["correction_tmdb_id"] if "correction_tmdb_id" in row.keys() else None,
             correction_season=row["correction_season"] if "correction_season" in row.keys() else None,
             correction_episode=row["correction_episode"] if "correction_episode" in row.keys() else None,
+            continuation_history_id=row["continuation_history_id"] if "continuation_history_id" in row.keys() else None,
+            file_action=row["file_action"] if "file_action" in row.keys() else None,
+            selection_log=row["selection_log"] if "selection_log" in row.keys() else None,
+            skip_emby_check=bool(row["skip_emby_check"]) if "skip_emby_check" in row.keys() else False,
         )
 
 
 def _ensure_worker() -> None:
     """确保后台 worker 在运行，并根据配置调整并发数"""
-    global _worker_tasks, _semaphore, _current_threads
+    global _worker_tasks, _semaphore, _current_threads, _initialization_task
 
     async def _init_workers():
         global _semaphore, _current_threads, _worker_tasks
@@ -548,9 +599,11 @@ def _ensure_worker() -> None:
         threads = system_config.scrape_threads
 
         # 如果并发数变化，重新初始化
+        if _semaphore is None:
+            _semaphore = TaskLimiter(threads)
         if threads != _current_threads:
             _current_threads = threads
-            _semaphore = asyncio.Semaphore(threads)
+            await _semaphore.resize(threads)
             logger.info(f"刮削并发数设置为: {threads}")
 
         # 清理已完成的 worker
@@ -564,7 +617,8 @@ def _ensure_worker() -> None:
     # 在事件循环中执行初始化
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_init_workers())
+        if _initialization_task is None or _initialization_task.done():
+            _initialization_task = loop.create_task(_init_workers())
     except RuntimeError:
         pass
 
@@ -575,6 +629,7 @@ async def _scrape_worker() -> None:
     service = ScrapeJobService()
 
     while True:
+        job_id = None
         try:
             job_id = await _scrape_queue.get()
             # 使用 Semaphore 控制并发
@@ -587,6 +642,9 @@ async def _scrape_worker() -> None:
             break
         except Exception as e:
             logger.error(f"Scrape worker error: {e}")
+        finally:
+            if job_id is not None:
+                _scrape_queue.task_done()
 
 
 async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
@@ -595,7 +653,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     from server.services.history_service import HistoryService
     from server.services.config_service import ConfigService
     from server.models.scraper import ScrapeByIdRequest, ScrapeRequest, ScrapeStatus
-    from server.models.history import HistoryRecordCreate, TaskStatus, ConflictType, TaskSource
+    from server.models.history import HistoryRecordCreate, TaskStatus, ConflictType, TaskSource, ScrapeLogEntry, ScrapeLogStep
 
     if not await service.claim_job(job_id):
         logger.info(f"ScrapeJob {job_id} 已被其他 worker 领取或无需执行")
@@ -633,23 +691,38 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     scraper = get_scraper_service()
 
     # 计算文件指纹
-    file_fingerprint = calculate_fingerprint(job.file_path)
+    file_fingerprint = await run_file_io(calculate_fingerprint, job.file_path)
 
-    # 创建历史记录
-    history_record = await history_service.create_record(HistoryRecordCreate(
-        task_name=task_name,
-        folder_path=job.file_path,
-        status=TaskStatus.RUNNING,
-        source=task_source,
-        total_files=1,
-        success_count=0,
-        failed_count=0,
-        duration_seconds=0,
-        scrape_job_id=job_id,
-        # 关联手动任务 ID，便于按任务聚合查询历史记录
-        manual_job_id=job.source_id if job.source == ScrapeJobSource.MANUAL else None,
-        file_fingerprint=file_fingerprint,
-    ))
+    existing_logs = []
+    if job.continuation_history_id:
+        history_record = await history_service.get_record(job.continuation_history_id)
+        if history_record is None:
+            await service.update_job(job_id, status=ScrapeJobStatus.FAILED,
+                                     error_message="原历史记录不存在，已停止手动处理")
+            await notifier.notify_failed(job_id, "原历史记录不存在，已停止手动处理")
+            return
+        existing_logs = list(history_record.scrape_logs or [])
+        if job.selection_log:
+            existing_logs.append(ScrapeLogStep(
+                name="用户手动选择", completed=True,
+                logs=[ScrapeLogEntry(message=job.selection_log)],
+            ))
+        await history_service.update_record(history_record.id, status=TaskStatus.RUNNING, error_message="")
+        await history_service.update_scrape_logs(history_record.id, existing_logs)
+    else:
+        history_record = await history_service.create_record(HistoryRecordCreate(
+            task_name=task_name,
+            folder_path=job.file_path,
+            status=TaskStatus.RUNNING,
+            source=task_source,
+            total_files=1,
+            success_count=0,
+            failed_count=0,
+            duration_seconds=0,
+            scrape_job_id=job_id,
+            manual_job_id=job.source_id if job.source == ScrapeJobSource.MANUAL else None,
+            file_fingerprint=file_fingerprint,
+        ))
     record_id = history_record.id
 
     # 更新任务关联的历史记录ID
@@ -662,7 +735,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
 
         try:
             backup_service = CorrectionBackupService()
-            backup_path = await asyncio.to_thread(
+            backup_path = await run_file_io(
                 backup_service.backup_for_correction,
                 Path(job.file_path),
                 job.correction_history_id,
@@ -685,7 +758,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
 
     # 创建日志回调
     async def on_log_update(logs):
-        await history_service.update_scrape_logs(record_id, logs)
+        await history_service.update_scrape_logs(record_id, existing_logs + logs)
 
     try:
         if job.correction_tmdb_id is not None:
@@ -702,6 +775,8 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 allow_local_output=job.allow_local_output,
                 link_mode=job.link_mode,
                 advanced_settings=job.advanced_settings,
+                file_action=job.file_action,
+                skip_emby_check=job.skip_emby_check,
             )
             scrape_call = scraper.scrape_by_id(request, on_log_update=on_log_update)
         else:
@@ -922,7 +997,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
         history_service.clear_log_cache(record_id)
 
     except asyncio.TimeoutError:
-        timeout_msg = f"任务超时（超过 {timeout_seconds} 秒）"
+        timeout_msg = f"任务超时（超过 {timeout_seconds} 秒），文件操作已停止或完成收尾；请先核对日志和目标文件再重试"
         logger.warning(f"ScrapeJob {job_id} timeout: {job.file_path}")
         await history_service.update_record(
             record_id,
@@ -938,6 +1013,14 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
         # 发送失败通知
         await notifier.notify_failed(job_id, timeout_msg)
         await history_service.flush_and_clear_log_cache(record_id)
+
+    except asyncio.CancelledError:
+        message = "任务已取消，文件操作已停止或完成收尾；请核对日志和目标文件"
+        await history_service.update_record(record_id, status=TaskStatus.CANCELLED, error_message=message)
+        await service.update_job(job_id, status=ScrapeJobStatus.CANCELLED,
+                                 finished_at=datetime.now(), error_message=message)
+        await history_service.flush_and_clear_log_cache(record_id)
+        raise
 
     except Exception as e:
         error_msg = str(e) or repr(e) or type(e).__name__
@@ -966,7 +1049,11 @@ async def shutdown_workers() -> None:
     worker 阻塞在队列 ``get()`` 上，进程退出前必须显式取消，否则
     uvorn 会在 lifespan shutdown 阶段等待它们直到超时。
     """
-    global _worker_tasks
+    global _worker_tasks, _initialization_task, _semaphore, _current_threads
+    if _initialization_task is not None:
+        _initialization_task.cancel()
+        await asyncio.gather(_initialization_task, return_exceptions=True)
+        _initialization_task = None
     if not _worker_tasks:
         return
     for task in _worker_tasks:
@@ -974,6 +1061,8 @@ async def shutdown_workers() -> None:
             task.cancel()
     await asyncio.gather(*_worker_tasks, return_exceptions=True)
     _worker_tasks = []
+    _semaphore = None
+    _current_threads = 0
     logger.info("Scrape workers cancelled")
 
 

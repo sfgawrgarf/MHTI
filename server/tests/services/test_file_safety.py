@@ -57,7 +57,7 @@ def test_rename_overwrite_failure_preserves_both_files(tmp_path, monkeypatch, mo
         raise PermissionError("publication denied")
 
     if failure == "copy":
-        monkeypatch.setattr(file_operations.shutil, "copy2", fail_copy)
+        monkeypatch.setattr(file_operations, "copy_file", fail_copy)
     else:
         monkeypatch.setattr(file_operations.os, "replace", fail_commit)
     result = service.execute_rename(request)

@@ -426,6 +426,7 @@ async def _job_worker() -> None:
     service = ManualJobService()
 
     while True:
+        job_id = None
         try:
             job_id = await _job_queue.get()
             await _execute_job(service, job_id)
@@ -433,6 +434,9 @@ async def _job_worker() -> None:
             break
         except Exception as e:
             logger.error(f"Job worker error: {e}")
+        finally:
+            if job_id is not None:
+                _job_queue.task_done()
 
 
 async def _execute_job(service: ManualJobService, job_id: int) -> None:
@@ -440,6 +444,7 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
     from server.services.file_service import FileService
     from server.services.scrape_job_service import ScrapeJobService
     from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
+    from server.services.file_io import run_file_io
 
     if not await service.claim_job(job_id):
         logger.info(f"ManualJob {job_id} 已被其他 worker 领取或无需执行")
@@ -470,10 +475,10 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
                 locator=job.scan_locator,
             )
             files = [f.path for f in scan_result]
-        elif scan_path.is_file():
+        elif await run_file_io(scan_path.is_file):
             files = [str(scan_path)]
         else:
-            scan_result = file_service.scan_folder(job.scan_path)
+            scan_result = await file_service.scan_folder_async(job.scan_path)
             files = [f.path for f in scan_result]
 
         total_count = len(files)
@@ -538,6 +543,10 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
             f"Manual job {job_id} completed: {dispatched_count} dispatched, {skipped_count} skipped"
         )
 
+    except asyncio.CancelledError:
+        # Keep pending for startup recovery; the filesystem thread is drained.
+        await service.update_job_status(job_id, ManualJobStatus.PENDING)
+        raise
     except Exception as e:
         logger.error(f"Manual job {job_id} failed: {e}")
         await service.update_job_status(
