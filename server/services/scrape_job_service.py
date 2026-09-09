@@ -793,11 +793,10 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 advanced_settings=job.advanced_settings,
             )
             scrape_call = scraper.scrape_file(request, on_log_update=on_log_update)
-        # 使用超时控制
-        result = await asyncio.wait_for(
-            scrape_call,
-            timeout=timeout_seconds,
-        )
+        # Cancel this task directly so a second shutdown cancellation cannot
+        # abandon a wait_for child while its filesystem thread is still draining.
+        async with asyncio.timeout(timeout_seconds):
+            result = await scrape_call
         file_duration = (datetime.now() - started_at).total_seconds()
 
         if result.status == ScrapeStatus.SUCCESS:

@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
+from threading import Event
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -131,3 +132,45 @@ async def test_cancelled_worker_records_cancellation(worker):
     assert service.update_job.call_args.kwargs["status"] == ScrapeJobStatus.CANCELLED
     assert history.update_record.call_args.kwargs["status"] == TaskStatus.CANCELLED
     history.flush_and_clear_log_cache.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_timeout_then_shutdown_still_drains_file_thread(worker):
+    from server.services.config_service import ConfigService
+    from server.services.file_io import check_file_cancelled, run_file_io
+
+    job, service, scraper, history, _ = worker
+    config = await ConfigService().get_system_config()
+    config.task_timeout = 0.03
+    started, release, stopped = Event(), Event(), Event()
+
+    def transfer():
+        started.set()
+        try:
+            assert release.wait(3)
+            check_file_cancelled()
+        finally:
+            stopped.set()
+
+    async def scrape(*args, **kwargs):
+        await run_file_io(transfer)
+
+    scraper.scrape_file.side_effect = scrape
+    task = asyncio.create_task(_execute_scrape_job(service, job.id))
+    try:
+        async with asyncio.timeout(2):
+            while not started.is_set():
+                await asyncio.sleep(0.001)
+        await asyncio.sleep(0.06)
+        task.cancel()  # shutdown arrives after the execution timeout
+        await asyncio.sleep(0)
+        assert not task.done()
+        history.update_record.assert_not_awaited()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert stopped.is_set()
+        assert service.update_job.call_args.kwargs["status"] == ScrapeJobStatus.CANCELLED
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
