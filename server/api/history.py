@@ -26,29 +26,35 @@ router = APIRouter(prefix="/api/history", tags=["history"], dependencies=[Depend
 
 
 async def _restore_locators_from_scrape_job(record: HistoryRecord) -> dict:
-    """从关联的 scrape_job 恢复 locator，用于重试/处理时定位 115 等云端文件。
+    """恢复原始任务的定位、目录、整理模式和高级设置。
 
     conflict_data 里没有保存 locator，但 scrape_jobs 表保留了完整的 locator。
     通过 record.scrape_job_id 查表恢复。
     """
-    if not record.scrape_job_id:
+    if not getattr(record, "scrape_job_id", None):
         return {}
     try:
         from server.services.scrape_job_service import ScrapeJobService
         service = ScrapeJobService()
         job = await service.get_job(record.scrape_job_id)
         if job is None:
-            return {}
+            raise HTTPException(status_code=409, detail="原始任务不存在，无法安全恢复整理参数")
         result = {
             "file_locator": job.file_locator,
             "output_locator": job.output_locator,
             "metadata_locator": job.metadata_locator,
             "allow_local_output": job.allow_local_output,
+            "output_dir": job.output_dir,
+            "metadata_dir": job.metadata_dir,
+            "link_mode": job.link_mode,
+            "advanced_settings": job.advanced_settings,
         }
-        # 只保留非空值
-        return {k: v for k, v in result.items() if v is not None and v is not False}
-    except Exception:
-        return {}
+        # Preserve explicit empty/false values from the original job as well.
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="无法读取原始任务，请稍后重试；未执行文件操作") from exc
 
 
 @router.get("", response_model=HistoryListResponse)
@@ -427,6 +433,14 @@ async def resolve_conflict(
     if record.conflict_type != request.conflict_type:
         raise HTTPException(status_code=400, detail="冲突类型不匹配")
 
+    # Skipping does not touch files and must remain possible even when an old
+    # worker row has been removed. Rematching still requires its saved context.
+    if request.resolution_action != "rematch" and request.file_action == "skip" and request.conflict_type in (
+        ConflictType.FILE_CONFLICT, ConflictType.EMBY_CONFLICT,
+    ):
+        await history_service.update_record(record_id, status=TaskStatus.SKIPPED, error_message="用户跳过")
+        return {"success": True, "message": "已跳过"}
+
     output_dir = record.conflict_data.get("output_dir") if record.conflict_data else None
     metadata_dir = record.conflict_data.get("metadata_dir") if record.conflict_data else None
     # 从 conflict_data 恢复 link_mode
@@ -436,6 +450,9 @@ async def resolve_conflict(
 
     # 恢复 locator（支持 115 等云端文件重试）
     locators = await _restore_locators_from_scrape_job(record)
+    output_dir = locators.pop("output_dir", output_dir)
+    metadata_dir = locators.pop("metadata_dir", metadata_dir)
+    link_mode = locators.pop("link_mode", link_mode)
 
     # 所有保留冲突上下文的状态都允许放弃旧匹配，
     # 并显式指定新的剧集/季/集。
@@ -599,6 +616,7 @@ async def resolve_conflict(
             metadata_dir=metadata_dir,
             link_mode=link_mode,
             skip_emby_check=True,  # 跳过 Emby 检查
+            **locators,
         )
         return await _execute_scrape_and_update(history_service, record_id, scrape_request, user_log)
 
@@ -737,6 +755,9 @@ async def retry_scrape(
     # 4. 构建刮削请求（恢复 locator 以支持 115 等云端文件）
     user_log = f"用户手动重试: TMDB ID {request.tmdb_id}, S{request.season:02d}E{request.episode:02d}"
     locators = await _restore_locators_from_scrape_job(record)
+    output_dir = locators.pop("output_dir", output_dir)
+    metadata_dir = locators.pop("metadata_dir", metadata_dir)
+    link_mode = locators.pop("link_mode", link_mode)
 
     scrape_request = ScrapeByIdRequest(
         file_path=record.folder_path,
