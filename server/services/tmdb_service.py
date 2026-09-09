@@ -1,13 +1,20 @@
 """TMDB service for API-based metadata retrieval."""
 
+import asyncio
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
+from time import monotonic
 
 import httpx
 
 from server.core.exceptions import (
     TMDBConnectionError,
+    TMDBError,
+    TMDBInvalidCredentialsError,
     TMDBNotConfiguredError,
+    TMDBNotFoundError,
+    TMDBRateLimitError,
     TMDBTimeoutError,
 )
 from server.models.config import ApiTokenStatus
@@ -62,6 +69,45 @@ class TMDBService:
             return "SOCKS5 代理缺少运行依赖，请安装 httpx[socks]"
         return message
 
+    @staticmethod
+    def _retry_after(response: httpx.Response) -> float | None:
+        """Read Retry-After seconds or an HTTP date without trusting the header."""
+        value = response.headers.get("Retry-After")
+        if not isinstance(value, str):
+            return None
+        try:
+            if value.strip().isdigit():
+                return float(int(value.strip()))
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @classmethod
+    def _check_api_response(
+        cls, response: httpx.Response, *, allow_not_found: bool = False
+    ) -> None:
+        """Keep upstream failures separate from valid empty/absent metadata."""
+        status = response.status_code
+        if status == 200 or (allow_not_found and status == 404):
+            return
+        if status == 401:
+            # Keep this a gateway error, not an application login failure (401).
+            raise TMDBInvalidCredentialsError("API Token")
+        if status == 404:
+            raise TMDBNotFoundError("接口")
+        if status == 429:
+            raise TMDBRateLimitError(cls._retry_after(response))
+        message = (
+            "TMDB 拒绝访问，请检查 API Token 权限"
+            if status == 403
+            else f"TMDB 服务请求失败 (HTTP {status})"
+        )
+        # Do not echo response bodies or URLs, which can contain credentials.
+        raise TMDBError(message, details={"upstream_status": status})
+
     async def _make_api_request(
         self,
         endpoint: str,
@@ -83,31 +129,43 @@ class TMDBService:
         timeout = await self._get_timeout()
         url = f"{TMDB_API_BASE_URL}{endpoint}"
 
+        config = await self.config_service.get_system_config()
+        retries = max(0, min(config.retry_count, 3))
+        headers = {"Accept": "application/json"}
+        api_params = dict(params or {})
+        if self._is_bearer_token(token):
+            headers["Authorization"] = f"Bearer {token}"
+        else:
+            api_params["api_key"] = token
+
+        deadline = monotonic() + timeout
         try:
-            if self._is_bearer_token(token):
-                headers = {
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                }
-                async with httpx.AsyncClient(
-                    timeout=timeout,
-                    proxy=proxy_url,
-                ) as client:
-                    return await client.get(url, headers=headers, params=params)
-            else:
-                headers = {"Accept": "application/json"}
-                api_params = {"api_key": token}
-                if params:
-                    api_params.update(params)
-                async with httpx.AsyncClient(
-                    timeout=timeout,
-                    proxy=proxy_url,
-                ) as client:
-                    return await client.get(url, headers=headers, params=api_params)
-        except httpx.TimeoutException:
-            raise TMDBTimeoutError(endpoint)
-        except httpx.RequestError as e:
-            raise TMDBConnectionError(str(e))
+            # Bound the entire request, including backoff, not each attempt alone.
+            async with asyncio.timeout(timeout):
+                async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
+                    for attempt in range(retries + 1):
+                        retry_after = None
+                        try:
+                            response = await client.get(url, headers=headers, params=api_params)
+                            self._check_api_response(response, allow_not_found=True)
+                            return response
+                        except httpx.TimeoutException:
+                            error = TMDBTimeoutError(endpoint)
+                        except httpx.RequestError:
+                            error = TMDBConnectionError()
+                        except TMDBError as exc:
+                            if response.status_code not in (429, 500, 502, 503, 504):
+                                raise
+                            error = exc
+                            retry_after = self._retry_after(response)
+
+                        delay = max(0.5 * (2 ** attempt), retry_after or 0.0)
+                        # Never retry earlier than a long server-requested delay.
+                        if attempt == retries or delay > 8.0 or delay >= deadline - monotonic():
+                            raise error
+                        await asyncio.sleep(delay)
+        except TimeoutError:
+            raise TMDBTimeoutError(endpoint) from None
 
     async def test_proxy(self, proxy_url: str | None = None) -> tuple[bool, str, int | None]:
         """
@@ -315,10 +373,11 @@ class TMDBService:
                 params={"query": query, "language": language, "include_adult": "true"},
             )
 
-            if response.status_code != 200:
-                return TMDBSearchResponse(query=query, total_results=0, results=[])
+            self._check_api_response(response)
 
             data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+                raise ValueError("Invalid search payload")
             results = []
 
             for item in data.get("results", [])[:20]:
@@ -348,8 +407,8 @@ class TMDBService:
                 results=results,
             )
 
-        except ValueError:
-            raise
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise TMDBError("TMDB 搜索返回的数据格式无效") from exc
         except (httpx.TimeoutException, httpx.RequestError):
             raise
 
@@ -379,14 +438,15 @@ class TMDBService:
 
             if response.status_code == 404:
                 return None
-            if response.status_code != 200:
-                return None
+            self._check_api_response(response)
 
             data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get("seasons"), list):
+                raise ValueError("Invalid series payload")
             return self._parse_series_json(data)
 
-        except ValueError:
-            raise
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise TMDBError("TMDB 剧集详情返回的数据格式无效") from exc
         except (httpx.TimeoutException, httpx.RequestError):
             raise
 
@@ -451,14 +511,19 @@ class TMDBService:
 
             if response.status_code == 404:
                 return None
-            if response.status_code != 200:
-                return None
+            self._check_api_response(response)
 
             data = response.json()
+            if (
+                not isinstance(data, dict)
+                or "season_number" not in data
+                or not isinstance(data.get("episodes"), list)
+            ):
+                raise ValueError("Invalid season payload")
             return self._parse_season_json(data)
 
-        except ValueError:
-            raise
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise TMDBError("TMDB 季详情返回的数据格式无效") from exc
         except (httpx.TimeoutException, httpx.RequestError):
             raise
 
@@ -523,6 +588,8 @@ class TMDBService:
                     updated_seasons.append(season_detail)
                 else:
                     updated_seasons.append(season)
+            except (TMDBError, httpx.RequestError):
+                raise
             except Exception:
                 updated_seasons.append(season)
 

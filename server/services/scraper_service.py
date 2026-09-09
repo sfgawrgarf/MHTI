@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from server.core.exceptions import TMDBError
 from server.core.path_security import PathSecurityError, validate_media_path
 from server.services.file_operations import write_metadata_text
 
@@ -440,6 +441,8 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 )
                 if season is not None:
                     localized_seasons.append(season)
+            except (TMDBError, httpx.RequestError):
+                raise
             except Exception as exc:
                 logger.debug(
                     "Unable to fetch localized season %s for TMDB %s: %s",
@@ -455,6 +458,8 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 )
                 if season_ja is not None:
                     japanese_seasons.append(season_ja)
+            except (TMDBError, httpx.RequestError):
+                raise
             except Exception as exc:
                 logger.debug(
                     "Unable to fetch Japanese season %s for TMDB %s: %s",
@@ -509,13 +514,16 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         """根据 TMDB 实际季数自动修正季号。
 
         规则：
-        - 计算实际可用季（排除季0的空 specials）
+        - 第 0 季始终保留，由后续核验确认特别篇是否存在
+        - 计算实际可用正片季
         - 若请求的季号存在 → 保持不变
         - 若不存在且可用季 <= 2 → 自动选第一个可用季（通常为1），返回修正说明
         - 若不存在且可用季 > 2 → 保持原值（让后续核验拦截，交给用户选）
 
         返回 (修正后的季号, 修正说明或 None)。
         """
+        if requested_season == 0:
+            return requested_season, None
         real_seasons = sorted(
             s.season_number for s in series.seasons if s.season_number > 0
         )
@@ -950,7 +958,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             result.scrape_logs = scrape_logs
             return result
 
-        parse_step.logs.append(ScrapeLogEntry(message=f"解析结果: {parsed.series_name} S{parsed.season or '?'}E{parsed.episode or '?'}"))
+        parse_step.logs.append(ScrapeLogEntry(message=f"解析结果: {parsed.series_name} S{parsed.season if parsed.season is not None else '?'}E{parsed.episode if parsed.episode is not None else '?'}"))
         scrape_logs.append(parse_step)
         await notify_log_update()
 
@@ -993,6 +1001,14 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 await notify_log_update()
                 try:
                     search_response = await self.tmdb_service.search_series_by_api(search_title)
+                except TMDBError as exc:
+                    search_step.logs.append(ScrapeLogEntry(message=str(exc), level=LogLevel.ERROR))
+                    search_step.completed = False
+                    await notify_log_update()
+                    result.status = ScrapeStatus.SEARCH_FAILED
+                    result.message = str(exc)
+                    result.scrape_logs = scrape_logs
+                    return result
                 except httpx.TimeoutException:
                     search_step.logs.append(ScrapeLogEntry(
                         message="TMDB 搜索超时",
@@ -1001,7 +1017,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     search_step.completed = False
                     await notify_log_update()
                     result.status = ScrapeStatus.SEARCH_FAILED
-                    result.message = "TMDB 搜索超时，请检查网络或 Cookie"
+                    result.message = "TMDB 搜索超时，请稍后重试或检查网络"
                     result.scrape_logs = scrape_logs
                     return result
                 except httpx.RequestError as e:
@@ -1162,17 +1178,17 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 ai_step.logs.append(ScrapeLogEntry(message=f"AI 识别失败，{fallback}: {exc}", level=LogLevel.WARNING))
                 ai_step.completed = False
                 await notify_log_update()
-            except (httpx.TimeoutException, httpx.RequestError) as exc:
-                ai_required_but_failed = force_ai
+            except (TMDBError, httpx.RequestError) as exc:
                 ai_step.logs.append(ScrapeLogEntry(
-                    message=(
-                        f"AI 建议标题的 TMDB 搜索失败，"
-                        f"{'等待人工确认' if force_ai else '回退到常规刮削'}: {exc}"
-                    ),
-                    level=LogLevel.WARNING,
+                    message=f"AI 建议标题的 TMDB 搜索失败: {exc}",
+                    level=LogLevel.ERROR,
                 ))
                 ai_step.completed = False
                 await notify_log_update()
+                result.status = ScrapeStatus.SEARCH_FAILED
+                result.message = f"AI 建议标题的 TMDB 搜索失败: {exc}"
+                result.scrape_logs = scrape_logs
+                return result
 
         if alias_match is None and not adult_results:
             search_step.logs.append(ScrapeLogEntry(message="未找到匹配的成人剧集", level=LogLevel.WARNING))
@@ -1207,33 +1223,17 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 adult_results,
                 attempted_titles,
             )
-            exact_single = (
-                len(adult_results) == 1
-                and "deterministic:0"
-                in candidate_sources.get(adult_results[0].id, set())
-            )
             trusted_match = (
-                exact_single
-                or (
-                    ranked_match is not None
-                    and candidate_sources.get(ranked_match.candidate.id, set())
-                    != {"ai_suggestion"}
-                )
+                ranked_match is not None
+                and candidate_sources.get(ranked_match.candidate.id, set())
+                != {"ai_suggestion"}
             )
             if trusted_match:
-                selected_match = (
-                    adult_results[0]
-                    if exact_single
-                    else ranked_match.candidate
-                )
+                selected_match = ranked_match.candidate
                 result.selected_id = selected_match.id
                 score_text = (
-                    "exact-query"
-                    if exact_single
-                    else (
-                        f"score={ranked_match.score:.2f}, "
-                        f"margin={ranked_match.margin:.2f}"
-                    )
+                    f"score={ranked_match.score:.2f}, "
+                    f"margin={ranked_match.margin:.2f}"
                 )
                 search_step.logs.append(ScrapeLogEntry(
                     message=(
@@ -1284,7 +1284,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             result.series_info = series
             detail_step.logs.append(ScrapeLogEntry(message=f"剧集名称: {series.name}"))
             await notify_log_update()
-        except ValueError as e:
+        except (TMDBError, ValueError) as e:
             detail_step.logs.append(ScrapeLogEntry(message=str(e), level=LogLevel.ERROR))
             detail_step.completed = False
             await notify_log_update()
@@ -1311,14 +1311,23 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
         # Step 4.5: Check if episode is missing
         if parsed.episode is None:
-            episode_match, localized_seasons = (
-                await self._match_episode_by_multilingual_title(
-                    file_path=file_path,
-                    tmdb_id=result.selected_id,
-                    series=series,
-                    season_hint=parsed.season,
+            try:
+                episode_match, localized_seasons = (
+                    await self._match_episode_by_multilingual_title(
+                        file_path=file_path,
+                        tmdb_id=result.selected_id,
+                        series=series,
+                        season_hint=parsed.season,
+                    )
                 )
-            )
+            except (TMDBError, httpx.RequestError) as exc:
+                detail_step.logs.append(ScrapeLogEntry(message=str(exc), level=LogLevel.ERROR))
+                detail_step.completed = False
+                await notify_log_update()
+                result.status = ScrapeStatus.API_FAILED
+                result.message = str(exc)
+                result.scrape_logs = scrape_logs
+                return result
             if episode_match is not None:
                 parsed.season = episode_match.season
                 parsed.episode = episode_match.episode
@@ -1387,7 +1396,13 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             )
             logger.info(f"获取季度详情: Season {season_num}, 共 {len(season_info.episodes) if season_info and season_info.episodes else 0} 集")
         except Exception as e:
-            logger.warning(f"获取季度详情失败: {e}")
+            detail_step.logs.append(ScrapeLogEntry(message=f"获取季度详情失败: {e}", level=LogLevel.ERROR))
+            detail_step.completed = False
+            await notify_log_update()
+            result.status = ScrapeStatus.API_FAILED
+            result.message = f"获取季度详情失败: {e}"
+            result.scrape_logs = scrape_logs
+            return result
 
         # Step 5.2: 核验 TMDB 中是否存在该季和该集
         # 若不存在则暂停为 pending_action，避免文件被错误重命名/移动
@@ -1767,7 +1782,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             result.series_info = series
             detail_step.logs.append(ScrapeLogEntry(message=f"剧集名称: {series.name}"))
             await notify_log_update()
-        except ValueError as e:
+        except (TMDBError, ValueError) as e:
             detail_step.logs.append(ScrapeLogEntry(message=str(e), level=LogLevel.ERROR))
             detail_step.completed = False
             await notify_log_update()
@@ -1793,7 +1808,13 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             detail_step.logs.append(ScrapeLogEntry(message=f"获取季度详情: 共 {len(season_info.episodes) if season_info and season_info.episodes else 0} 集"))
             await notify_log_update()
         except Exception as e:
-            logger.warning(f"获取季度详情失败: {e}")
+            detail_step.logs.append(ScrapeLogEntry(message=f"获取季度详情失败: {e}", level=LogLevel.ERROR))
+            detail_step.completed = False
+            await notify_log_update()
+            result.status = ScrapeStatus.API_FAILED
+            result.message = f"获取季度详情失败: {e}"
+            result.scrape_logs = scrape_logs
+            return result
 
         # 核验 TMDB 中是否存在该季和该集（scrape_by_id 路径）
         season_exists = any(s.season_number == request.season for s in series.seasons)

@@ -692,8 +692,8 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
             request = ScrapeByIdRequest(
                 file_path=job.file_path,
                 tmdb_id=job.correction_tmdb_id,
-                season=job.correction_season or 1,
-                episode=job.correction_episode or 1,
+                season=job.correction_season if job.correction_season is not None else 1,
+                episode=job.correction_episode if job.correction_episode is not None else 1,
                 output_dir=job.output_dir,
                 metadata_dir=job.metadata_dir,
                 file_locator=job.file_locator,
@@ -849,13 +849,8 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
             )
             # 发送需要用户操作通知
             await notifier.notify_need_action(job_id, "file_conflict", conflict_data)
-        elif result.status in (ScrapeStatus.NO_MATCH, ScrapeStatus.SEARCH_FAILED, ScrapeStatus.API_FAILED):
-            # 需要手动输入 TMDB ID
-            conflict_type_map = {
-                ScrapeStatus.NO_MATCH: ConflictType.NO_MATCH,
-                ScrapeStatus.SEARCH_FAILED: ConflictType.SEARCH_FAILED,
-                ScrapeStatus.API_FAILED: ConflictType.API_FAILED,
-            }
+        elif result.status == ScrapeStatus.NO_MATCH:
+            # 只有真实无匹配才需要手动输入 TMDB ID；上游故障走失败分支。
             conflict_data = {
                 "output_dir": job.output_dir,
                 "metadata_dir": job.metadata_dir,
@@ -868,7 +863,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 record_id,
                 status=TaskStatus.PENDING_ACTION,
                 error_message=result.message,
-                conflict_type=conflict_type_map[result.status],
+                conflict_type=ConflictType.NO_MATCH,
                 conflict_data=conflict_data,
             )
             await service.update_job(

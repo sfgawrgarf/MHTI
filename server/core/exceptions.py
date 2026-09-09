@@ -256,6 +256,17 @@ class TMDBNotFoundError(TMDBError):
         self.status_code = 404
 
 
+class TMDBRateLimitError(TMDBError):
+    """TMDB throttled a request; this is not an empty search result."""
+
+    def __init__(self, retry_after: float | None = None) -> None:
+        super().__init__(
+            "TMDB 请求过于频繁，请稍后重试",
+            ErrorCode.TMDB_RATE_LIMITED,
+            {"upstream_status": 429, "retry_after": retry_after},
+        )
+
+
 class TMDBTimeoutError(TMDBError):
     """Raised when TMDB request times out."""
 
