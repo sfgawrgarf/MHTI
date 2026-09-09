@@ -1,8 +1,6 @@
 """Rename service for organizing video files."""
 
 import logging
-import os
-import shutil
 from pathlib import Path
 
 from server.core.path_security import PathSecurityError, validate_media_path
@@ -301,7 +299,7 @@ class RenameService:
             backup_path = source_path.with_suffix(f"{source_path.suffix}.bak{counter}")
             counter += 1
 
-        shutil.copy2(str(source_path), str(backup_path))
+        publish_file(source_path, backup_path, OrganizeMode.COPY)
         return str(backup_path)
 
     def _execute_file_operation(
@@ -319,18 +317,8 @@ class RenameService:
         """
         mode = link_mode or OrganizeMode.MOVE  # 默认移动
 
-        if mode == OrganizeMode.COPY:
-            shutil.copy2(str(source_path), str(dest_path))
-            logger.info(f"文件已复制: {source_path} -> {dest_path}")
-        elif mode == OrganizeMode.HARDLINK:
-            os.link(str(source_path), str(dest_path))
-            logger.info(f"硬链接已创建: {source_path} -> {dest_path}")
-        elif mode == OrganizeMode.SYMLINK:
-            os.symlink(str(source_path), str(dest_path))
-            logger.info(f"软链接已创建: {source_path} -> {dest_path}")
-        else:  # MOVE
-            shutil.move(str(source_path), str(dest_path))
-            logger.info(f"文件已移动: {source_path} -> {dest_path}")
+        publish_file(source_path, dest_path, mode)
+        logger.info("文件整理完成 (%s): %s -> %s", mode.value, source_path, dest_path)
 
     def create_series_structure(
         self,

@@ -58,6 +58,10 @@ class ScrapeJob(BaseModel):
     correction_tmdb_id: int | None = None
     correction_season: int | None = None
     correction_episode: int | None = None
+    continuation_history_id: str | None = None
+    file_action: str | None = None
+    selection_log: str | None = None
+    skip_emby_check: bool = False
 
 
 class ScrapeJobCreate(BaseModel):
@@ -80,6 +84,10 @@ class ScrapeJobCreate(BaseModel):
     correction_tmdb_id: int | None = None
     correction_season: int | None = None
     correction_episode: int | None = None
+    continuation_history_id: str | None = None
+    file_action: str | None = None
+    selection_log: str | None = None
+    skip_emby_check: bool = False
 
 
 class ScrapeJobListResponse(BaseModel):

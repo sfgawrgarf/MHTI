@@ -11,6 +11,7 @@ from server.core.exceptions import (
 )
 from server.models.file import DirectoryEntry, ScannedFile
 from server.models.storage import StorageLocator, StorageProvider
+from server.services.file_io import check_file_cancelled, run_file_io
 
 # Supported video file extensions
 SUPPORTED_VIDEO_EXTENSIONS: set[str] = {
@@ -173,7 +174,7 @@ class FileService:
                 file_id=locator.file_id,
             )
             return [self._p115_entry_to_scanned_file(entry) for entry in entries]
-        return self.scan_folder(folder_path, locator=locator)
+        return await run_file_io(self.scan_folder, folder_path, locator=locator)
 
     @staticmethod
     def _p115_entry_to_scanned_file(entry: dict[str, Any]) -> ScannedFile:
@@ -205,6 +206,7 @@ class FileService:
         video_files: list[ScannedFile] = []
 
         for item in folder.rglob("*"):
+            check_file_cancelled()
             if item.is_file() and item.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS:
                 stat = item.stat()
                 mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
@@ -388,6 +390,7 @@ class FileService:
                 all_entries.append(self._build_virtual_115_entry())
 
             for item in sorted(folder.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                check_file_cancelled()
                 try:
                     stat = item.stat()
                     mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
@@ -483,7 +486,7 @@ class FileService:
         if provider_value == StorageProvider.P115.value:
             return await self._browse_provider_115_async(path, file_id, page, page_size)
 
-        return self.browse_directory(
+        return await run_file_io(self.browse_directory,
             path=path,
             page=page,
             page_size=page_size,

@@ -475,8 +475,8 @@ async def test_success_rematch_rejects_missing_current_output():
 
 
 @pytest.mark.asyncio
-async def test_manual_match_file_conflict_becomes_pending_action(monkeypatch):
-    """Manual TMDB matching must retain a destination conflict for user choice."""
+async def test_manual_match_is_queued_without_synchronous_execution(monkeypatch):
+    """Manual actions must use the persistent worker queue, not the HTTP handler."""
     conflict_path = "/library/Show/Season 01/Show - S01E01.strm"
     scraper = SimpleNamespace(
         scrape_by_id=AsyncMock(
@@ -492,11 +492,14 @@ async def test_manual_match_file_conflict_becomes_pending_action(monkeypatch):
     record = SimpleNamespace(
         scrape_logs=[],
         manual_job_id=None,
+        scrape_job_id="original-job",
         conflict_data={"parsed_title": "example"},
     )
     history_service = AsyncMock()
     history_service.get_record.return_value = record
     history_service.clear_log_cache = Mock()
+    queue = SimpleNamespace(create_job=AsyncMock(return_value=SimpleNamespace(id="queued-job")))
+    monkeypatch.setattr("server.services.scrape_job_service.ScrapeJobService", lambda **kwargs: queue)
     request = ScrapeByIdRequest(
         file_path="/incoming/example.strm",
         tmdb_id=123,
@@ -510,21 +513,21 @@ async def test_manual_match_file_conflict_becomes_pending_action(monkeypatch):
         history_service, "record-1", request, "用户手动输入 TMDB ID"
     )
 
-    assert result["requires_action"] is True
-    assert result["conflict_type"] == ConflictType.FILE_CONFLICT.value
-    assert result["conflict_data"]["tmdb_id"] == 123
-    assert result["conflict_data"]["season"] == 1
-    assert result["conflict_data"]["episode"] == 1
-    assert result["conflict_data"]["dest_path"] == conflict_path
-    update = history_service.update_record.await_args
-    assert update.kwargs["status"] == TaskStatus.PENDING_ACTION
-    assert update.kwargs["conflict_type"] == ConflictType.FILE_CONFLICT
-    assert update.kwargs["conflict_data"]["dest_path"] == conflict_path
+    assert result["queued"] is True
+    assert result["job_id"] == "queued-job"
+    scraper.scrape_by_id.assert_not_awaited()
+    queued = queue.create_job.call_args.args[0]
+    assert queued.continuation_history_id == "record-1"
+    assert queued.replaces_job_id == "original-job"
+    assert queued.correction_tmdb_id == 123
+    assert queued.correction_season == 1
+    assert queued.correction_episode == 1
+    history_service.update_record.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_manual_match_success_uses_canonical_success_update(monkeypatch):
-    """Manual rematches store the destination and clear stale conflict state."""
+async def test_manual_match_preserves_selection_in_queued_job(monkeypatch):
+    """The worker receives the new selection, output and user log intact."""
     scraper = SimpleNamespace(
         scrape_by_id=AsyncMock(
             return_value=SimpleNamespace(
@@ -554,12 +557,15 @@ async def test_manual_match_success_uses_canonical_success_update(monkeypatch):
     record = SimpleNamespace(
         scrape_logs=[],
         manual_job_id=None,
+        scrape_job_id="original-job",
         conflict_data={"tmdb_id": 123},
         folder_path="/incoming/school-II.strm",
     )
     history_service = AsyncMock()
     history_service.get_record.return_value = record
     history_service.clear_log_cache = Mock()
+    queue = SimpleNamespace(create_job=AsyncMock(return_value=SimpleNamespace(id="queued-job")))
+    monkeypatch.setattr("server.services.scrape_job_service.ScrapeJobService", lambda **kwargs: queue)
     request = ScrapeByIdRequest(
         file_path=record.folder_path,
         tmdb_id=97995,
@@ -573,13 +579,14 @@ async def test_manual_match_success_uses_canonical_success_update(monkeypatch):
     )
 
     assert result["success"] is True
-    success_update = history_service.update_record_on_success.await_args
-    assert success_update.kwargs["folder_path"].endswith(
-        "=> /library/School (2011)/Season 1/School - S01E02.strm"
-    )
-    assert success_update.kwargs["title"] == "School"
-    assert success_update.kwargs["season_number"] == 1
-    assert success_update.kwargs["episode_number"] == 2
+    assert result["queued"] is True
+    queued = queue.create_job.call_args.args[0]
+    assert queued.output_dir == "/library"
+    assert queued.correction_tmdb_id == 97995
+    assert queued.correction_episode == 2
+    assert queued.selection_log == "用户重新匹配"
+    scraper.scrape_by_id.assert_not_awaited()
+    history_service.update_record_on_success.assert_not_awaited()
     history_service.update_record.assert_not_awaited()
 
 

@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -299,112 +298,38 @@ async def _execute_scrape_and_update(
     scrape_request,
     user_selection_log: str | None = None,
 ) -> dict:
-    """执行刮削并更新记录状态（公共逻辑）"""
-    from server.core.container import get_scraper_service
-    from server.models.history import ScrapeLogEntry, ScrapeLogStep
-    from server.models.scraper import ScrapeStatus
-    from server.services.manual_job_service import ManualJobService
+    """Persist manual actions in the same queue as automatic scraping."""
+    from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
+    from server.services.scrape_job_service import ScrapeJobService
 
-    scraper = get_scraper_service()
-
-    # 获取原有日志和 manual_job_id
     record = await history_service.get_record(record_id)
-    existing_logs = list(record.scrape_logs) if record and record.scrape_logs else []
-    manual_job_id = record.manual_job_id if record else None
-
-    # 如果有用户选择日志，添加到原有日志后
-    if user_selection_log:
-        user_log = ScrapeLogStep(
-            name="用户手动选择",
-            completed=True,
-            logs=[ScrapeLogEntry(message=user_selection_log)],
-        )
-        existing_logs.append(user_log)
-        await history_service.update_scrape_logs(record_id, existing_logs)
-
-    # 创建日志回调
-    async def on_log_update(logs):
-        # 将新日志追加到原有日志后
-        combined_logs = existing_logs + logs
-        await history_service.update_scrape_logs(record_id, combined_logs)
-
-    scrape_started_at = time.monotonic()
-    result = await scraper.scrape_by_id(scrape_request, on_log_update=on_log_update)
-    scrape_duration = time.monotonic() - scrape_started_at
-
-    # 清理日志缓存
-    history_service.clear_log_cache(record_id)
-
-    if result.status.value == "success":
-        series = result.series_info
-        episode = result.episode_info
-        source_path = (record.folder_path if record else scrape_request.file_path).split(
-            " => ", 1
-        )[0]
-        destination = result.dest_path or scrape_request.output_dir or source_path
-        await history_service.update_record_on_success(
-            record_id,
-            folder_path=f"{source_path} => {destination}",
-            duration_seconds=scrape_duration,
-            title=series.name if series else None,
-            original_title=series.original_name if series else None,
-            plot=series.overview if series else None,
-            poster_url=f"https://image.tmdb.org/t/p/w500{series.poster_path}" if series and series.poster_path else None,
-            release_date=str(series.first_air_date) if series and series.first_air_date else None,
-            rating=series.vote_average if series else None,
-            tags=series.genres if series else None,
-            season_number=result.parsed_season,
-            episode_number=result.parsed_episode,
-            episode_title=episode.name if episode else None,
-            episode_overview=episode.overview if episode else None,
-            episode_still_url=f"https://image.tmdb.org/t/p/w500{episode.still_path}" if episode and episode.still_path else None,
-            episode_air_date=str(episode.air_date) if episode and episode.air_date else None,
-        )
-
-        # 更新手动任务统计（skip_count - 1, success_count + 1）
-        if manual_job_id:
-            job_service = ManualJobService()
-            job = await job_service.get_job(manual_job_id)
-            if job:
-                await job_service.update_job_status(
-                    manual_job_id,
-                    job.status,  # 保持原状态
-                    success_count=job.success_count + 1,
-                    skip_count=max(0, job.skip_count - 1),
-                )
-
-        return {"success": True, "message": "处理成功", "dest_path": result.dest_path}
-    if result.status == ScrapeStatus.FILE_CONFLICT:
-        conflict_data = dict(record.conflict_data or {}) if record else {}
-        conflict_data.update({
-            "output_dir": scrape_request.output_dir,
-            "metadata_dir": scrape_request.metadata_dir,
-            "link_mode": scrape_request.link_mode.value if scrape_request.link_mode else None,
-            "tmdb_id": scrape_request.tmdb_id,
-            "season": scrape_request.season,
-            "episode": scrape_request.episode,
-            "dest_path": result.dest_path,
-        })
-        await history_service.update_record(
-            record_id,
-            status=TaskStatus.PENDING_ACTION,
-            error_message=result.message or "目标文件已存在",
-            conflict_type=ConflictType.FILE_CONFLICT,
-            conflict_data=conflict_data,
-        )
-        return {
-            "success": False,
-            "requires_action": True,
-            "message": result.message or "目标文件已存在，请选择处理方式",
-            "dest_path": result.dest_path,
-            "conflict_type": ConflictType.FILE_CONFLICT.value,
-            "conflict_data": conflict_data,
-        }
-    else:
-        await history_service.update_record(
-            record_id, status=TaskStatus.FAILED, error_message=result.message
-        )
-        raise HTTPException(status_code=400, detail=result.message)
+    if record is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    service = ScrapeJobService(db_path=history_service.db_path)
+    job = await service.create_job(ScrapeJobCreate(
+        file_path=scrape_request.file_path,
+        output_dir=scrape_request.output_dir or str(Path(scrape_request.file_path).parent),
+        metadata_dir=scrape_request.metadata_dir,
+        file_locator=scrape_request.file_locator,
+        output_locator=scrape_request.output_locator,
+        metadata_locator=scrape_request.metadata_locator,
+        allow_local_output=scrape_request.allow_local_output,
+        link_mode=scrape_request.link_mode,
+        advanced_settings=scrape_request.advanced_settings,
+        source=ScrapeJobSource.MANUAL,
+        source_id=record.manual_job_id,
+        replaces_job_id=record.scrape_job_id,
+        continuation_history_id=record_id,
+        correction_tmdb_id=scrape_request.tmdb_id,
+        correction_season=scrape_request.season,
+        correction_episode=scrape_request.episode,
+        file_action=scrape_request.file_action,
+        skip_emby_check=scrape_request.skip_emby_check,
+        selection_log=user_selection_log,
+    ), skip_duplicate_check=True)
+    if job is None:
+        raise HTTPException(status_code=409, detail="该记录或文件已在处理中，请勿重复提交")
+    return {"success": True, "queued": True, "job_id": job.id, "message": "已加入刮削队列，请在记录页查看结果"}
 
 
 @router.put("/{record_id}/resolve")

@@ -342,6 +342,8 @@ export interface RetryRequest {
 }
 
 export interface HistoryActionResponse {
+  queued?: boolean
+  job_id?: string
   success: boolean
   message: string
   dest_path?: string

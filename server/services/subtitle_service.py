@@ -2,6 +2,7 @@
 
 import re
 import shutil
+from server.services.file_io import check_file_cancelled
 from pathlib import Path
 
 from server.core.path_security import PathSecurityError, validate_media_path
@@ -84,6 +85,7 @@ class SubtitleService:
 
         subtitles = []
         for file_path in folder.rglob("*"):
+            check_file_cancelled()
             if file_path.is_file() and file_path.suffix.lower() in SUBTITLE_EXTENSIONS:
                 subtitle = self._parse_subtitle_file(file_path)
                 subtitles.append(subtitle)
@@ -119,6 +121,7 @@ class SubtitleService:
         if video_files is None:
             video_files = []
             for file_path in folder.rglob("*"):
+                check_file_cancelled()
                 if file_path.is_file() and file_path.suffix.lower() in VIDEO_EXTENSIONS:
                     video_files.append(file_path.name)
 

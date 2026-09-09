@@ -12,6 +12,7 @@ from server.models.rename import (
     RenameResult,
 )
 from server.services.rename_service import RenameService
+from server.services.file_io import run_file_io
 
 router = APIRouter(
     prefix="/api/rename",
@@ -38,7 +39,7 @@ def preview_rename(
 
 
 @router.post("/execute", response_model=RenameResult)
-def execute_rename(
+async def execute_rename(
     request: RenameRequest,
     create_backup: bool = False,
     rename_service: RenameService = Depends(get_rename_service),
@@ -53,11 +54,11 @@ def execute_rename(
     Returns:
         Result of the rename operation.
     """
-    return rename_service.execute_rename(request, create_backup=create_backup)
+    return await run_file_io(rename_service.execute_rename, request, create_backup=create_backup)
 
 
 @router.post("/batch", response_model=BatchRenameResponse)
-def batch_rename(
+async def batch_rename(
     request: BatchRenameRequest,
     rename_service: RenameService = Depends(get_rename_service),
 ) -> BatchRenameResponse:
@@ -70,4 +71,4 @@ def batch_rename(
     Returns:
         Batch rename response with all results.
     """
-    return rename_service.batch_rename(request)
+    return await run_file_io(rename_service.batch_rename, request)
