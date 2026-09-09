@@ -15,6 +15,7 @@ from server.models.rename import (
     RenameResult,
 )
 from server.services.template_service import TemplateService
+from server.services.file_operations import publish_file
 
 logger = logging.getLogger(__name__)
 
@@ -163,13 +164,13 @@ class RenameService:
                 backup_path = self._create_backup(source_path)
 
             # 目标冲突只在用户明确处理时改变默认的安全失败行为。
-            if dest_path.exists() and dest_path != source_path:
+            overwrite = request.conflict_action == "overwrite"
+            if (dest_path.exists() or dest_path.is_symlink()) and dest_path != source_path:
                 if request.conflict_action == "rename":
                     dest_path = self._next_available_path(dest_path)
                     logger.info(f"目标文件已存在，使用重命名目标: {dest_path}")
                 elif request.conflict_action == "overwrite":
                     logger.warning(f"用户确认覆盖目标文件: {dest_path}")
-                    dest_path.unlink()
                 else:
                     logger.warning(f"目标文件已存在: {dest_path}")
                     return RenameResult(
@@ -182,7 +183,13 @@ class RenameService:
 
             # Move/rename the file based on link_mode
             logger.info(f"execute_rename: 正在处理文件，模式: {request.link_mode or 'move(默认)'}...")
-            self._execute_file_operation(source_path, dest_path, request.link_mode)
+            if overwrite and dest_path != source_path:
+                publish_file(
+                    source_path, dest_path, request.link_mode or OrganizeMode.MOVE,
+                    overwrite=True,
+                )
+            elif dest_path != source_path:
+                self._execute_file_operation(source_path, dest_path, request.link_mode)
             logger.info("execute_rename: 文件处理成功!")
 
             return RenameResult(

@@ -151,8 +151,27 @@ jobs:
           done
           exit 1
 
+      - name: 验证 Compose 实际健康检查
+        env:
+          MHTI_VERSION: ci-smoke
+        run: |
+          docker tag mhti:test ghcr.io/sfgawrgarf/mhti:ci-smoke
+          docker compose -p mhti-smoke up -d --pull never
+          for attempt in $(seq 1 45); do
+            if [ "$(docker inspect --format '{{.State.Health.Status}}' mhti)" = healthy ]; then
+              curl --fail --silent http://127.0.0.1:8000/health
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
       - name: 输出容器日志并清理
         if: always()
+        env:
+          MHTI_VERSION: ci-smoke
         run: |
           docker logs mhti-smoke 2>&1 || true
           docker rm -f mhti-smoke 2>/dev/null || true
+          docker logs mhti 2>&1 || true
+          docker compose -p mhti-smoke down || true

@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from server.models.emby import ConflictCheckRequest, ConflictCheckResult, ConflictType
 from server.models.tmdb import TMDBSeason, TMDBSeries
+from server.models.organize import OrganizeMode
+from server.core.path_security import validate_media_path
+from server.services.file_operations import publish_file
 
 if TYPE_CHECKING:
     from server.services.emby_service import EmbyService
@@ -145,8 +147,9 @@ class ScraperMediaMixin:
         self,
         source_video_path: str,
         dest_video_path: str,
+        link_mode: OrganizeMode | None = None,
     ) -> list[str]:
-        """查找并移动与视频关联的字幕文件。
+        """按视频整理模式处理字幕，不在源目录中预先改名。
 
         Args:
             source_video_path: 原视频文件路径。
@@ -174,28 +177,17 @@ class ScraperMediaMixin:
         for sub in scan_result.subtitles:
             sub_base = self.subtitle_service._get_base_name(sub.filename)
             if self.subtitle_service._names_match(source_stem, sub_base):
-                # 重命名并移动字幕
-                result = self.subtitle_service.rename_subtitle(
-                    subtitle_path=sub.path,
-                    new_video_name=dest_stem,
-                    preserve_language=True,
-                )
-                if result.success:
-                    # 如果目标文件夹不同，移动到目标文件夹
-                    renamed_path = Path(result.dest_path)
-                    if renamed_path.parent != dest_folder:
-                        final_path = dest_folder / renamed_path.name
-                        try:
-                            shutil.move(str(renamed_path), str(final_path))
-                            moved_subtitles.append(str(final_path))
-                            logger.info(f"字幕已移动: {renamed_path.name} -> {final_path}")
-                        except OSError as e:
-                            logger.warning(f"字幕移动失败: {e}")
-                    else:
-                        moved_subtitles.append(result.dest_path)
-                        logger.info(f"字幕已重命名: {sub.filename} -> {renamed_path.name}")
-                else:
-                    logger.warning(f"字幕处理失败: {result.error}")
+                language = f".{sub.language.value}" if sub.language and sub.language.value else ""
+                final_path = dest_folder / f"{dest_stem}{language}{sub.extension}"
+                try:
+                    source_subtitle = validate_media_path(sub.path, must_exist=True, require_file=True)
+                    validate_media_path(str(final_path))
+                    publish_file(
+                        source_subtitle, final_path, link_mode or OrganizeMode.MOVE,
+                    )
+                    moved_subtitles.append(str(final_path))
+                except (OSError, ValueError) as exc:
+                    logger.warning("字幕处理失败，保留原文件: %s (%s)", sub.path, exc)
 
         return moved_subtitles
 
