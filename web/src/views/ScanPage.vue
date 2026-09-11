@@ -23,9 +23,11 @@ import {
   SearchOutline,
   ListOutline,
   ChevronForwardOutline,
+  StopCircleOutline,
 } from '@vicons/ionicons5'
 import { manualJobApi } from '@/api/manual-job'
-import type { ManualJob, ManualJobStatus } from '@/api/types'
+import { jobRuntimeApi } from '@/api/job-runtime'
+import type { JobRuntimeMetrics, ManualJob, ManualJobStatus } from '@/api/types'
 import { LinkMode } from '@/api/types'
 import TaskWizard from '@/components/scan/TaskWizard.vue'
 import ProgressCell from '@/components/scan/ProgressCell.vue'
@@ -47,6 +49,8 @@ const search = ref('')
 const statusFilter = ref<ManualJobStatus | null>(null)
 const checkedRowKeys = ref<DataTableRowKey[]>([])
 const showCreateModal = ref(false)
+const runtimeMetrics = ref<JobRuntimeMetrics | null>(null)
+const cancellingJobIds = ref<Set<number>>(new Set())
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -97,9 +101,34 @@ const goToHistory = (job: ManualJob) => {
   router.push({ path: '/history', query: { manual_job_id: job.id } })
 }
 
+const activeChildCount = (job: ManualJob) =>
+  job.child_pending_count + job.child_running_count + job.child_pending_action_count
+
+const canCancel = (job: ManualJob) =>
+  job.status === 'pending' || job.status === 'running' || activeChildCount(job) > 0
+
+const handleCancel = async (job: ManualJob) => {
+  cancellingJobIds.value = new Set(cancellingJobIds.value).add(job.id)
+  try {
+    const result = await manualJobApi.cancel(job.id)
+    const childText = result.cancelled_scrape_jobs
+      ? `，同时取消 ${result.cancelled_scrape_jobs} 个刮削任务`
+      : ''
+    message.success(`任务已安全取消${childText}`)
+    await Promise.all([loadJobs(), loadRuntimeMetrics()])
+  } catch (error) {
+    message.error('取消失败或任务已经结束')
+    console.error(error)
+  } finally {
+    const next = new Set(cancellingJobIds.value)
+    next.delete(job.id)
+    cancellingJobIds.value = next
+  }
+}
+
 // 表格列
 const columns: DataTableColumns<ManualJob> = [
-  { type: 'selection' },
+  { type: 'selection', disabled: (row) => canCancel(row) },
   { title: '#', key: 'id', width: 60 },
   {
     title: '扫描目录',
@@ -144,6 +173,9 @@ const columns: DataTableColumns<ManualJob> = [
         skipCount: row.skip_count,
         errorCount: row.error_count,
         totalCount: row.total_count,
+        childPendingCount: row.child_pending_count,
+        childRunningCount: row.child_running_count,
+        childPendingActionCount: row.child_pending_action_count,
       }),
   },
   {
@@ -151,6 +183,9 @@ const columns: DataTableColumns<ManualJob> = [
     key: 'status',
     width: 80,
     render: (row) => {
+      if (activeChildCount(row) > 0) {
+        return h(NTag, { type: 'info', size: 'small' }, { default: () => '处理中' })
+      }
       const status = statusMap[row.status] || { label: row.status, type: 'default' }
       return h(NTag, { type: status.type, size: 'small' }, { default: () => status.label })
     },
@@ -158,8 +193,8 @@ const columns: DataTableColumns<ManualJob> = [
   {
     title: '操作',
     key: 'actions',
-    width: 100,
-    render: (row) =>
+    width: 190,
+    render: (row) => h('div', { class: 'row-actions' }, [
       h(
         NButton,
         {
@@ -172,6 +207,29 @@ const columns: DataTableColumns<ManualJob> = [
           default: () => '记录',
         }
       ),
+      canCancel(row)
+        ? h(
+            NPopconfirm,
+            { onPositiveClick: () => handleCancel(row) },
+            {
+              trigger: () => h(
+                NButton,
+                {
+                  size: 'small',
+                  quaternary: true,
+                  type: 'warning',
+                  loading: cancellingJobIds.value.has(row.id),
+                },
+                {
+                  icon: () => h(NIcon, { component: StopCircleOutline }),
+                  default: () => '取消',
+                },
+              ),
+              default: () => `停止任务及剩余 ${activeChildCount(row)} 个刮削任务？`,
+            },
+          )
+        : null,
+    ]),
   },
 ]
 
@@ -192,6 +250,14 @@ const loadJobs = async () => {
     console.error(error)
   } finally {
     loading.value = false
+  }
+}
+
+const loadRuntimeMetrics = async () => {
+  try {
+    runtimeMetrics.value = await jobRuntimeApi.get()
+  } catch (error) {
+    console.error('加载任务运行状态失败', error)
   }
 }
 
@@ -242,10 +308,20 @@ const handleCheckedRowKeysChange = (keys: DataTableRowKey[]) => {
 }
 
 // 是否有运行中的任务
-const hasRunningJobs = computed(() => jobs.value.some((j) => j.status === 'running' || j.status === 'pending'))
+const hasRunningJobs = computed(() => jobs.value.some(canCancel))
+
+const formatPendingAge = (seconds: number | null) => {
+  if (seconds === null) return '无等待'
+  if (seconds < 60) return `最长等待 ${Math.round(seconds)} 秒`
+  if (seconds < 3600) return `最长等待 ${Math.round(seconds / 60)} 分钟`
+  return `最长等待 ${(seconds / 3600).toFixed(1)} 小时`
+}
 
 // 状态转换为 StatusBadge 格式
-const getJobStatusBadge = (status: ManualJobStatus): { status: 'success' | 'error' | 'warning' | 'info' | 'pending' | 'default'; text: string } => {
+const getJobStatusBadge = (job: ManualJob): { status: 'success' | 'error' | 'warning' | 'info' | 'pending' | 'default'; text: string } => {
+  if (activeChildCount(job) > 0) {
+    return { status: 'info', text: '处理中' }
+  }
   const map: Record<ManualJobStatus, { status: 'success' | 'error' | 'warning' | 'info' | 'pending' | 'default'; text: string }> = {
     pending: { status: 'pending', text: '等待中' },
     running: { status: 'info', text: '运行中' },
@@ -253,7 +329,7 @@ const getJobStatusBadge = (status: ManualJobStatus): { status: 'success' | 'erro
     failed: { status: 'error', text: '失败' },
     cancelled: { status: 'warning', text: '已取消' },
   }
-  return map[status] || { status: 'default', text: status }
+  return map[job.status] || { status: 'default', text: job.status }
 }
 
 // 计算进度百分比
@@ -264,11 +340,13 @@ const getProgressPercent = (job: ManualJob) => {
 
 onMounted(() => {
   loadJobs()
-  // 定时刷新（有运行中任务时）
+  loadRuntimeMetrics()
+  // 任务状态可能由 watcher 创建，因此始终刷新轻量运行快照。
   refreshTimer = setInterval(() => {
     if (hasRunningJobs.value) {
       loadJobs()
     }
+    loadRuntimeMetrics()
   }, 3000)
 })
 
@@ -281,6 +359,32 @@ onUnmounted(() => {
 
 <template>
   <div class="scan-page">
+    <NCard class="runtime-card glass-card" size="small" title="任务运行状态">
+      <div v-if="runtimeMetrics" class="runtime-grid">
+        <div class="runtime-item">
+          <span class="runtime-label">手动扫描</span>
+          <strong>{{ runtimeMetrics.manual.active_tasks }}</strong>
+          / {{ runtimeMetrics.manual.worker_count }} worker
+          <span>{{ runtimeMetrics.manual.status_counts.pending || 0 }} 等待 · {{ runtimeMetrics.manual.queued_in_memory }} 已入队</span>
+          <span>{{ formatPendingAge(runtimeMetrics.manual.oldest_pending_seconds) }}</span>
+        </div>
+        <div class="runtime-item">
+          <span class="runtime-label">文件刮削</span>
+          <strong>{{ runtimeMetrics.scrape.active_tasks }}</strong>
+          / {{ runtimeMetrics.scrape.concurrency_limit }} 运行
+          <span>{{ runtimeMetrics.scrape.status_counts.pending || 0 }} 等待 · {{ runtimeMetrics.scrape.queued_in_memory }} 已入队</span>
+          <span>{{ formatPendingAge(runtimeMetrics.scrape.oldest_pending_seconds) }}</span>
+        </div>
+        <div class="runtime-item">
+          <span class="runtime-label">文件 I/O</span>
+          <strong>{{ runtimeMetrics.file_io.active }}</strong>
+          / {{ runtimeMetrics.file_io.workers }} 占用
+          <span>{{ runtimeMetrics.file_io.waiting }} 等待</span>
+        </div>
+      </div>
+      <div v-else class="runtime-loading">正在读取运行状态…</div>
+    </NCard>
+
     <!-- 主卡片 -->
     <NCard class="main-card glass-card">
       <!-- 工具栏 -->
@@ -341,7 +445,7 @@ onUnmounted(() => {
             <div class="job-card-content">
               <div class="job-header">
                 <span class="job-id">#{{ job.id }}</span>
-                <StatusBadge :status="getJobStatusBadge(job.status).status" :text="getJobStatusBadge(job.status).text" size="small" />
+                <StatusBadge :status="getJobStatusBadge(job).status" :text="getJobStatusBadge(job).text" size="small" />
               </div>
               <div class="job-path">{{ job.scan_path }}</div>
               <div class="job-target">
@@ -353,6 +457,23 @@ onUnmounted(() => {
                   {{ linkModeMap[job.link_mode]?.label || '未知' }}
                 </NTag>
                 <span class="job-time">{{ formatTime(job.created_at) }}</span>
+                <NPopconfirm
+                  v-if="canCancel(job)"
+                  @positive-click="handleCancel(job)"
+                >
+                  <template #trigger>
+                    <NButton
+                      size="tiny"
+                      quaternary
+                      type="warning"
+                      :loading="cancellingJobIds.has(job.id)"
+                      @click.stop
+                    >
+                      取消
+                    </NButton>
+                  </template>
+                  停止任务及剩余 {{ activeChildCount(job) }} 个刮削任务？
+                </NPopconfirm>
               </div>
               <!-- 进度条 -->
               <div v-if="job.status === 'running' || job.total_count > 0" class="job-progress">
@@ -368,6 +489,9 @@ onUnmounted(() => {
                   <span class="stat skip">{{ job.skip_count }}</span>
                   <span class="stat error">{{ job.error_count }}</span>
                   <span class="stat total">/ {{ job.total_count }}</span>
+                  <span v-if="activeChildCount(job)" class="stat active">
+                    后台 {{ job.child_running_count }} 运行 / {{ job.child_pending_count }} 等待 / {{ job.child_pending_action_count }} 待处理
+                  </span>
                 </div>
               </div>
             </div>
@@ -428,6 +552,47 @@ onUnmounted(() => {
 .scan-page {
   max-width: 1400px;
   margin: 0 auto;
+}
+
+.runtime-card {
+  margin-bottom: 16px;
+}
+
+.runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.runtime-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--n-color-modal);
+}
+
+.runtime-label {
+  margin-right: auto;
+  color: var(--n-text-color-2);
+}
+
+.runtime-item strong {
+  font-size: 20px;
+}
+
+.runtime-item span:last-child,
+.runtime-loading {
+  color: var(--n-text-color-3);
+  font-size: 12px;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* 毛玻璃卡片 */
@@ -494,6 +659,9 @@ onUnmounted(() => {
 
 /* 响应式 */
 @media (max-width: 640px) {
+  .runtime-grid {
+    grid-template-columns: 1fr;
+  }
   .toolbar {
     flex-direction: column;
     align-items: stretch;
@@ -608,6 +776,11 @@ onUnmounted(() => {
 
 .progress-stats .stat.total {
   color: var(--n-text-color-3);
+}
+
+.progress-stats .stat.active {
+  margin-left: auto;
+  color: var(--n-primary-color);
 }
 
 .chevron-icon {

@@ -72,6 +72,7 @@ from server.api.emby import router as emby_router
 from server.api.files import router as files_router
 from server.api.history import router as history_router
 from server.api.images import router as images_router
+from server.api.job_runtime import router as job_runtime_router
 from server.api.manual_job import router as manual_job_router
 from server.api.nfo import router as nfo_router
 from server.api.parser import router as parser_router
@@ -245,6 +246,7 @@ app.include_router(emby_router)
 app.include_router(tmdb_router)
 app.include_router(nfo_router)
 app.include_router(images_router)
+app.include_router(job_runtime_router)
 app.include_router(templates_router)
 app.include_router(rename_router)
 app.include_router(subtitles_router)

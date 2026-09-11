@@ -37,6 +37,7 @@ async def test_io_runs_off_loop_and_bounds_submissions():
         await reached(started)
         second_task = asyncio.create_task(executor.run(second))
         await asyncio.sleep(0)
+        assert executor.snapshot() == {"workers": 1, "active": 1, "waiting": 1}
         second.assert_not_called()
         second_task.cancel()
         with pytest.raises(asyncio.CancelledError):

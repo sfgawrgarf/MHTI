@@ -25,11 +25,23 @@ class FileIOExecutor:
     """Do not release capacity or report cancellation while a thread still writes."""
 
     def __init__(self, workers: int = 2):
+        self.workers = workers
         self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mhti-file")
         self.slots = asyncio.Semaphore(workers)
+        self.active = 0
+        self.waiting = 0
 
     async def run(self, function, /, *args, **kwargs):
-        async with self.slots:
+        self.waiting += 1
+        entered = False
+        try:
+            await self.slots.acquire()
+            entered = True
+        finally:
+            self.waiting -= 1
+
+        self.active += 1
+        try:
             event = Event()
             context = copy_context()
             context.run(_cancel_event.set, event)
@@ -55,6 +67,18 @@ class FileIOExecutor:
                 if not future.cancelled():
                     future.exception()  # retrieve any cooperative cancellation/error
                 raise
+        finally:
+            self.active -= 1
+            if entered:
+                self.slots.release()
+
+    def snapshot(self) -> dict[str, int]:
+        """Return event-loop-local executor utilization without blocking."""
+        return {
+            "workers": self.workers,
+            "active": self.active,
+            "waiting": self.waiting,
+        }
 
     def close(self) -> None:
         # All callers are drained before application shutdown reaches this point.
@@ -71,6 +95,14 @@ async def run_file_io(function, /, *args, **kwargs):
         executor = FileIOExecutor()
         _executors[loop] = executor
     return await executor.run(partial(function, *args, **kwargs))
+
+
+def get_file_io_snapshot() -> dict[str, int]:
+    """Return utilization for the current loop's executor."""
+    executor = _executors.get(asyncio.get_running_loop())
+    if executor is None:
+        return {"workers": 2, "active": 0, "waiting": 0}
+    return executor.snapshot()
 
 
 def shutdown_file_io() -> None:

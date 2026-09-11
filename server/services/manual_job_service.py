@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 import aiosqlite
 
@@ -69,6 +70,19 @@ def _deserialize_locator(payload: str | None) -> StorageLocator | None:
 # 任务队列
 _job_queue: asyncio.Queue[int] = asyncio.Queue()
 _worker_task: asyncio.Task | None = None
+_active_job_tasks: dict[int, asyncio.Task] = {}
+_user_cancel_requests: set[int] = set()
+_job_state_locks: WeakKeyDictionary = WeakKeyDictionary()
+
+
+def _get_job_state_lock() -> asyncio.Lock:
+    """Return a lock scoped to the current event loop."""
+    loop = asyncio.get_running_loop()
+    lock = _job_state_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _job_state_locks[loop] = lock
+    return lock
 
 
 class ManualJobService:
@@ -206,23 +220,24 @@ class ManualJobService:
 
     async def claim_job(self, job_id: int) -> bool:
         """Atomically claim a pending manual job for one worker."""
-        await self._ensure_db()
-        async with db_connection(self.db_path) as db:
-            cursor = await db.execute(
-                """
-                UPDATE manual_jobs
-                SET status = ?, started_at = ?
-                WHERE id = ? AND status = ?
-                """,
-                (
-                    ManualJobStatus.RUNNING.value,
-                    datetime.now().isoformat(),
-                    job_id,
-                    ManualJobStatus.PENDING.value,
-                ),
-            )
-            await db.commit()
-            return cursor.rowcount == 1
+        async with _get_job_state_lock():
+            await self._ensure_db()
+            async with db_connection(self.db_path) as db:
+                cursor = await db.execute(
+                    """
+                    UPDATE manual_jobs
+                    SET status = ?, started_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        ManualJobStatus.RUNNING.value,
+                        datetime.now().isoformat(),
+                        job_id,
+                        ManualJobStatus.PENDING.value,
+                    ),
+                )
+                await db.commit()
+                return cursor.rowcount == 1
 
     async def list_jobs(
         self,
@@ -269,7 +284,8 @@ class ManualJobService:
             )
             rows = await cursor.fetchall()
 
-        jobs = [self._row_to_job(row) for row in rows]
+        child_counts = await self._get_child_counts([int(row["id"]) for row in rows])
+        jobs = [self._row_to_job(row, child_counts.get(int(row["id"]))) for row in rows]
         return jobs, total
 
     async def get_job(self, job_id: int) -> ManualJob | None:
@@ -286,7 +302,56 @@ class ManualJobService:
 
         if row is None:
             return None
-        return self._row_to_job(row)
+        child_counts = await self._get_child_counts([job_id])
+        return self._row_to_job(row, child_counts.get(job_id))
+
+    async def _get_child_counts(self, job_ids: list[int]) -> dict[int, dict[str, int]]:
+        """Load scrape-job state counts for manual jobs in one query."""
+        if not job_ids:
+            return {}
+        placeholders = ",".join("?" * len(job_ids))
+        async with db_connection(self.db_path) as db:
+            cursor = await db.execute(
+                f"""SELECT source_id, status, COUNT(*)
+                FROM scrape_jobs
+                WHERE source = 'manual' AND source_id IN ({placeholders})
+                GROUP BY source_id, status""",
+                job_ids,
+            )
+            rows = await cursor.fetchall()
+
+        counts: dict[int, dict[str, int]] = {}
+        for source_id, status, count in rows:
+            counts.setdefault(int(source_id), {})[str(status)] = int(count)
+        return counts
+
+    async def get_runtime_metrics(self) -> dict:
+        """Return persisted queue counts together with in-process worker state."""
+        async with db_connection(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT status, COUNT(*) FROM manual_jobs GROUP BY status"
+            )
+            status_counts = {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
+            cursor = await db.execute(
+                "SELECT MIN(created_at) FROM manual_jobs WHERE status = ?",
+                (ManualJobStatus.PENDING.value,),
+            )
+            row = await cursor.fetchone()
+
+        oldest_pending_at = datetime.fromisoformat(row[0]) if row and row[0] else None
+        return {
+            "status_counts": status_counts,
+            "queued_in_memory": _job_queue.qsize(),
+            "active_tasks": sum(not task.done() for task in _active_job_tasks.values()),
+            "worker_count": int(_worker_task is not None and not _worker_task.done()),
+            "concurrency_limit": 1,
+            "oldest_pending_at": oldest_pending_at,
+            "oldest_pending_seconds": (
+                max(0.0, (datetime.now() - oldest_pending_at).total_seconds())
+                if oldest_pending_at
+                else None
+            ),
+        }
 
     async def delete_jobs(self, ids: list[int]) -> int:
         """Delete manual jobs by IDs.
@@ -300,6 +365,21 @@ class ManualJobService:
 
         placeholders = ",".join("?" * len(ids))
         async with db_connection(self.db_path) as db:
+            cursor = await db.execute(
+                f"""SELECT COUNT(*) FROM manual_jobs
+                WHERE id IN ({placeholders}) AND status IN ('pending', 'running')""",
+                ids,
+            )
+            active_manual = int((await cursor.fetchone())[0])
+            cursor = await db.execute(
+                f"""SELECT COUNT(*) FROM scrape_jobs
+                WHERE source = 'manual' AND source_id IN ({placeholders})
+                  AND status IN ('pending', 'running', 'pending_action')""",
+                ids,
+            )
+            active_children = int((await cursor.fetchone())[0])
+            if active_manual or active_children:
+                raise ValueError("任务或其刮削子任务仍在处理中，请先取消")
             # 级联删除关联的刮削记录
             await db.execute(
                 f"DELETE FROM history_records WHERE manual_job_id IN ({placeholders})",
@@ -311,6 +391,56 @@ class ManualJobService:
             )
             await db.commit()
             return cursor.rowcount
+
+    async def cancel_job(self, job_id: int) -> tuple[ManualJob | None, bool, int, str]:
+        """Cancel a manual scan and every unfinished scrape job it dispatched."""
+        from server.services.scrape_job_service import ScrapeJobService
+
+        scrape_service = ScrapeJobService(db_path=self.db_path)
+        message = "用户已取消任务及尚未完成的刮削子任务"
+        async with _get_job_state_lock():
+            job = await self.get_job(job_id)
+            if job is None:
+                return None, False, 0, "手动任务不存在"
+            manual_active = job.status in {ManualJobStatus.PENDING, ManualJobStatus.RUNNING}
+            task = _active_job_tasks.get(job_id)
+            if job.status == ManualJobStatus.RUNNING and task is not None and not task.done():
+                _user_cancel_requests.add(job_id)
+            elif manual_active:
+                await self.update_job_status(
+                    job_id,
+                    ManualJobStatus.CANCELLED,
+                    finished_at=datetime.now(),
+                    error_message=message,
+                )
+
+        if job.status == ManualJobStatus.RUNNING and task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        # Stop the dispatcher first so it cannot enqueue more children while the
+        # cancellation sweep is in progress.
+        cancelled_children = await scrape_service.cancel_jobs_by_source(job_id)
+        if not manual_active and cancelled_children == 0:
+            return job, False, 0, f"任务已经是 {job.status.value} 状态且没有运行中的子任务"
+        if not manual_active:
+            await self.update_job_status(
+                job_id,
+                ManualJobStatus.CANCELLED,
+                finished_at=datetime.now(),
+                error_message=message,
+            )
+
+        updated = await self.get_job(job_id)
+        if manual_active and updated is not None and updated.status != ManualJobStatus.CANCELLED:
+            await self.update_job_status(
+                job_id,
+                ManualJobStatus.CANCELLED,
+                finished_at=datetime.now(),
+                error_message=message,
+            )
+            updated = await self.get_job(job_id)
+        return updated, True, cancelled_children, message
 
     async def update_job_status(
         self,
@@ -361,7 +491,7 @@ class ManualJobService:
             )
             await db.commit()
 
-    def _row_to_job(self, row) -> ManualJob:
+    def _row_to_job(self, row, child_counts: dict[str, int] | None = None) -> ManualJob:
         """Convert database row to ManualJob."""
         # 兼容旧数据，source 可能不存在
         source_value = row["source"] if "source" in row.keys() else "manual"
@@ -388,6 +518,7 @@ class ManualJobService:
             row["allow_local_output"] if "allow_local_output" in row.keys() else 0
         )
 
+        child_counts = child_counts or {}
         return ManualJob(
             id=row["id"],
             scan_path=row["scan_path"],
@@ -411,6 +542,9 @@ class ManualJobService:
             error_count=row["error_count"],
             total_count=row["total_count"],
             error_message=row["error_message"],
+            child_pending_count=child_counts.get("pending", 0),
+            child_running_count=child_counts.get("running", 0),
+            child_pending_action_count=child_counts.get("pending_action", 0),
         )
 
 
@@ -427,15 +561,25 @@ async def _job_worker() -> None:
 
     while True:
         job_id = None
+        execution_task = None
         try:
             job_id = await _job_queue.get()
-            await _execute_job(service, job_id)
+            execution_task = asyncio.create_task(_execute_job(service, job_id))
+            _active_job_tasks[job_id] = execution_task
+            result = (await asyncio.gather(execution_task, return_exceptions=True))[0]
+            if isinstance(result, Exception):
+                raise result
         except asyncio.CancelledError:
+            if execution_task is not None and not execution_task.done():
+                execution_task.cancel()
+                await asyncio.gather(execution_task, return_exceptions=True)
             break
         except Exception as e:
             logger.error(f"Job worker error: {e}")
         finally:
             if job_id is not None:
+                _active_job_tasks.pop(job_id, None)
+                _user_cancel_requests.discard(job_id)
                 _job_queue.task_done()
 
 
@@ -544,8 +688,16 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
         )
 
     except asyncio.CancelledError:
-        # Keep pending for startup recovery; the filesystem thread is drained.
-        await service.update_job_status(job_id, ManualJobStatus.PENDING)
+        # Shutdown keeps work pending for recovery; an explicit user request is terminal.
+        if job_id in _user_cancel_requests:
+            await service.update_job_status(
+                job_id,
+                ManualJobStatus.CANCELLED,
+                finished_at=datetime.now(),
+                error_message="用户已取消任务及尚未完成的刮削子任务",
+            )
+        else:
+            await service.update_job_status(job_id, ManualJobStatus.PENDING)
         raise
     except Exception as e:
         logger.error(f"Manual job {job_id} failed: {e}")

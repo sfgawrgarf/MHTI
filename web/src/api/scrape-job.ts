@@ -4,7 +4,7 @@ import api from './index'
 export type ScrapeJobSource = 'manual' | 'watcher'
 
 // 刮削任务状态
-export type ScrapeJobStatus = 'pending' | 'running' | 'success' | 'failed' | 'timeout' | 'pending_action'
+export type ScrapeJobStatus = 'pending' | 'running' | 'success' | 'failed' | 'timeout' | 'cancelled' | 'skipped' | 'replaced' | 'pending_action'
 
 // 整理模式
 export type OrganizeMode = 'copy' | 'move' | 'hardlink' | 'symlink'
@@ -91,6 +91,16 @@ export const scrapeJobApi = {
     return response.data
   },
 
+  /** 请求安全取消任务；运行中的文件操作会先完成取消收尾。 */
+  async cancel(jobId: string): Promise<JobCancelResult> {
+    const response = await api.post<JobCancelResult>(
+      `/scrape-jobs/${jobId}/cancel`,
+      undefined,
+      { timeout: 0 },
+    )
+    return response.data
+  },
+
   /**
    * 批量创建刮削任务
    */
@@ -104,4 +114,11 @@ export const scrapeJobApi = {
     }
     return results
   },
+}
+
+export interface JobCancelResult {
+  job_id: string
+  status: string
+  cancelled: boolean
+  message: string
 }

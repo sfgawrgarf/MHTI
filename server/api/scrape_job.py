@@ -68,11 +68,33 @@ async def get_job(
     return job
 
 
+@router.post("/{job_id}/cancel")
+async def cancel_job(
+    job_id: str,
+    service: ScrapeJobService = Depends(get_service),
+) -> dict:
+    """Request cancellation and wait until file operations finish safe cleanup."""
+    job, cancelled, message = await service.cancel_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=message)
+    if not cancelled:
+        raise HTTPException(status_code=409, detail=message)
+    return {
+        "job_id": job_id,
+        "status": job.status.value,
+        "cancelled": True,
+        "message": message,
+    }
+
+
 @router.delete("")
 async def delete_jobs(
     ids: list[str] = Query(...),
     service: ScrapeJobService = Depends(get_service),
 ) -> dict:
     """删除文件刮削任务"""
-    deleted = await service.delete_jobs(ids)
+    try:
+        deleted = await service.delete_jobs(ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"deleted": deleted}

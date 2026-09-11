@@ -528,6 +528,9 @@ export interface ManualJob {
   error_count: number
   total_count: number
   error_message: string | null
+  child_pending_count: number
+  child_running_count: number
+  child_pending_action_count: number
 }
 
 export interface ManualJobCreate {
@@ -584,6 +587,37 @@ export interface ManualJobAdvancedSettings {
 export interface ManualJobListResponse {
   jobs: ManualJob[]
   total: number
+}
+
+export interface QueueRuntimeMetrics {
+  status_counts: Record<string, number>
+  queued_in_memory: number
+  active_tasks: number
+  worker_count: number
+  concurrency_limit: number
+  oldest_pending_at: string | null
+  oldest_pending_seconds: number | null
+}
+
+export interface FileIORuntimeMetrics {
+  workers: number
+  active: number
+  waiting: number
+}
+
+export interface JobRuntimeMetrics {
+  generated_at: string
+  manual: QueueRuntimeMetrics
+  scrape: QueueRuntimeMetrics
+  file_io: FileIORuntimeMetrics
+}
+
+export interface ManualJobCancelResult {
+  job_id: number
+  status: ManualJobStatus
+  cancelled: boolean
+  cancelled_scrape_jobs: number
+  message: string
 }
 
 // Emby 相关

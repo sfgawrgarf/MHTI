@@ -171,6 +171,10 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
             error_message TEXT
         )
     """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_manual_jobs_status_created "
+        "ON manual_jobs(status, created_at)"
+    )
 
     # Scheduled tasks table
     await db.execute("""
@@ -237,6 +241,14 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
             history_record_id TEXT
         )
     """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_status_created "
+        "ON scrape_jobs(status, created_at)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_source_status "
+        "ON scrape_jobs(source, source_id, status)"
+    )
 
     # Scraped files table
     await db.execute("""

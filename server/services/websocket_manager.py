@@ -164,6 +164,14 @@ class ProgressNotifier:
         msg = self._make_message("job_failed", job_id, {"error": error})
         await self.manager.broadcast_to_job(job_id, msg)
 
+    async def notify_cancelled(self, job_id: str, message: str) -> None:
+        """通知任务已完成安全取消收尾。"""
+        msg = self._make_message("job_cancelled", job_id, {
+            "status": "cancelled",
+            "message": message,
+        })
+        await self.manager.broadcast_to_job(job_id, msg)
+
     async def notify_need_action(
         self, job_id: str, action_type: str, options: list | dict
     ) -> None:

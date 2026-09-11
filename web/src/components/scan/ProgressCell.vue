@@ -8,13 +8,24 @@ import {
   InformationCircleOutline,
 } from '@vicons/ionicons5'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   successCount: number
   skipCount: number
   errorCount: number
   totalCount: number
   showLabel?: boolean
-}>()
+  childPendingCount?: number
+  childRunningCount?: number
+  childPendingActionCount?: number
+}>(), {
+  childPendingCount: 0,
+  childRunningCount: 0,
+  childPendingActionCount: 0,
+})
+
+const activeChildCount = computed(() =>
+  props.childPendingCount + props.childRunningCount + props.childPendingActionCount
+)
 
 // 进度百分比
 const progressPercentage = computed(() => {
@@ -68,6 +79,9 @@ const stats = computed(() => [
               <NIcon :component="stat.icon" :size="12" />
               <span>{{ stat.value }}</span>
             </span>
+            <span v-if="activeChildCount" class="child-state">
+              后台 {{ activeChildCount }}
+            </span>
           </div>
         </div>
       </template>
@@ -96,6 +110,12 @@ const stats = computed(() => [
           <span>总计</span>
           <span class="tooltip-value">{{ totalCount }}</span>
         </div>
+        <template v-if="activeChildCount">
+          <div class="tooltip-divider"></div>
+          <div class="tooltip-row"><span>刮削等待</span><span class="tooltip-value">{{ childPendingCount }}</span></div>
+          <div class="tooltip-row"><span>刮削运行</span><span class="tooltip-value">{{ childRunningCount }}</span></div>
+          <div class="tooltip-row"><span>等待处理</span><span class="tooltip-value">{{ childPendingActionCount }}</span></div>
+        </template>
       </div>
     </NTooltip>
   </div>
@@ -126,6 +146,13 @@ const stats = computed(() => [
   gap: 3px;
   font-size: 12px;
   font-weight: 500;
+}
+
+.child-state {
+  margin-left: auto;
+  color: var(--n-primary-color);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .tooltip-content {
