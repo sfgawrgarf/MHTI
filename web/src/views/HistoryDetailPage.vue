@@ -8,6 +8,7 @@ import {
   NIcon,
   NSpin,
   NEmpty,
+  NPopconfirm,
   useMessage,
 } from 'naive-ui'
 import {
@@ -26,8 +27,10 @@ import {
   CloudOfflineOutline,
   ConstructOutline,
   TrashOutline,
+  StopCircleOutline,
 } from '@vicons/ionicons5'
 import { historyApi } from '@/api/history'
+import { scrapeJobApi } from '@/api/scrape-job'
 import { useWebSocket, type WSMessage } from '@/composables/useWebSocket'
 import type { HistoryRecordDetail, TaskStatus, ScrapeLogStep } from '@/api/types'
 import ResolveConflictModal from '@/components/history/ResolveConflictModal.vue'
@@ -38,6 +41,7 @@ const message = useMessage()
 const loading = ref(false)
 const record = ref<HistoryRecordDetail | null>(null)
 const realtimeLogs = ref<ScrapeLogStep[]>([])
+const cancelling = ref(false)
 
 // WebSocket 相关
 const {
@@ -99,6 +103,25 @@ const handleSuccess = async () => {
 
 const handleRequiresAction = (updatedRecord: HistoryRecordDetail) => {
   record.value = updatedRecord
+}
+
+const canCancel = computed(() =>
+  record.value?.status === 'running' && Boolean(record.value.scrape_job_id)
+)
+
+const cancelCurrentJob = async () => {
+  if (!record.value?.scrape_job_id) return
+  cancelling.value = true
+  try {
+    await scrapeJobApi.cancel(record.value.scrape_job_id)
+    await loadRecord(false)
+    message.success('任务已安全取消')
+  } catch (error) {
+    message.error('取消失败或任务已经结束')
+    console.error(error)
+  } finally {
+    cancelling.value = false
+  }
 }
 
 // ========== END 处理弹窗 ==========
@@ -354,6 +377,15 @@ onUnmounted(() => {
           <template #icon><NIcon :component="ArrowBackOutline" /></template>
           返回列表
         </NButton>
+        <NPopconfirm v-if="canCancel" @positive-click="cancelCurrentJob">
+          <template #trigger>
+            <NButton type="warning" ghost :loading="cancelling">
+              <template #icon><NIcon :component="StopCircleOutline" /></template>
+              取消任务
+            </NButton>
+          </template>
+          取消会等待正在执行的文件操作完成安全收尾，确定继续？
+        </NPopconfirm>
       </div>
 
       <template v-if="record">
@@ -614,6 +646,9 @@ onUnmounted(() => {
 
 .header-nav {
   margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .back-btn {

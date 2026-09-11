@@ -98,6 +98,9 @@ class ManualJob(BaseModel):
     error_count: int = 0
     total_count: int = 0
     error_message: str | None = None
+    child_pending_count: int = 0
+    child_running_count: int = 0
+    child_pending_action_count: int = 0
 
 
 class ManualJobCreate(BaseModel):

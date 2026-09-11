@@ -1,5 +1,6 @@
 """Regression tests for scrape/manual job API status codes."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
@@ -52,3 +53,40 @@ def test_missing_manual_job_returns_not_found(auth_client: TestClient) -> None:
     finally:
         app.dependency_overrides.pop(get_manual_job_service, None)
     assert response.status_code == 404
+
+
+def test_cancel_scrape_job_returns_terminal_status(auth_client: TestClient) -> None:
+    service = AsyncMock()
+    service.cancel_job.return_value = (
+        SimpleNamespace(status=SimpleNamespace(value="cancelled")),
+        True,
+        "任务已取消",
+    )
+    app.dependency_overrides[get_scrape_job_service] = lambda: service
+    try:
+        response = auth_client.post("/api/scrape-jobs/job-1/cancel")
+    finally:
+        app.dependency_overrides.pop(get_scrape_job_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    service.cancel_job.assert_awaited_once_with("job-1")
+
+
+def test_cancel_manual_job_reports_cancelled_children(auth_client: TestClient) -> None:
+    service = AsyncMock()
+    service.cancel_job.return_value = (
+        SimpleNamespace(status=SimpleNamespace(value="cancelled")),
+        True,
+        3,
+        "任务已取消",
+    )
+    app.dependency_overrides[get_manual_job_service] = lambda: service
+    try:
+        response = auth_client.post("/api/manual-jobs/7/cancel")
+    finally:
+        app.dependency_overrides.pop(get_manual_job_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["cancelled_scrape_jobs"] == 3
+    service.cancel_job.assert_awaited_once_with(7)

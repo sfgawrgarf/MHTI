@@ -1,5 +1,11 @@
 import api from './index'
-import type { ManualJob, ManualJobCreate, ManualJobListResponse, ManualJobStatus } from './types'
+import type {
+  ManualJob,
+  ManualJobCancelResult,
+  ManualJobCreate,
+  ManualJobListResponse,
+  ManualJobStatus,
+} from './types'
 
 /**
  * 手动任务 API
@@ -39,6 +45,16 @@ export const manualJobApi = {
    */
   async delete(ids: number[]): Promise<{ deleted: number }> {
     const response = await api.delete<{ deleted: number }>('/manual-jobs', { data: { ids } })
+    return response.data
+  },
+
+  /** 取消扫描，并等待其未完成的刮削子任务安全收尾。 */
+  async cancel(id: number): Promise<ManualJobCancelResult> {
+    const response = await api.post<ManualJobCancelResult>(
+      `/manual-jobs/${id}/cancel`,
+      undefined,
+      { timeout: 0 },
+    )
     return response.data
   },
 }
