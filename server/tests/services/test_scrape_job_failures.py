@@ -29,7 +29,7 @@ def worker(monkeypatch, temp_dir):
         update_record_on_success=AsyncMock(), flush_and_clear_log_cache=AsyncMock(),
     )
     notifier = Mock(notify_progress=AsyncMock(), notify_failed=AsyncMock(), notify_need_action=AsyncMock(),
-                    notify_completed=AsyncMock())
+                    notify_completed=AsyncMock(), notify_cancelled=AsyncMock())
     config = Mock(get_system_config=AsyncMock(return_value=SimpleNamespace(task_timeout=30)))
     monkeypatch.setattr("server.core.container.get_scraper_service", lambda: scraper)
     monkeypatch.setattr("server.services.history_service.HistoryService", lambda: history)
@@ -125,13 +125,14 @@ async def test_manual_continuation_updates_original_history_and_forwards_choice(
 
 @pytest.mark.asyncio
 async def test_cancelled_worker_records_cancellation(worker):
-    job, service, scraper, history, _ = worker
+    job, service, scraper, history, notifier = worker
     scraper.scrape_file.side_effect = asyncio.CancelledError
     with pytest.raises(asyncio.CancelledError):
         await _execute_scrape_job(service, job.id)
     assert service.update_job.call_args.kwargs["status"] == ScrapeJobStatus.CANCELLED
     assert history.update_record.call_args.kwargs["status"] == TaskStatus.CANCELLED
     history.flush_and_clear_log_cache.assert_awaited_once()
+    notifier.notify_cancelled.assert_awaited_once()
 
 
 @pytest.mark.asyncio
