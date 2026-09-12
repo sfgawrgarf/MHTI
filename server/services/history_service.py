@@ -7,6 +7,7 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 
 import aiosqlite
 
@@ -28,6 +29,8 @@ from server.services.websocket_manager import get_notifier
 _log_cache: dict[str, list[ScrapeLogStep]] = {}
 # SSE 订阅者：record_id -> list[asyncio.Queue]
 _log_subscribers: dict[str, list[asyncio.Queue]] = {}
+_log_last_persisted_at: dict[str, float] = {}
+LOG_PERSIST_INTERVAL_SECONDS = 0.5
 
 
 class HistoryService:
@@ -711,7 +714,7 @@ class HistoryService:
         record_id: str,
         logs: list[ScrapeLogStep],
     ) -> None:
-        """更新刮削日志并通知订阅者"""
+        """Publish live logs while throttling full-history SQLite rewrites."""
         # 更新内存缓存
         _log_cache[record_id] = logs
 
@@ -723,7 +726,28 @@ class HistoryService:
                 except asyncio.QueueFull:
                     pass
 
-        # 持久化到数据库
+        now = monotonic()
+        last_persisted = _log_last_persisted_at.get(record_id)
+        if (
+            last_persisted is None
+            or now - last_persisted >= LOG_PERSIST_INTERVAL_SECONDS
+        ):
+            await self._persist_scrape_logs(record_id, logs)
+            _log_last_persisted_at[record_id] = now
+
+        # 通过 WebSocket 推送日志更新（用于详情页实时刷新）
+        notifier = get_notifier()
+        await notifier.notify_history_detail_update(
+            record_id,
+            {"logs": [log.model_dump() for log in logs]}
+        )
+
+    async def _persist_scrape_logs(
+        self,
+        record_id: str,
+        logs: list[ScrapeLogStep],
+    ) -> None:
+        """Persist one full log snapshot without emitting another live event."""
         await self._ensure_db()
         scrape_logs_json = json.dumps(
             [log.model_dump() for log in logs],
@@ -735,13 +759,6 @@ class HistoryService:
                 (scrape_logs_json, record_id),
             )
             await db.commit()
-
-        # 通过 WebSocket 推送日志更新（用于详情页实时刷新）
-        notifier = get_notifier()
-        await notifier.notify_history_detail_update(
-            record_id,
-            {"logs": [log.model_dump() for log in logs]}
-        )
 
     async def subscribe_logs(self, record_id: str) -> asyncio.Queue:
         """订阅日志更新，返回一个队列用于接收更新"""
@@ -770,13 +787,14 @@ class HistoryService:
     def clear_log_cache(self, record_id: str) -> None:
         """清除日志缓存"""
         _log_cache.pop(record_id, None)
+        _log_last_persisted_at.pop(record_id, None)
 
     async def flush_and_clear_log_cache(self, record_id: str) -> None:
         """保存缓存中的日志到数据库，然后清除缓存"""
         logs = _log_cache.get(record_id)
-        if logs:
-            await self.update_scrape_logs(record_id, logs)
-        _log_cache.pop(record_id, None)
+        if logs is not None:
+            await self._persist_scrape_logs(record_id, logs)
+        self.clear_log_cache(record_id)
 
     async def update_record_on_success(
         self,

@@ -50,6 +50,8 @@ async def test_pending_scrape_job_is_cancelled_and_cannot_be_claimed(
     assert cancelled is not None
     assert cancelled.status == ScrapeJobStatus.CANCELLED
     assert await service.claim_job(created.id) is False
+    metrics = await JobMonitorService(temp_db).get_metrics()
+    assert metrics.scrape.queued_in_memory == 0
 
 
 @pytest.mark.asyncio
@@ -122,6 +124,72 @@ async def test_manual_cancel_cascades_to_unfinished_scrape_jobs(
     assert updated is not None
     assert updated.status == ManualJobStatus.CANCELLED
     assert (await scrape_service.get_job(child.id)).status == ScrapeJobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_source_cancellation_bulk_updates_large_queued_batch(
+    temp_db, monkeypatch
+) -> None:
+    """Queued children use one bulk path rather than one coroutine per row."""
+    await initialize(temp_db)
+    monkeypatch.setattr(scrape_jobs, "_active_job_tasks", {})
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    monkeypatch.setattr(scrape_jobs, "_scrape_queue", queue)
+    monkeypatch.setattr(scrape_jobs, "get_notifier", lambda: FakeNotifier())
+    rows = [
+        (
+            f"bulk-{index}",
+            f"/incoming/{index}.mkv",
+            "/library",
+            "manual",
+            42,
+            "pending",
+            f"2026-01-01T00:00:{index % 60:02d}",
+        )
+        for index in range(1200)
+    ]
+    async with aiosqlite.connect(temp_db) as db:
+        await db.executemany(
+            """INSERT INTO scrape_jobs
+               (id, file_path, output_dir, source, source_id, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        await db.execute(
+            """INSERT INTO history_records
+               (id, task_name, folder_path, executed_at, status, total_files,
+                success_count, failed_count, duration_seconds, scrape_job_id)
+               VALUES ('bulk-history', 'bulk', '/incoming/0.mkv', '2026-01-01',
+                       'running', 1, 0, 0, 0, 'bulk-0')"""
+        )
+        await db.execute(
+            "UPDATE scrape_jobs SET history_record_id = 'bulk-history' WHERE id = 'bulk-0'"
+        )
+        await db.commit()
+    for row in rows:
+        queue.put_nowait(row[0])
+
+    service = ScrapeJobService(temp_db)
+    per_job_cancel = service.cancel_job
+
+    async def unexpected_per_job_cancel(*args, **kwargs):
+        raise AssertionError("queued jobs must use the bulk cancellation path")
+
+    monkeypatch.setattr(service, "cancel_job", unexpected_per_job_cancel)
+    assert await service.cancel_jobs_by_source(42) == 1200
+    assert queue.qsize() == 0
+
+    async with aiosqlite.connect(temp_db) as db:
+        cursor = await db.execute(
+            "SELECT status, COUNT(*) FROM scrape_jobs GROUP BY status"
+        )
+        assert await cursor.fetchall() == [("cancelled", 1200)]
+        cursor = await db.execute(
+            "SELECT status FROM history_records WHERE id = 'bulk-history'"
+        )
+        assert await cursor.fetchone() == ("cancelled",)
+
+    monkeypatch.setattr(service, "cancel_job", per_job_cancel)
 
 
 @pytest.mark.asyncio

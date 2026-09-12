@@ -50,6 +50,8 @@ const statusFilter = ref<ManualJobStatus | null>(null)
 const checkedRowKeys = ref<DataTableRowKey[]>([])
 const showCreateModal = ref(false)
 const runtimeMetrics = ref<JobRuntimeMetrics | null>(null)
+const runtimeMetricsLoading = ref(false)
+const runtimeMetricsError = ref(false)
 const cancellingJobIds = ref<Set<number>>(new Set())
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -254,10 +256,16 @@ const loadJobs = async () => {
 }
 
 const loadRuntimeMetrics = async () => {
+  if (runtimeMetricsLoading.value) return
+  runtimeMetricsLoading.value = true
   try {
     runtimeMetrics.value = await jobRuntimeApi.get()
+    runtimeMetricsError.value = false
   } catch (error) {
+    runtimeMetricsError.value = true
     console.error('加载任务运行状态失败', error)
+  } finally {
+    runtimeMetricsLoading.value = false
   }
 }
 
@@ -338,19 +346,31 @@ const getProgressPercent = (job: ManualJob) => {
   return Math.round(((job.success_count + job.skip_count + job.error_count) / job.total_count) * 100)
 }
 
+const refreshVisibleData = () => {
+  if (document.hidden) return
+  if (hasRunningJobs.value) {
+    loadJobs()
+  }
+  loadRuntimeMetrics()
+}
+
+const handleVisibilityChange = () => {
+  if (!document.hidden) {
+    loadJobs()
+    loadRuntimeMetrics()
+  }
+}
+
 onMounted(() => {
   loadJobs()
   loadRuntimeMetrics()
-  // 任务状态可能由 watcher 创建，因此始终刷新轻量运行快照。
-  refreshTimer = setInterval(() => {
-    if (hasRunningJobs.value) {
-      loadJobs()
-    }
-    loadRuntimeMetrics()
-  }, 3000)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  // Watchers may create tasks in the background; refresh a deduplicated snapshot.
+  refreshTimer = setInterval(refreshVisibleData, 5000)
 })
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   if (refreshTimer) {
     clearInterval(refreshTimer)
   }
@@ -382,7 +402,13 @@ onUnmounted(() => {
           <span>{{ runtimeMetrics.file_io.waiting }} 等待</span>
         </div>
       </div>
-      <div v-else class="runtime-loading">正在读取运行状态…</div>
+      <div v-if="runtimeMetrics" class="runtime-meta">
+        <span>更新于 {{ formatTime(runtimeMetrics.generated_at) }}</span>
+        <span v-if="runtimeMetricsError" class="runtime-error">更新失败，正在显示上次快照</span>
+      </div>
+      <div v-else class="runtime-loading" :class="{ 'runtime-error': runtimeMetricsError }">
+        {{ runtimeMetricsError ? '运行状态更新失败，稍后自动重试' : '正在读取运行状态…' }}
+      </div>
     </NCard>
 
     <!-- 主卡片 -->
@@ -587,6 +613,19 @@ onUnmounted(() => {
 .runtime-loading {
   color: var(--n-text-color-3);
   font-size: 12px;
+}
+
+.runtime-meta {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+  color: var(--n-text-color-3);
+  font-size: 12px;
+}
+
+.runtime-error {
+  color: var(--color-error, #d03050);
 }
 
 .row-actions {

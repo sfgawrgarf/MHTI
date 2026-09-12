@@ -9,7 +9,8 @@ from weakref import WeakKeyDictionary
 
 import aiosqlite
 
-from server.core.db.connection import db_connection
+from server.core.db.connection import DatabaseManager, db_connection
+from server.core.db.schema import migrate_manual_jobs_table
 from server.core.database import DATABASE_PATH
 from server.models.manual_job import (
     JobSource,
@@ -85,47 +86,47 @@ def _get_job_state_lock() -> asyncio.Lock:
     return lock
 
 
+def get_manual_runtime_state(pending_count: int) -> dict[str, int]:
+    """Return live manual-worker state without opening a database connection."""
+    return {
+        "queued_in_memory": min(_job_queue.qsize(), pending_count),
+        "active_tasks": sum(not task.done() for task in _active_job_tasks.values()),
+        "worker_count": int(_worker_task is not None and not _worker_task.done()),
+        "concurrency_limit": 1,
+    }
+
+
 class ManualJobService:
     """Service for managing manual scrape jobs."""
 
     def __init__(self, db_path: Path | None = None):
         """Initialize manual job service."""
         self.db_path = db_path or DATABASE_PATH
+        self._db_ready = False
+        self._migration_lock = asyncio.Lock()
 
     async def _ensure_db(self) -> None:
-        """Ensure database directory exists and run migrations."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with db_connection(self.db_path) as db:
-            # 添加新列（如果不存在）- 迁移逻辑
-            try:
-                await db.execute("ALTER TABLE manual_jobs ADD COLUMN metadata_dir TEXT DEFAULT ''")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE manual_jobs ADD COLUMN source TEXT DEFAULT 'manual'")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE manual_jobs ADD COLUMN advanced_settings TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE manual_jobs ADD COLUMN scan_locator TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE manual_jobs ADD COLUMN target_locator TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE manual_jobs ADD COLUMN metadata_locator TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE manual_jobs ADD COLUMN allow_local_output INTEGER DEFAULT 0")
-            except Exception:
-                pass  # 列已存在
-            await db.commit()
+        """Use startup migrations in production and migrate custom DBs once."""
+        if self._db_ready:
+            return
+        async with self._migration_lock:
+            if self._db_ready:
+                return
+            manager = DatabaseManager._instance
+            if (
+                self.db_path.resolve() == DATABASE_PATH.resolve()
+                and manager is not None
+                and manager._initialized
+                and manager._loop is asyncio.get_running_loop()
+            ):
+                self._db_ready = True
+                return
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            async with db_connection(self.db_path) as db:
+                await db.execute("BEGIN IMMEDIATE")
+                await migrate_manual_jobs_table(db)
+                await db.commit()
+            self._db_ready = True
 
     async def create_job(self, job: ManualJobCreate) -> ManualJob:
         """Create a new manual job and add to queue."""
@@ -329,22 +330,18 @@ class ManualJobService:
         """Return persisted queue counts together with in-process worker state."""
         async with db_connection(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT status, COUNT(*) FROM manual_jobs GROUP BY status"
+                """SELECT status, COUNT(*),
+                          MIN(CASE WHEN status = 'pending' THEN created_at END)
+                   FROM manual_jobs GROUP BY status"""
             )
-            status_counts = {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
-            cursor = await db.execute(
-                "SELECT MIN(created_at) FROM manual_jobs WHERE status = ?",
-                (ManualJobStatus.PENDING.value,),
-            )
-            row = await cursor.fetchone()
+            rows = await cursor.fetchall()
 
-        oldest_pending_at = datetime.fromisoformat(row[0]) if row and row[0] else None
+        status_counts = {str(row[0]): int(row[1]) for row in rows}
+        oldest_value = next((row[2] for row in rows if row[0] == "pending"), None)
+        oldest_pending_at = datetime.fromisoformat(oldest_value) if oldest_value else None
         return {
             "status_counts": status_counts,
-            "queued_in_memory": _job_queue.qsize(),
-            "active_tasks": sum(not task.done() for task in _active_job_tasks.values()),
-            "worker_count": int(_worker_task is not None and not _worker_task.done()),
-            "concurrency_limit": 1,
+            **get_manual_runtime_state(status_counts.get("pending", 0)),
             "oldest_pending_at": oldest_pending_at,
             "oldest_pending_seconds": (
                 max(0.0, (datetime.now() - oldest_pending_at).total_seconds())

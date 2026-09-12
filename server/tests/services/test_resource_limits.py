@@ -9,10 +9,20 @@ import pytest
 import pytest_asyncio
 
 from server.core.db import connection
-from server.core.db.schema import HISTORY_COLUMNS, create_all_tables, migrate_history_table
+from server.core.db.schema import (
+    HISTORY_COLUMNS,
+    MANUAL_JOB_COLUMNS,
+    SCRAPE_JOB_COLUMNS,
+    create_all_tables,
+    migrate_history_table,
+    migrate_manual_jobs_table,
+    migrate_scrape_jobs_table,
+)
 from server.core.uow import UnitOfWork
-from server.services import history_service
+from server.services import history_service, manual_job_service, scrape_job_service
 from server.services.history_service import HistoryService
+from server.services.manual_job_service import ManualJobService
+from server.services.scrape_job_service import ScrapeJobService
 
 
 @pytest_asyncio.fixture
@@ -155,6 +165,54 @@ async def test_old_history_migrates_without_losing_rows(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_old_job_tables_migrate_once_without_losing_rows(tmp_path):
+    path = tmp_path / "legacy-jobs.db"
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            """CREATE TABLE manual_jobs (
+                id INTEGER PRIMARY KEY, scan_path TEXT, target_folder TEXT,
+                link_mode INTEGER, created_at TEXT, status TEXT)"""
+        )
+        await db.execute(
+            """CREATE TABLE scrape_jobs (
+                id TEXT PRIMARY KEY, file_path TEXT, output_dir TEXT,
+                source TEXT, source_id INTEGER, status TEXT, created_at TEXT)"""
+        )
+        await db.execute(
+            "INSERT INTO manual_jobs VALUES (1, '/in', '/out', 2, '2026-01-01', 'success')"
+        )
+        await db.execute(
+            "INSERT INTO scrape_jobs VALUES "
+            "('job-1', '/in/a.mkv', '/out', 'manual', NULL, 'success', '2026-01-01')"
+        )
+        await create_all_tables(db)
+        await db.commit()
+
+        manual_columns = {
+            row[1]
+            for row in await (await db.execute("PRAGMA table_info(manual_jobs)")).fetchall()
+        }
+        scrape_columns = {
+            row[1]
+            for row in await (await db.execute("PRAGMA table_info(scrape_jobs)")).fetchall()
+        }
+        assert {name for name, _ in MANUAL_JOB_COLUMNS} <= manual_columns
+        assert {name for name, _ in SCRAPE_JOB_COLUMNS} <= scrape_columns
+        assert (
+            await (await db.execute("SELECT scan_path FROM manual_jobs WHERE id = 1")).fetchone()
+        )[0] == "/in"
+        assert (
+            await (await db.execute("SELECT file_path FROM scrape_jobs WHERE id = 'job-1'")).fetchone()
+        )[0] == "/in/a.mkv"
+
+        statements: list[str] = []
+        await db.set_trace_callback(statements.append)
+        await migrate_manual_jobs_table(db)
+        await migrate_scrape_jobs_table(db)
+        assert not any("ALTER TABLE" in sql for sql in statements)
+
+
+@pytest.mark.asyncio
 async def test_history_migration_once_per_custom_service_and_retry_on_error(tmp_path, monkeypatch):
     service = HistoryService(tmp_path / "custom.db")
     with pytest.raises(aiosqlite.OperationalError, match="Missing history_records"):
@@ -179,3 +237,22 @@ async def test_production_history_uses_startup_migration(manager, monkeypatch):
         records, total = await HistoryService().list_records()
         assert records == [] and total == 0
     spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_production_job_services_use_startup_migrations(manager, monkeypatch):
+    monkeypatch.setattr(manual_job_service, "DATABASE_PATH", connection.DATABASE_PATH)
+    monkeypatch.setattr(scrape_job_service, "DATABASE_PATH", connection.DATABASE_PATH)
+    manual_spy = AsyncMock(side_effect=AssertionError("unexpected runtime migration"))
+    scrape_spy = AsyncMock(side_effect=AssertionError("unexpected runtime migration"))
+    monkeypatch.setattr(manual_job_service, "migrate_manual_jobs_table", manual_spy)
+    monkeypatch.setattr(scrape_job_service, "migrate_scrape_jobs_table", scrape_spy)
+
+    for _ in range(3):
+        manual_records, manual_total = await ManualJobService().list_jobs()
+        scrape_records, scrape_total = await ScrapeJobService().list_jobs()
+        assert manual_records == [] and manual_total == 0
+        assert scrape_records == [] and scrape_total == 0
+
+    manual_spy.assert_not_awaited()
+    scrape_spy.assert_not_awaited()

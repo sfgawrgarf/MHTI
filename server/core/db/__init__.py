@@ -22,7 +22,11 @@ from server.core.db.connection import (
     get_db_manager,
     init_database,
 )
-from server.core.db.schema import create_all_tables
+from server.core.db.schema import (
+    create_all_tables,
+    migrate_manual_jobs_table,
+    migrate_scrape_jobs_table,
+)
 
 __all__ = [
     "DATABASE_PATH",
@@ -35,4 +39,6 @@ __all__ = [
     "get_db",
     "get_db_manager",
     "init_database",
+    "migrate_manual_jobs_table",
+    "migrate_scrape_jobs_table",
 ]
