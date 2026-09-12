@@ -3,6 +3,35 @@
 import aiosqlite
 
 
+MANUAL_JOB_COLUMNS = (
+    ("metadata_dir", "TEXT DEFAULT ''"),
+    ("source", "TEXT DEFAULT 'manual'"),
+    ("advanced_settings", "TEXT"),
+    ("scan_locator", "TEXT"),
+    ("target_locator", "TEXT"),
+    ("metadata_locator", "TEXT"),
+    ("allow_local_output", "INTEGER DEFAULT 0"),
+)
+
+SCRAPE_JOB_COLUMNS = (
+    ("link_mode", "TEXT"),
+    ("advanced_settings", "TEXT"),
+    ("file_locator", "TEXT"),
+    ("output_locator", "TEXT"),
+    ("metadata_locator", "TEXT"),
+    ("allow_local_output", "INTEGER DEFAULT 0"),
+    ("replaces_job_id", "TEXT"),
+    ("replaced_by_job_id", "TEXT"),
+    ("correction_history_id", "TEXT"),
+    ("correction_tmdb_id", "INTEGER"),
+    ("correction_season", "INTEGER"),
+    ("correction_episode", "INTEGER"),
+    ("continuation_history_id", "TEXT"),
+    ("file_action", "TEXT"),
+    ("selection_log", "TEXT"),
+    ("skip_emby_check", "INTEGER DEFAULT 0"),
+)
+
 HISTORY_COLUMNS = (
     ("display_id", "INTEGER"),
     ("manual_job_id", "INTEGER"),
@@ -32,15 +61,34 @@ HISTORY_COLUMNS = (
 )
 
 
-async def migrate_history_table(db: aiosqlite.Connection) -> None:
-    """Add only missing columns; the caller owns the migration transaction."""
-    async with db.execute("PRAGMA table_info(history_records)") as cursor:
+async def _add_missing_columns(
+    db: aiosqlite.Connection,
+    table: str,
+    expected: tuple[tuple[str, str], ...],
+) -> None:
+    """Add known schema columns without using exceptions as control flow."""
+    async with db.execute(f"PRAGMA table_info({table})") as cursor:
         columns = {row[1] for row in await cursor.fetchall()}
     if not columns:
-        raise aiosqlite.OperationalError("Missing history_records table")
-    for name, column_type in HISTORY_COLUMNS:
+        raise aiosqlite.OperationalError(f"Missing {table} table")
+    for name, column_type in expected:
         if name not in columns:
-            await db.execute(f"ALTER TABLE history_records ADD COLUMN {name} {column_type}")
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
+
+
+async def migrate_manual_jobs_table(db: aiosqlite.Connection) -> None:
+    """Migrate manual job columns inside the caller-owned transaction."""
+    await _add_missing_columns(db, "manual_jobs", MANUAL_JOB_COLUMNS)
+
+
+async def migrate_scrape_jobs_table(db: aiosqlite.Connection) -> None:
+    """Migrate scrape job columns inside the caller-owned transaction."""
+    await _add_missing_columns(db, "scrape_jobs", SCRAPE_JOB_COLUMNS)
+
+
+async def migrate_history_table(db: aiosqlite.Connection) -> None:
+    """Add only missing columns; the caller owns the migration transaction."""
+    await _add_missing_columns(db, "history_records", HISTORY_COLUMNS)
 
 
 async def create_all_tables(db: aiosqlite.Connection) -> None:
@@ -171,6 +219,7 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
             error_message TEXT
         )
     """)
+    await migrate_manual_jobs_table(db)
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_manual_jobs_status_created "
         "ON manual_jobs(status, created_at)"
@@ -238,9 +287,20 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
             started_at TEXT,
             finished_at TEXT,
             error_message TEXT,
-            history_record_id TEXT
+            history_record_id TEXT,
+            replaces_job_id TEXT,
+            replaced_by_job_id TEXT,
+            correction_history_id TEXT,
+            correction_tmdb_id INTEGER,
+            correction_season INTEGER,
+            correction_episode INTEGER,
+            continuation_history_id TEXT,
+            file_action TEXT,
+            selection_log TEXT,
+            skip_emby_check INTEGER DEFAULT 0
         )
     """)
+    await migrate_scrape_jobs_table(db)
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_status_created "
         "ON scrape_jobs(status, created_at)"
