@@ -39,6 +39,7 @@ _current_threads: int = 0
 _initialization_task: asyncio.Task | None = None
 _active_job_tasks: dict[str, asyncio.Task] = {}
 _job_state_locks: WeakKeyDictionary = WeakKeyDictionary()
+_workers_stopping = False
 
 
 def _get_job_state_lock() -> asyncio.Lock:
@@ -785,6 +786,9 @@ def _ensure_worker() -> None:
     """确保后台 worker 在运行，并根据配置调整并发数"""
     global _worker_tasks, _semaphore, _current_threads, _initialization_task
 
+    if _workers_stopping:
+        return
+
     async def _init_workers():
         global _semaphore, _current_threads, _worker_tasks
         from server.services.config_service import ConfigService
@@ -810,12 +814,23 @@ def _ensure_worker() -> None:
             _worker_tasks.append(task)
 
     # 在事件循环中执行初始化
-    try:
-        loop = asyncio.get_running_loop()
-        if _initialization_task is None or _initialization_task.done():
-            _initialization_task = loop.create_task(_init_workers())
-    except RuntimeError:
-        pass
+    loop = asyncio.get_running_loop()
+    if _initialization_task is None or _initialization_task.done():
+        task = loop.create_task(_init_workers(), name="scrape-worker-initialization")
+
+        def report_initialization_failure(completed: asyncio.Task) -> None:
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is not None:
+                logger.error(
+                    "Scrape worker initialization failed: %s",
+                    error,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        task.add_done_callback(report_initialization_failure)
+        _initialization_task = task
 
 
 async def _scrape_worker() -> None:
@@ -1357,20 +1372,39 @@ async def shutdown_workers() -> None:
     uvorn 会在 lifespan shutdown 阶段等待它们直到超时。
     """
     global _worker_tasks, _initialization_task, _semaphore, _current_threads
-    if _initialization_task is not None:
-        _initialization_task.cancel()
-        await asyncio.gather(_initialization_task, return_exceptions=True)
+    global _workers_stopping
+    _workers_stopping = True
+    try:
+        tasks = [
+            task
+            for task in [
+                _initialization_task,
+                *_worker_tasks,
+                *_active_job_tasks.values(),
+            ]
+            if task is not None
+        ]
         _initialization_task = None
-    if not _worker_tasks:
-        return
-    for task in _worker_tasks:
-        if not task.done():
-            task.cancel()
-    await asyncio.gather(*_worker_tasks, return_exceptions=True)
-    _worker_tasks = []
-    _semaphore = None
-    _current_threads = 0
-    logger.info("Scrape workers cancelled")
+        _worker_tasks = []
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        _initialization_task = None
+        _worker_tasks = []
+        _active_job_tasks.clear()
+        while True:
+            try:
+                _scrape_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _scrape_queue.task_done()
+        _semaphore = None
+        _current_threads = 0
+        _workers_stopping = False
+    logger.info("Scrape workers stopped and queue reset")
 
 
 async def recover_pending_jobs() -> int:

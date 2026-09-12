@@ -56,7 +56,7 @@ jobs:
           fetch-depth: 0
 
       - name: 设置 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -201,7 +201,7 @@ jobs:
 
       - name: 构建并推送 Docker 镜像
         id: build-push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
