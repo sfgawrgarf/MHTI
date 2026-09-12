@@ -1,5 +1,7 @@
 """Configuration API routes."""
 
+import logging
+
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends
 
@@ -36,6 +38,7 @@ from server.services.tmdb_service import TMDBService
 from server.api.watcher import get_watcher_service
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
+logger = logging.getLogger(__name__)
 
 
 class Cloud115LoginRequest(BaseModel):
@@ -321,8 +324,14 @@ async def save_watcher_config(
                                 client=client, path=normalized, file_id=None,
                             )
                             create_req.file_id = str(dir_id)
-                    except Exception:
-                        pass  # 解析失败仍创建（后续轮询时会用路径扫描）
+                    except Exception as exc:
+                        # 解析失败仍创建，后续轮询会按路径重试；保留根因便于诊断。
+                        logger.warning(
+                            "无法预解析 115 监控目录 path=%s: %s",
+                            dir_path,
+                            exc,
+                            exc_info=True,
+                        )
                 await watcher_service.create_folder(create_req)
 
         # 删除不在列表中的目录

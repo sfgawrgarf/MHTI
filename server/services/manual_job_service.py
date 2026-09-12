@@ -74,6 +74,7 @@ _worker_task: asyncio.Task | None = None
 _active_job_tasks: dict[int, asyncio.Task] = {}
 _user_cancel_requests: set[int] = set()
 _job_state_locks: WeakKeyDictionary = WeakKeyDictionary()
+_workers_stopping = False
 
 
 def _get_job_state_lock() -> asyncio.Lock:
@@ -548,7 +549,7 @@ class ManualJobService:
 def _ensure_worker() -> None:
     """Ensure background worker is running."""
     global _worker_task
-    if _worker_task is None or _worker_task.done():
+    if not _workers_stopping and (_worker_task is None or _worker_task.done()):
         _worker_task = asyncio.create_task(_job_worker())
 
 
@@ -736,15 +737,34 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
 
 
 async def shutdown_workers() -> None:
-    """取消手动任务 worker，避免进程退出时卡顿。"""
-    global _worker_task
-    if _worker_task is None:
-        return
-    if not _worker_task.done():
-        _worker_task.cancel()
-        await asyncio.gather(_worker_task, return_exceptions=True)
-    _worker_task = None
-    logger.info("Manual job worker cancelled")
+    """Cancel live work and reset in-memory state for a clean restart."""
+    global _worker_task, _workers_stopping
+    _workers_stopping = True
+    try:
+        worker = _worker_task
+        _worker_task = None
+        tasks = [
+            task
+            for task in [worker, *_active_job_tasks.values()]
+            if task is not None
+        ]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        _worker_task = None
+        _active_job_tasks.clear()
+        _user_cancel_requests.clear()
+        while True:
+            try:
+                _job_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _job_queue.task_done()
+        _workers_stopping = False
+    logger.info("Manual job workers stopped and queue reset")
 
 
 async def recover_pending_jobs() -> int:

@@ -231,3 +231,48 @@ async def test_runtime_metrics_report_persisted_and_live_state(temp_db, monkeypa
     assert metrics.scrape.status_counts["pending"] == 1
     assert metrics.scrape.queued_in_memory == 1
     assert metrics.file_io.workers == 2
+
+
+@pytest.mark.asyncio
+async def test_worker_shutdown_cancels_tasks_and_resets_queues(monkeypatch) -> None:
+    async def wait_forever() -> None:
+        await asyncio.Event().wait()
+
+    manual_queue: asyncio.Queue[int] = asyncio.Queue()
+    manual_queue.put_nowait(1)
+    manual_worker = asyncio.create_task(wait_forever())
+    manual_active = asyncio.create_task(wait_forever())
+    monkeypatch.setattr(manual_jobs, "_job_queue", manual_queue)
+    monkeypatch.setattr(manual_jobs, "_worker_task", manual_worker)
+    monkeypatch.setattr(manual_jobs, "_active_job_tasks", {1: manual_active})
+    monkeypatch.setattr(manual_jobs, "_user_cancel_requests", {1})
+
+    scrape_queue: asyncio.Queue[str] = asyncio.Queue()
+    scrape_queue.put_nowait("scrape-1")
+    scrape_init = asyncio.create_task(wait_forever())
+    scrape_worker = asyncio.create_task(wait_forever())
+    scrape_active = asyncio.create_task(wait_forever())
+    monkeypatch.setattr(scrape_jobs, "_scrape_queue", scrape_queue)
+    monkeypatch.setattr(scrape_jobs, "_initialization_task", scrape_init)
+    monkeypatch.setattr(scrape_jobs, "_worker_tasks", [scrape_worker])
+    monkeypatch.setattr(scrape_jobs, "_active_job_tasks", {"scrape-1": scrape_active})
+    monkeypatch.setattr(scrape_jobs, "_semaphore", object())
+    monkeypatch.setattr(scrape_jobs, "_current_threads", 3)
+
+    await manual_jobs.shutdown_workers()
+    await scrape_jobs.shutdown_workers()
+
+    assert all(task.cancelled() for task in (manual_worker, manual_active))
+    assert all(
+        task.cancelled() for task in (scrape_init, scrape_worker, scrape_active)
+    )
+    assert manual_queue.empty()
+    assert scrape_queue.empty()
+    assert manual_jobs._worker_task is None
+    assert manual_jobs._active_job_tasks == {}
+    assert manual_jobs._user_cancel_requests == set()
+    assert scrape_jobs._initialization_task is None
+    assert scrape_jobs._worker_tasks == []
+    assert scrape_jobs._active_job_tasks == {}
+    assert scrape_jobs._semaphore is None
+    assert scrape_jobs._current_threads == 0

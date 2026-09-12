@@ -199,7 +199,14 @@ class _P115StorageProvider:
                 {"cid": parent_pid, "offset": 0, "limit": 100, "show_dir": 1},
                 async_=True,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "115 子目录查询失败 parent_id=%s name=%s: %s",
+                parent_pid,
+                name,
+                exc,
+                exc_info=True,
+            )
             return None
         rows = response.get("data", []) if isinstance(response, dict) else []
         for row in rows:
@@ -303,7 +310,14 @@ class _P115StorageProvider:
                 {"cid": parent_pid, "offset": 0, "limit": 100, "show_dir": 1},
                 async_=True,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "115 文件查询失败 parent_id=%s name=%s: %s",
+                parent_pid,
+                name,
+                exc,
+                exc_info=True,
+            )
             return None
         rows = response.get("data", []) if isinstance(response, dict) else []
         for row in rows:

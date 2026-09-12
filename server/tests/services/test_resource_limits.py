@@ -156,6 +156,23 @@ async def test_old_history_migrates_without_losing_rows(tmp_path):
         await db.commit()
         columns = {row[1] for row in await (await db.execute("PRAGMA table_info(history_records)")).fetchall()}
         assert {name for name, _ in HISTORY_COLUMNS} <= columns
+        indexes = {
+            row[0]
+            for row in await (
+                await db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'index' AND tbl_name = 'history_records'"
+                )
+            ).fetchall()
+        }
+        assert {
+            "idx_history_executed_at",
+            "idx_history_status_executed",
+            "idx_history_manual_executed",
+            "idx_history_scrape_job",
+            "idx_history_fingerprint_status",
+            "idx_history_folder_status",
+        } <= indexes
         row = await (await db.execute("SELECT task_name, source FROM history_records WHERE id='old'")).fetchone()
         assert row == ("preserve me", "manual")
         statements = []
@@ -176,14 +193,16 @@ async def test_old_job_tables_migrate_once_without_losing_rows(tmp_path):
         await db.execute(
             """CREATE TABLE scrape_jobs (
                 id TEXT PRIMARY KEY, file_path TEXT, output_dir TEXT,
-                source TEXT, source_id INTEGER, status TEXT, created_at TEXT)"""
+                source TEXT, source_id INTEGER, status TEXT, created_at TEXT,
+                history_record_id TEXT)"""
         )
         await db.execute(
             "INSERT INTO manual_jobs VALUES (1, '/in', '/out', 2, '2026-01-01', 'success')"
         )
         await db.execute(
             "INSERT INTO scrape_jobs VALUES "
-            "('job-1', '/in/a.mkv', '/out', 'manual', NULL, 'success', '2026-01-01')"
+            "('job-1', '/in/a.mkv', '/out', 'manual', NULL, 'success', "
+            "'2026-01-01', NULL)"
         )
         await create_all_tables(db)
         await db.commit()
@@ -198,6 +217,16 @@ async def test_old_job_tables_migrate_once_without_losing_rows(tmp_path):
         }
         assert {name for name, _ in MANUAL_JOB_COLUMNS} <= manual_columns
         assert {name for name, _ in SCRAPE_JOB_COLUMNS} <= scrape_columns
+        scrape_indexes = {
+            row[0]
+            for row in await (
+                await db.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'index' AND tbl_name = 'scrape_jobs'"
+                )
+            ).fetchall()
+        }
+        assert "idx_scrape_jobs_history_record" in scrape_indexes
         assert (
             await (await db.execute("SELECT scan_path FROM manual_jobs WHERE id = 1")).fetchone()
         )[0] == "/in"

@@ -266,6 +266,30 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
         )
     """)
     await migrate_history_table(db)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_executed_at "
+        "ON history_records(executed_at DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_status_executed "
+        "ON history_records(status, executed_at DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_manual_executed "
+        "ON history_records(manual_job_id, executed_at DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_scrape_job "
+        "ON history_records(scrape_job_id)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_fingerprint_status "
+        "ON history_records(file_fingerprint, status)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_folder_status "
+        "ON history_records(folder_path, status)"
+    )
 
     # Scrape jobs table
     await db.execute("""
@@ -308,6 +332,10 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_source_status "
         "ON scrape_jobs(source, source_id, status)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scrape_jobs_history_record "
+        "ON scrape_jobs(history_record_id)"
     )
 
     # Scraped files table
