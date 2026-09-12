@@ -38,7 +38,7 @@ FROM python:3.12-slim AS runtime
 
 LABEL org.opencontainers.image.title="MHTI"
 LABEL org.opencontainers.image.description="Media metadata scraper with TMDB integration"
-LABEL org.opencontainers.image.version="2.1.2"
+LABEL org.opencontainers.image.version="2.1.3"
 LABEL org.opencontainers.image.source="https://github.com/sfgawrgarf/MHTI"
 
 ENV PYTHONUNBUFFERED=1 \
