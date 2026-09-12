@@ -203,7 +203,10 @@ async def clear_records(
     history_service: HistoryService = Depends(get_history_service),
 ) -> dict:
     """Clear history records."""
-    deleted = await history_service.clear_records(before_days=before_days)
+    try:
+        deleted = await history_service.clear_records(before_days=before_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"success": True, "deleted": deleted, "message": f"已删除 {deleted} 条记录"}
 
 
@@ -271,7 +274,10 @@ async def delete_record(
     history_service: HistoryService = Depends(get_history_service),
 ) -> dict:
     """Move a history record to the deleted status."""
-    deleted = await history_service.delete_record(record_id)
+    try:
+        deleted = await history_service.delete_record(record_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="Record not found")
     return {"success": True, "message": "记录已移入已删除"}

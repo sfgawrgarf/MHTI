@@ -25,6 +25,7 @@ def worker(monkeypatch, temp_dir):
     scraper = Mock(scrape_file=AsyncMock(), scrape_by_id=AsyncMock())
     history = Mock(
         create_record=AsyncMock(return_value=SimpleNamespace(id="test-history")),
+        get_record_by_scrape_job_id=AsyncMock(return_value=None),
         update_record=AsyncMock(), update_scrape_logs=AsyncMock(),
         update_record_on_success=AsyncMock(), flush_and_clear_log_cache=AsyncMock(),
     )
@@ -32,11 +33,79 @@ def worker(monkeypatch, temp_dir):
                     notify_completed=AsyncMock(), notify_cancelled=AsyncMock())
     config = Mock(get_system_config=AsyncMock(return_value=SimpleNamespace(task_timeout=30)))
     monkeypatch.setattr("server.core.container.get_scraper_service", lambda: scraper)
-    monkeypatch.setattr("server.services.history_service.HistoryService", lambda: history)
+    monkeypatch.setattr(
+        "server.services.history_service.HistoryService",
+        lambda *args, **kwargs: history,
+    )
     monkeypatch.setattr("server.services.config_service.ConfigService", lambda: config)
     monkeypatch.setattr("server.services.scrape_job_service.get_notifier", lambda: notifier)
     monkeypatch.setattr("server.services.scrape_job_service.calculate_fingerprint", lambda path: None)
     return job, service, scraper, history, notifier
+
+
+@pytest.mark.asyncio
+async def test_preflight_failure_finalizes_claimed_job(worker, monkeypatch):
+    """Configuration/fingerprint setup failures must not strand RUNNING rows."""
+    job, service, scraper, history, notifier = worker
+    job.status = ScrapeJobStatus.RUNNING
+    config = Mock(get_system_config=AsyncMock(side_effect=RuntimeError("config unavailable")))
+    monkeypatch.setattr("server.services.config_service.ConfigService", lambda: config)
+
+    await _execute_scrape_job(service, job.id)
+
+    scraper.scrape_file.assert_not_awaited()
+    history.create_record.assert_not_awaited()
+    failed_update = service.update_job.await_args
+    assert failed_update.args[0] == job.id
+    assert failed_update.kwargs["status"] == ScrapeJobStatus.FAILED
+    assert failed_update.kwargs["finished_at"] is not None
+    assert "config unavailable" in failed_update.kwargs["error_message"]
+    notifier.notify_failed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_history_link_failure_finalizes_both_rows(worker):
+    """A history row remains discoverable during the create/link failure window."""
+    job, service, scraper, history, notifier = worker
+    job.status = ScrapeJobStatus.RUNNING
+    created_history = SimpleNamespace(id="test-history")
+    history.create_record.return_value = created_history
+    history.get_record_by_scrape_job_id.return_value = created_history
+    service.update_job.side_effect = [RuntimeError("link failed"), None]
+
+    await _execute_scrape_job(service, job.id)
+
+    scraper.scrape_file.assert_not_awaited()
+    history.get_record_by_scrape_job_id.assert_awaited_once_with(job.id)
+    history.update_record.assert_awaited_once()
+    history_update = history.update_record.await_args
+    assert history_update.args[0] == created_history.id
+    assert history_update.kwargs["status"] == TaskStatus.FAILED
+    assert "link failed" in history_update.kwargs["error_message"]
+    assert service.update_job.await_args_list[-1].kwargs["status"] == ScrapeJobStatus.FAILED
+    notifier.notify_failed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_history_link_cancellation_finalizes_both_rows(worker):
+    """Cancellation in the create/link window must not leave running history."""
+    job, service, scraper, history, notifier = worker
+    job.status = ScrapeJobStatus.RUNNING
+    created_history = SimpleNamespace(id="test-history")
+    history.create_record.return_value = created_history
+    history.get_record_by_scrape_job_id.return_value = created_history
+    service.update_job.side_effect = [asyncio.CancelledError, None]
+
+    with pytest.raises(asyncio.CancelledError):
+        await _execute_scrape_job(service, job.id)
+
+    scraper.scrape_file.assert_not_awaited()
+    history.get_record_by_scrape_job_id.assert_awaited_once_with(job.id)
+    history_update = history.update_record.await_args
+    assert history_update.args[0] == created_history.id
+    assert history_update.kwargs["status"] == TaskStatus.CANCELLED
+    assert service.update_job.await_args_list[-1].kwargs["status"] == ScrapeJobStatus.CANCELLED
+    notifier.notify_cancelled.assert_awaited_once()
 
 
 @pytest.mark.asyncio

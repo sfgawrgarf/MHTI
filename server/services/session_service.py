@@ -335,8 +335,8 @@ class SessionService:
                 LoginHistoryItem(
                     id=row[0],
                     ip_address=row[1] or "unknown",
-                    device_name=row[2],
-                    user_agent=row[3],
+                    user_agent=row[2],
+                    device_name=row[3],
                     login_time=datetime.fromisoformat(row[4]),
                     success=bool(row[5]),
                     failure_reason=row[6],
