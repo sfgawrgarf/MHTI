@@ -120,6 +120,15 @@ async def _load_p115client() -> tuple[Any, Any]:
         return _load_p115client_sync()
 
 
+def _create_p115_client(p115_module: Any, *, cookies: str, app: str) -> Any:
+    """Create a client using the constructor supported by the pinned dependency."""
+    return p115_module.P115Client(
+        cookies,
+        app=app,
+        console_qrcode=False,
+    )
+
+
 class P115Service:
     """Service for managing 115 QR login and status."""
 
@@ -378,12 +387,10 @@ class P115Service:
     async def _load_p115_client_with_config(self, config: Cloud115Config) -> Any:
         """Build a configured P115Client from persisted login config."""
         p115_module, _ = await _load_p115client()
-        return p115_module.P115Client(
-            config.cookies,
-            check_for_relogin=False,
-            ensure_cookies=False,
+        return _create_p115_client(
+            p115_module,
+            cookies=config.cookies,
             app=self._normalize_app(config.app),
-            console_qrcode=False,
         )
 
     def _build_login_expired_error(self) -> ConfigurationError:
