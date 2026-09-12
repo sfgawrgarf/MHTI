@@ -338,6 +338,139 @@ async def test_delete_record_marks_history_as_deleted_and_allows_rescrape(temp_d
 
 
 @pytest.mark.asyncio
+async def test_delete_record_keeps_linked_scrape_job_readable(temp_db):
+    """The deleted audit state must be valid in both history and job models."""
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.execute(
+            """INSERT INTO history_records
+               (id, task_name, folder_path, executed_at, status, total_files,
+                success_count, failed_count, duration_seconds, scrape_job_id)
+               VALUES ('history-pending', 'pending', '/incoming/pending.mkv',
+                       CURRENT_TIMESTAMP, 'pending_action', 1, 0, 0, 0, 'job-pending')"""
+        )
+        await db.execute(
+            """INSERT INTO scrape_jobs
+               (id, file_path, output_dir, source, status, created_at, history_record_id)
+               VALUES ('job-pending', '/incoming/pending.mkv', '/library', 'manual',
+                       'pending_action', CURRENT_TIMESTAMP, 'history-pending')"""
+        )
+        await db.commit()
+
+    service = HistoryService(db_path=temp_db)
+    assert await service.delete_record("history-pending") is True
+
+    from server.models.scrape_job import ScrapeJobStatus
+    from server.services.scrape_job_service import ScrapeJobService
+
+    job = await ScrapeJobService(db_path=temp_db).get_job("job-pending")
+    assert job is not None
+    assert job.status == ScrapeJobStatus.DELETED
+
+
+@pytest.mark.asyncio
+async def test_delete_record_rejects_running_job(temp_db):
+    """Deleting history must never detach a live filesystem operation."""
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.execute(
+            """INSERT INTO history_records
+               (id, task_name, folder_path, executed_at, status, total_files,
+                success_count, failed_count, duration_seconds, scrape_job_id)
+               VALUES ('history-running', 'running', '/incoming/live.mkv',
+                       CURRENT_TIMESTAMP, 'running', 1, 0, 0, 0, 'job-running')"""
+        )
+        await db.execute(
+            """INSERT INTO scrape_jobs
+               (id, file_path, output_dir, source, status, created_at, history_record_id)
+               VALUES ('job-running', '/incoming/live.mkv', '/library', 'manual',
+                       'running', CURRENT_TIMESTAMP, 'history-running')"""
+        )
+        await db.commit()
+
+    service = HistoryService(db_path=temp_db)
+    with pytest.raises(ValueError, match="请先取消任务"):
+        await service.delete_record("history-running")
+
+    record = await service.get_record("history-running")
+    assert record is not None
+    assert record.status == TaskStatus.RUNNING
+    async with aiosqlite.connect(temp_db) as db:
+        cursor = await db.execute("SELECT status FROM scrape_jobs WHERE id = 'job-running'")
+        assert (await cursor.fetchone())[0] == "running"
+
+
+@pytest.mark.asyncio
+async def test_clear_records_is_atomic_when_a_job_is_running(temp_db):
+    """A clear-all request rejects the whole operation instead of partially deleting."""
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        for record_id, status, job_id in (
+            ("history-done", "success", "job-done"),
+            ("history-running", "running", "job-running"),
+        ):
+            await db.execute(
+                """INSERT INTO history_records
+                   (id, task_name, folder_path, executed_at, status, total_files,
+                    success_count, failed_count, duration_seconds, scrape_job_id)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 1, 0, 0, 0, ?)""",
+                (record_id, record_id, f"/incoming/{record_id}.mkv", status, job_id),
+            )
+            await db.execute(
+                """INSERT INTO scrape_jobs
+                   (id, file_path, output_dir, source, status, created_at, history_record_id)
+                   VALUES (?, ?, '/library', 'manual', ?, CURRENT_TIMESTAMP, ?)""",
+                (job_id, f"/incoming/{record_id}.mkv", status, record_id),
+            )
+        await db.commit()
+
+    service = HistoryService(db_path=temp_db)
+    with pytest.raises(ValueError, match="有 1 条记录"):
+        await service.clear_records()
+
+    records, total = await service.list_records(limit=10)
+    assert total == 2
+    assert {record.id for record in records} == {"history-done", "history-running"}
+
+    async with aiosqlite.connect(temp_db) as db:
+        await db.execute(
+            "UPDATE history_records SET status = 'cancelled' WHERE id = 'history-running'"
+        )
+        await db.execute(
+            "UPDATE scrape_jobs SET status = 'cancelled' WHERE id = 'job-running'"
+        )
+        await db.commit()
+
+    assert await service.clear_records() == 2
+    records, total = await service.list_records(limit=10)
+    assert records == []
+    assert total == 0
+    async with aiosqlite.connect(temp_db) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM scrape_jobs")
+        assert (await cursor.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_history_delete_endpoints_report_active_conflict():
+    history_service = AsyncMock()
+    history_service.delete_record.side_effect = ValueError("请先取消任务")
+    history_service.clear_records.side_effect = ValueError("请先取消任务")
+
+    with pytest.raises(HTTPException) as delete_error:
+        await history_api.delete_record("history-running", history_service)
+    assert delete_error.value.status_code == 409
+    assert delete_error.value.detail == "请先取消任务"
+
+    with pytest.raises(HTTPException) as clear_error:
+        await history_api.clear_records(None, history_service)
+    assert clear_error.value.status_code == 409
+    assert clear_error.value.detail == "请先取消任务"
+
+
+@pytest.mark.asyncio
 async def test_update_record_on_success_clears_stale_conflict_context(temp_db):
     """A resolved record must not retain its deleted/error state or old TMDB match."""
     async with aiosqlite.connect(temp_db) as db:

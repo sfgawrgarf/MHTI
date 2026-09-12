@@ -252,6 +252,30 @@ class HistoryService:
 
         return self._row_to_detail(row)
 
+    async def get_record_by_scrape_job_id(
+        self,
+        scrape_job_id: str,
+    ) -> HistoryRecordDetail | None:
+        """Get the history row created for a scrape job.
+
+        The worker writes the history row before linking it back to the job. This
+        lookup closes that short gap so startup failures can still finalize both
+        sides of the persisted state machine.
+        """
+        await self._ensure_db()
+
+        async with db_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM history_records WHERE scrape_job_id = ? LIMIT 1",
+                (scrape_job_id,),
+            )
+            row = await cursor.fetchone()
+
+        if row is None:
+            return None
+        return self._row_to_detail(row)
+
     async def get_existing_fingerprints(self, fingerprints: list[str]) -> set[str]:
         """
         查询已存在的文件指纹.
@@ -318,11 +342,53 @@ class HistoryService:
 
     async def delete_record(self, record_id: str) -> bool:
         """Mark a history record as deleted without discarding its audit trail."""
-        return await self.update_record(
-            record_id,
-            status=TaskStatus.DELETED,
-            error_message="用户删除",
-        )
+        await self._ensure_db()
+
+        async with db_connection(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "SELECT status, scrape_job_id FROM history_records WHERE id = ?",
+                (record_id,),
+            )
+            record = await cursor.fetchone()
+            if record is None:
+                await db.rollback()
+                return False
+
+            cursor = await db.execute(
+                """SELECT 1 FROM scrape_jobs
+                   WHERE status IN ('pending', 'running')
+                     AND (history_record_id = ? OR id = ?)
+                   LIMIT 1""",
+                (record_id, record["scrape_job_id"]),
+            )
+            active_job = await cursor.fetchone()
+            if record["status"] == TaskStatus.RUNNING.value or active_job is not None:
+                await db.rollback()
+                raise ValueError("记录关联的任务仍在等待或运行中，请先取消任务")
+
+            await db.execute(
+                """UPDATE history_records
+                   SET status = ?, error_message = ?
+                   WHERE id = ?""",
+                (TaskStatus.DELETED.value, "用户删除", record_id),
+            )
+            await db.execute(
+                """UPDATE scrape_jobs
+                   SET status = ?,
+                       finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+                   WHERE (history_record_id = ? OR id = ?)
+                     AND status NOT IN ('pending', 'running')""",
+                (TaskStatus.DELETED.value, record_id, record["scrape_job_id"]),
+            )
+            await db.commit()
+
+        notifier = get_notifier()
+        update_data = {"status": TaskStatus.DELETED.value}
+        await notifier.notify_history_updated(record_id, update_data)
+        await notifier.notify_history_detail_update(record_id, update_data)
+        return True
 
     async def update_record(
         self,
@@ -454,29 +520,54 @@ class HistoryService:
         await self._ensure_db()
 
         async with db_connection(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             if before_days is not None:
                 from datetime import timedelta
                 cutoff = (datetime.now() - timedelta(days=before_days)).isoformat()
-                # 先删除关联的 scrape_jobs
-                await db.execute(
-                    """DELETE FROM scrape_jobs WHERE id IN (
-                        SELECT scrape_job_id FROM history_records
-                        WHERE executed_at < ? AND scrape_job_id IS NOT NULL
-                    )""",
-                    (cutoff,),
-                )
-                cursor = await db.execute(
-                    "DELETE FROM history_records WHERE executed_at < ?",
-                    (cutoff,),
-                )
+                candidate_where = "executed_at < ?"
+                params: list[str] = [cutoff]
             else:
-                # 先删除关联的 scrape_jobs
-                await db.execute(
-                    """DELETE FROM scrape_jobs WHERE id IN (
-                        SELECT scrape_job_id FROM history_records WHERE scrape_job_id IS NOT NULL
-                    )"""
-                )
-                cursor = await db.execute("DELETE FROM history_records")
+                candidate_where = "1 = 1"
+                params = []
+
+            cursor = await db.execute(
+                f"""SELECT COUNT(*) FROM history_records AS history
+                    WHERE {candidate_where}
+                      AND (
+                          history.status = 'running'
+                          OR EXISTS (
+                              SELECT 1 FROM scrape_jobs AS job
+                              WHERE job.status IN ('pending', 'running')
+                                AND (
+                                    job.history_record_id = history.id
+                                    OR job.id = history.scrape_job_id
+                                )
+                          )
+                      )""",
+                params,
+            )
+            active_count = int((await cursor.fetchone())[0])
+            if active_count:
+                await db.rollback()
+                raise ValueError(f"有 {active_count} 条记录仍在等待或运行中，请先取消任务")
+
+            # Delete both direct and reverse links, but only after the guarded
+            # transaction proves that no worker can still be using them.
+            await db.execute(
+                f"""DELETE FROM scrape_jobs
+                    WHERE history_record_id IN (
+                        SELECT id FROM history_records WHERE {candidate_where}
+                    )
+                       OR id IN (
+                        SELECT scrape_job_id FROM history_records
+                        WHERE {candidate_where} AND scrape_job_id IS NOT NULL
+                    )""",
+                [*params, *params],
+            )
+            cursor = await db.execute(
+                f"DELETE FROM history_records WHERE {candidate_where}",
+                params,
+            )
             await db.commit()
             count = cursor.rowcount
 

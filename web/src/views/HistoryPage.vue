@@ -167,7 +167,9 @@ const deleteRecord = async (record: HistoryRecord) => {
     message.success(result.message)
     await loadRecords()
   } catch (error) {
-    message.error('删除失败')
+    const detail = (error as { response?: { data?: { detail?: string } } })
+      .response?.data?.detail
+    message.error(detail || '删除失败')
     console.error(error)
   }
 }
@@ -179,7 +181,9 @@ const clearAllRecords = async () => {
     message.success(result.message)
     await loadRecords()
   } catch (error) {
-    message.error('清理失败')
+    const detail = (error as { response?: { data?: { detail?: string } } })
+      .response?.data?.detail
+    message.error(detail || '清理失败')
     console.error(error)
   }
 }
@@ -382,8 +386,8 @@ const columns: DataTableColumns<HistoryRecord> = [
               openResolveModal(row)
             }
           }, { default: () => '修改匹配' }),
-          // 未删除记录可移入“已删除”状态
-          row.status !== 'deleted' && h(NButton, {
+          // 运行中记录必须先取消；其他未删除记录可移入“已删除”
+          row.status !== 'deleted' && row.status !== 'running' && h(NButton, {
             size: 'small',
             quaternary: true,
             type: 'error',
@@ -623,7 +627,7 @@ watch(manualJobId, () => {
                     修改匹配
                   </NButton>
                   <NButton
-                    v-if="record.status !== 'deleted'"
+                    v-if="record.status !== 'deleted' && record.status !== 'running'"
                     size="tiny"
                     quaternary
                     type="error"

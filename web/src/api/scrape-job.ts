@@ -4,7 +4,7 @@ import api from './index'
 export type ScrapeJobSource = 'manual' | 'watcher'
 
 // 刮削任务状态
-export type ScrapeJobStatus = 'pending' | 'running' | 'success' | 'failed' | 'timeout' | 'cancelled' | 'skipped' | 'replaced' | 'pending_action'
+export type ScrapeJobStatus = 'pending' | 'running' | 'success' | 'failed' | 'timeout' | 'cancelled' | 'skipped' | 'deleted' | 'replaced' | 'pending_action'
 
 // 整理模式
 export type OrganizeMode = 'copy' | 'move' | 'hardlink' | 'symlink'

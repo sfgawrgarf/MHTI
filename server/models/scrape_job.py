@@ -27,6 +27,7 @@ class ScrapeJobStatus(str, Enum):
     TIMEOUT = "timeout"  # 超时
     CANCELLED = "cancelled"  # 已取消
     SKIPPED = "skipped"  # 用户跳过
+    DELETED = "deleted"  # 用户删除关联历史（保留审计状态）
     REPLACED = "replaced"  # 已由新的重试任务替代
     PENDING_ACTION = "pending_action"  # 需要用户处理
 

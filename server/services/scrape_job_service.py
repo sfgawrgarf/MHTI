@@ -782,7 +782,7 @@ async def _scrape_worker() -> None:
 
 
 async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
-    """Wrap a job so cancellation is safe even before history creation finishes."""
+    """Finalize cancellation and failures across the entire claimed lifecycle."""
     try:
         await _run_scrape_job(service, job_id)
     except asyncio.CancelledError:
@@ -790,11 +790,18 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
         job = await service.get_job(job_id)
         if job is not None and job.status != ScrapeJobStatus.CANCELLED:
             history_id = job.history_record_id or job.continuation_history_id
-            if history_id:
-                from server.models.history import TaskStatus
-                from server.services.history_service import HistoryService
+            from server.models.history import TaskStatus
+            from server.services.history_service import HistoryService
 
-                await HistoryService(db_path=service.db_path).update_record(
+            history_service = HistoryService(db_path=service.db_path)
+            if history_id is None:
+                try:
+                    history = await history_service.get_record_by_scrape_job_id(job_id)
+                    history_id = history.id if history is not None else None
+                except Exception:
+                    logger.exception("Unable to locate history for cancelled scrape job: %s", job_id)
+            if history_id is not None:
+                await history_service.update_record(
                     history_id,
                     status=TaskStatus.CANCELLED,
                     error_message=message,
@@ -807,6 +814,65 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
             )
         await get_notifier().notify_cancelled(job_id, message)
         raise
+    except Exception as exc:
+        # ``_run_scrape_job`` has detailed handling around the scraper itself,
+        # but configuration, fingerprinting and history creation happen after
+        # the atomic claim and before that inner try block. Never leave such a
+        # claimed row in RUNNING until the next process restart.
+        error = str(exc) or repr(exc) or type(exc).__name__
+        message = f"任务执行异常: {error}"
+        logger.exception("Unhandled scrape job failure before finalization: %s", job_id)
+
+        try:
+            job = await service.get_job(job_id)
+        except Exception:
+            logger.exception("Unable to reload failed scrape job: %s", job_id)
+            return
+
+        # A claim failure leaves the row pending, while failures already handled
+        # by the inner state machine leave it terminal. Only finalize a row that
+        # was successfully claimed and is still running.
+        if job is None or job.status != ScrapeJobStatus.RUNNING:
+            return
+
+        from server.models.history import TaskStatus
+        from server.services.history_service import HistoryService
+
+        history_service = HistoryService(db_path=service.db_path)
+        history_id = job.history_record_id or job.continuation_history_id
+        if history_id is None:
+            try:
+                history = await history_service.get_record_by_scrape_job_id(job_id)
+                history_id = history.id if history is not None else None
+            except Exception:
+                logger.exception("Unable to locate history for failed scrape job: %s", job_id)
+
+        if history_id is not None:
+            try:
+                await history_service.update_record(
+                    history_id,
+                    status=TaskStatus.FAILED,
+                    error_message=message,
+                )
+            except Exception:
+                logger.exception("Unable to finalize history for failed scrape job: %s", job_id)
+
+        try:
+            await service.update_job(
+                job_id,
+                status=ScrapeJobStatus.FAILED,
+                finished_at=datetime.now(),
+                error_message=message,
+            )
+        except Exception:
+            logger.exception("Unable to persist failed scrape job state: %s", job_id)
+            return
+
+        try:
+            await get_notifier().notify_failed(job_id, message)
+        except Exception:
+            # Notification delivery must not undo the persisted terminal state.
+            logger.exception("Unable to notify failed scrape job: %s", job_id)
 
 
 async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
