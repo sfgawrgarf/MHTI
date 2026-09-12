@@ -118,12 +118,10 @@ class _P115StorageProvider:
             raise ValueError("请先登录 115 网盘")
 
         p115_module, _ = await p115_service_module._load_p115client()
-        client = p115_module.P115Client(
-            config.cookies,
-            check_for_relogin=False,
-            ensure_cookies=False,
+        client = p115_service_module._create_p115_client(
+            p115_module,
+            cookies=config.cookies,
             app=config.app or p115_service_module.DEFAULT_APP,
-            console_qrcode=False,
         )
         return client, config.app or p115_service_module.DEFAULT_APP
 

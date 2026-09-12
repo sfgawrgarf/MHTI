@@ -45,8 +45,6 @@ class FakeP115Client:
     def __init__(
         self,
         cookies: str = "",
-        check_for_relogin: bool = False,
-        ensure_cookies: bool = False,
         app: str | None = None,
         console_qrcode: bool = True,
     ) -> None:
@@ -55,8 +53,6 @@ class FakeP115Client:
         FakeP115Client.init_calls.append(
             {
                 "cookies": cookies,
-                "check_for_relogin": check_for_relogin,
-                "ensure_cookies": ensure_cookies,
                 "app": app,
                 "console_qrcode": console_qrcode,
             }
@@ -601,8 +597,6 @@ class TestP115Service:
 
         assert fake_module.P115Client.init_calls[-1] == {
             "cookies": "UID=1; CID=2; SEID=3; KID=4",
-            "check_for_relogin": False,
-            "ensure_cookies": False,
             "app": "alipaymini",
             "console_qrcode": False,
         }
