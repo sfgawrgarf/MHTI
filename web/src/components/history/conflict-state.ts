@@ -36,7 +36,7 @@ export function getImageUrl(path: string | null, size = 'w300'): string | null {
 }
 
 export function getYear(date: string | null): string {
-  return date ? date.split('-')[0] : '未知'
+  return date ? (date.split('-')[0] ?? '未知') : '未知'
 }
 
 export function getConflictData<T extends ConflictType>(

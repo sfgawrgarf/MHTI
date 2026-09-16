@@ -33,11 +33,11 @@ describe('conflict selection state', () => {
   it('keeps specials selectable but defaults to the first regular season', () => {
     expect(getSelectableSeasons(seasons).map((item) => item.season_number)).toEqual([0, 1])
     expect(getDefaultSeason(seasons)?.season_number).toBe(1)
-    expect(getSeasonLabel(seasons[0])).toBe('特别篇 / Season 00')
+    expect(getSeasonLabel(seasons[0]!)).toBe('特别篇 / Season 00')
   })
 
   it('uses specials when no regular season exists', () => {
-    expect(getDefaultSeason([seasons[0]])?.season_number).toBe(0)
+    expect(getDefaultSeason([seasons[0]!])?.season_number).toBe(0)
   })
 
   it('returns conflict data only for the matching discriminator', () => {
