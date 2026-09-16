@@ -6,8 +6,14 @@ import pytest
 
 from server.core.exceptions import TMDBError, TMDBRateLimitError, TMDBTimeoutError
 from server.models.ai import AIConfig, AIRecognitionResult
-from server.models.scraper import ScrapeByIdRequest, ScrapeRequest, ScrapeStatus
-from server.models.tmdb import TMDBSearchResponse, TMDBSearchResult, TMDBSeason, TMDBSeries
+from server.models.scraper import ScrapeByIdRequest, ScrapeRequest, ScrapeResult, ScrapeStatus
+from server.models.tmdb import (
+    TMDBEpisode,
+    TMDBSearchResponse,
+    TMDBSearchResult,
+    TMDBSeason,
+    TMDBSeries,
+)
 from server.services.ai_provider_service import AIProviderService
 from server.services.parser_service import ParserService
 from server.services.scraper_service import ScraperService
@@ -92,6 +98,47 @@ async def test_specials_reach_tmdb_as_season_zero(scraper, temp_dir, explicit, h
     assert result.status == ScrapeStatus.NEED_SEASON_EPISODE
     assert not scraper.rename_service.mock_calls
     assert source.exists()
+
+
+@pytest.mark.asyncio
+async def test_manual_scrape_honors_skip_emby_check(scraper, temp_dir):
+    source = temp_dir / "Known Title S01E01.strm"
+    source.touch()
+    series = TMDBSeries(
+        id=123,
+        name="Known Title",
+        seasons=[TMDBSeason(season_number=1, name="Season 1")],
+    )
+    season = TMDBSeason(
+        season_number=1,
+        name="Season 1",
+        episodes=[TMDBEpisode(episode_number=1, name="Episode 1")],
+    )
+    scraper.tmdb_service.get_series_by_api.return_value = series
+    scraper.tmdb_service.get_season_by_api.return_value = season
+    scraper._check_emby_conflict = AsyncMock()
+    expected = ScrapeResult(
+        file_path=str(source),
+        status=ScrapeStatus.SUCCESS,
+        selected_id=123,
+        parsed_season=1,
+        parsed_episode=1,
+    )
+    scraper._execute_scrape_output = AsyncMock(return_value=expected)
+
+    result = await scraper.scrape_by_id(
+        ScrapeByIdRequest(
+            file_path=str(source),
+            tmdb_id=123,
+            season=1,
+            episode=1,
+            skip_emby_check=True,
+        )
+    )
+
+    assert result is expected
+    scraper._check_emby_conflict.assert_not_awaited()
+    scraper._execute_scrape_output.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -542,6 +542,59 @@ async def test_update_record_on_success_clears_stale_conflict_context(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_status_transition_keeps_linked_job_error_in_lockstep(temp_db):
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.commit()
+
+    service = HistoryService(db_path=temp_db)
+    record = await service.create_record(
+        HistoryRecordCreate(
+            task_name="test-transition",
+            folder_path="/incoming/example.strm",
+            status=TaskStatus.RUNNING,
+            total_files=1,
+            success_count=0,
+            failed_count=0,
+            duration_seconds=0,
+        )
+    )
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await db.execute(
+            """INSERT INTO scrape_jobs (
+                   id, file_path, output_dir, status, created_at, history_record_id
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                "job-transition",
+                "/incoming/example.strm",
+                "/library",
+                "running",
+                "2026-09-16T00:00:00",
+                record.id,
+            ),
+        )
+        await db.commit()
+
+    await service.update_record(
+        record.id,
+        status=TaskStatus.PENDING_ACTION,
+        error_message="需要用户确认季集",
+    )
+
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        cursor = await db.execute(
+            "SELECT status, error_message, finished_at FROM scrape_jobs WHERE id = ?",
+            ("job-transition",),
+        )
+        job = await cursor.fetchone()
+    assert job[0:2] == ("pending_action", "需要用户确认季集")
+    assert job[2] is not None
+
+
+@pytest.mark.asyncio
 async def test_success_rematch_queues_replacement_without_replacing_original(monkeypatch, tmp_path):
     """A successful record becomes replaced only in the worker's success path."""
     current_file = tmp_path / "Episode.strm"
