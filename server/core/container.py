@@ -2,18 +2,11 @@
 
 import asyncio
 import logging
-from enum import Enum, auto
-from typing import TypeVar, Type, Callable, Any
+from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-
-class Scope(Enum):
-    """Service lifecycle scope."""
-    SINGLETON = auto()  # Single instance for entire application
-    TRANSIENT = auto()  # New instance on each resolve
 
 
 class ServiceContainer:
@@ -33,8 +26,6 @@ class ServiceContainer:
     def __init__(self) -> None:
         self._services: dict[str, Any] = {}
         self._factories: dict[str, Callable[..., Any]] = {}
-        self._type_registry: dict[Type, tuple[Callable[..., Any], Scope]] = {}
-        self._initialized = False
 
     @classmethod
     async def get_instance(cls) -> "ServiceContainer":
@@ -100,85 +91,14 @@ class ServiceContainer:
 
         raise KeyError(f"Service not registered: {name}")
 
-    async def get_async(self, name: str) -> Any:
-        """
-        Get a service instance asynchronously.
-
-        Use this for services that require async initialization.
-        """
-        # Return cached instance if exists
-        if name in self._services:
-            return self._services[name]
-
-        # Create from factory
-        if name in self._factories:
-            factory = self._factories[name]
-            if asyncio.iscoroutinefunction(factory):
-                instance = await factory()
-            else:
-                instance = factory()
-            self._services[name] = instance
-            logger.debug(f"Created async service instance: {name}")
-            return instance
-
-        raise KeyError(f"Service not registered: {name}")
-
     def has(self, name: str) -> bool:
         """Check if a service is registered."""
         return name in self._services or name in self._factories
-
-    def register_type(
-        self,
-        service_type: Type[T],
-        factory: Callable[..., T],
-        scope: Scope = Scope.SINGLETON
-    ) -> None:
-        """
-        Register a service by type with specified scope.
-
-        Args:
-            service_type: The type/class to register
-            factory: Factory function to create the service
-            scope: Lifecycle scope (SINGLETON or TRANSIENT)
-        """
-        self._type_registry[service_type] = (factory, scope)
-        logger.debug(f"Registered type: {service_type.__name__} ({scope.name})")
-
-    def resolve(self, service_type: Type[T]) -> T:
-        """
-        Resolve a service by type with full type safety.
-
-        Args:
-            service_type: The type/class to resolve
-
-        Returns:
-            Instance of the requested type
-
-        Raises:
-            KeyError: If type is not registered
-        """
-        if service_type not in self._type_registry:
-            raise KeyError(f"Type not registered: {service_type.__name__}")
-
-        factory, scope = self._type_registry[service_type]
-
-        if scope == Scope.SINGLETON:
-            # Check cache first
-            if service_type in self._services:
-                return self._services[service_type]
-            # Create and cache
-            instance = factory()
-            self._services[service_type] = instance
-            return instance
-        else:
-            # TRANSIENT: always create new
-            return factory()
 
     def clear(self) -> None:
         """Clear all registered services."""
         self._services.clear()
         self._factories.clear()
-        self._type_registry.clear()
 
 
 # Service name constants

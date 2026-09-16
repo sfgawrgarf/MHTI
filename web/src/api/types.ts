@@ -264,6 +264,63 @@ export type TaskStatus = 'success' | 'failed' | 'timeout' | 'cancelled' | 'skipp
 export type LogLevel = 'success' | 'warning' | 'error'
 export type ConflictType = 'need_selection' | 'need_season_episode' | 'file_conflict' | 'no_match' | 'search_failed' | 'api_failed' | 'emby_conflict'
 
+export interface ConflictDataBase {
+  output_dir?: string | null
+  metadata_dir?: string | null
+  link_mode?: OrganizeMode | null
+  replaced_by_job_id?: string
+  replaced_by_history_id?: string
+  correction_backup_retention_days?: number
+}
+
+export interface NeedSelectionConflictData extends ConflictDataBase {
+  search_results: TMDBSearchResult[]
+  parsed_season: number | null
+  parsed_episode: number | null
+}
+
+export interface NeedSeasonEpisodeConflictData extends ConflictDataBase {
+  tmdb_id: number
+  series_info: TMDBSeries | null
+}
+
+export interface FileConflictData extends ConflictDataBase {
+  tmdb_id: number
+  season: number
+  episode: number
+  dest_path: string | null
+}
+
+export interface ManualMatchConflictData extends ConflictDataBase {
+  parsed_title?: string | null
+  parsed_season?: number | null
+  parsed_episode?: number | null
+}
+
+export interface EmbyConflictData extends ConflictDataBase {
+  tmdb_id: number
+  season: number
+  episode: number
+  series_info: TMDBSeries | null
+  emby_message: string | null
+  emby_conflict: {
+    conflict_type: EmbyConflictType
+    message: string | null
+  } | null
+}
+
+export interface ConflictDataMap {
+  need_selection: NeedSelectionConflictData
+  need_season_episode: NeedSeasonEpisodeConflictData
+  file_conflict: FileConflictData
+  no_match: ManualMatchConflictData
+  search_failed: ManualMatchConflictData
+  api_failed: ManualMatchConflictData
+  emby_conflict: EmbyConflictData
+}
+
+export type ConflictData = ConflictDataMap[ConflictType]
+
 export interface ScrapeLogEntry {
   message: string
   level: LogLevel
@@ -321,7 +378,7 @@ export interface HistoryRecordDetail extends HistoryRecord {
   scrape_logs: ScrapeLogStep[]
   // 冲突处理
   conflict_type: ConflictType | null
-  conflict_data: Record<string, unknown> | null
+  conflict_data: ConflictData | null
 }
 
 // 冲突处理请求
@@ -330,7 +387,7 @@ export interface ResolveConflictRequest {
   tmdb_id?: number | null
   season?: number | null
   episode?: number | null
-  file_action?: 'overwrite' | 'skip' | 'rename' | null
+  file_action?: 'overwrite' | 'skip' | 'rename' | 'force' | null
   resolution_action?: 'rematch' | null
 }
 
@@ -349,7 +406,7 @@ export interface HistoryActionResponse {
   dest_path?: string
   requires_action?: boolean
   conflict_type?: ConflictType
-  conflict_data?: Record<string, unknown>
+  conflict_data?: ConflictData
 }
 
 export interface HistoryListResponse {

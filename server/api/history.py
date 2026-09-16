@@ -3,6 +3,7 @@
 import asyncio
 import json
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -293,9 +294,9 @@ class ResolveConflictRequest(BaseModel):
     season: int | None = None
     episode: int | None = None
     # FILE_CONFLICT: 处理方式
-    file_action: str | None = None  # "overwrite" | "skip" | "rename"
+    file_action: Literal["overwrite", "skip", "rename", "force"] | None = None
     # 放弃原匹配结果，使用用户重新选择的剧集/季/集
-    resolution_action: str | None = None  # "rematch"
+    resolution_action: Literal["rematch"] | None = None
 
 
 async def _execute_scrape_and_update(

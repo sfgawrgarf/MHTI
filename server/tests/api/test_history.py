@@ -809,3 +809,45 @@ async def test_file_conflict_resolution_passes_selected_file_action(monkeypatch,
 
     scrape_request = execute_scrape.await_args.args[2]
     assert scrape_request.file_action == action
+
+
+@pytest.mark.asyncio
+async def test_emby_force_resolution_is_preserved_and_skips_recheck(monkeypatch):
+    record = SimpleNamespace(
+        status=TaskStatus.PENDING_ACTION,
+        conflict_type=ConflictType.EMBY_CONFLICT,
+        conflict_data={
+            "tmdb_id": 123,
+            "season": 1,
+            "episode": 2,
+            "output_dir": "/output",
+            "metadata_dir": "/metadata",
+            "link_mode": "copy",
+        },
+        folder_path="/incoming/example.strm",
+    )
+    history_service = AsyncMock()
+    history_service.get_record.return_value = record
+    execute_scrape = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(history_api, "_execute_scrape_and_update", execute_scrape)
+    monkeypatch.setattr(
+        history_api,
+        "_restore_locators_from_scrape_job",
+        AsyncMock(return_value={}),
+    )
+
+    await history_api.resolve_conflict(
+        "record-1",
+        history_api.ResolveConflictRequest(
+            conflict_type=ConflictType.EMBY_CONFLICT,
+            file_action="force",
+        ),
+        history_service,
+    )
+
+    scrape_request = execute_scrape.await_args.args[2]
+    selection_log = execute_scrape.await_args.args[3]
+    assert scrape_request.skip_emby_check is True
+    assert scrape_request.season == 1
+    assert scrape_request.episode == 2
+    assert "强制继续" in selection_log
