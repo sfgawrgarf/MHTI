@@ -564,11 +564,12 @@ async def test_status_transition_keeps_linked_job_error_in_lockstep(temp_db):
         await configure_connection(db)
         await db.execute(
             """INSERT INTO scrape_jobs (
-                   id, file_path, status, created_at, history_record_id
-               ) VALUES (?, ?, ?, ?, ?)""",
+                   id, file_path, output_dir, status, created_at, history_record_id
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 "job-transition",
                 "/incoming/example.strm",
+                "/library",
                 "running",
                 "2026-09-16T00:00:00",
                 record.id,
