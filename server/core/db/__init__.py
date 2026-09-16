@@ -4,14 +4,11 @@ This module provides:
 - Connection pool management
 - Centralized table schema definitions
 - Database initialization and cleanup
-- DatabaseMixin for simplified CRUD operations
 
 Usage:
     from server.core.db import get_db, init_database, close_database, DATABASE_PATH
-    from server.core.db import db_context, DatabaseMixin
 """
 
-from server.core.db.base_repository import DatabaseMixin
 from server.core.db.connection import (
     DATABASE_PATH,
     DatabaseManager,
@@ -31,7 +28,6 @@ from server.core.db.schema import (
 __all__ = [
     "DATABASE_PATH",
     "DatabaseManager",
-    "DatabaseMixin",
     "close_database",
     "configure_connection",
     "create_all_tables",
