@@ -862,6 +862,395 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         except Exception as exc:
             logger.warning("Unable to record media version: %s", exc)
 
+    async def _check_emby_before_output(
+        self,
+        *,
+        result: ScrapeResult,
+        series: TMDBSeries,
+        tmdb_id: int,
+        season: int,
+        episode: int,
+        scrape_logs: list[ScrapeLogStep],
+        notify_log_update: Callable[[], Awaitable[None]],
+        skip: bool = False,
+    ) -> bool:
+        """Run the shared Emby guard and return whether output may continue."""
+        emby_step = ScrapeLogStep(name="Emby 冲突检查", logs=[])
+        scrape_logs.append(emby_step)
+        if skip:
+            emby_step.logs.append(ScrapeLogEntry(message="已按用户选择跳过 Emby 冲突检查"))
+            await notify_log_update()
+            return True
+
+        try:
+            conflict_result = await self._check_emby_conflict(
+                series_name=series.name,
+                tmdb_id=tmdb_id,
+                season=season,
+                episode=episode,
+            )
+        except Exception as exc:
+            logger.warning("Emby 冲突检查异常: %s", exc)
+            from server.models.emby import ConflictCheckResult
+
+            conflict_result = ConflictCheckResult(conflict_type=ConflictType.NO_CONFLICT)
+
+        if conflict_result.conflict_type == ConflictType.EPISODE_EXISTS:
+            emby_step.logs.append(
+                ScrapeLogEntry(
+                    message=conflict_result.message or "Emby 中已存在该集",
+                    level=LogLevel.WARNING,
+                )
+            )
+            emby_step.completed = False
+            result.status = ScrapeStatus.EMBY_CONFLICT
+            result.message = conflict_result.message
+            result.emby_conflict = conflict_result
+            result.scrape_logs = scrape_logs
+            await notify_log_update()
+            return False
+
+        if conflict_result.conflict_type == ConflictType.SERIES_EXISTS:
+            emby_step.logs.append(
+                ScrapeLogEntry(
+                    message=conflict_result.message or "Emby 中已存在该剧集",
+                    level=LogLevel.SUCCESS,
+                )
+            )
+        else:
+            emby_step.logs.append(ScrapeLogEntry(message="无冲突"))
+        await notify_log_update()
+        return True
+
+    async def _complete_scrape_output(
+        self,
+        *,
+        result: ScrapeResult,
+        file_path: str,
+        tmdb_id: int,
+        series: TMDBSeries,
+        season_info: TMDBSeason | None,
+        season: int,
+        episode: int,
+        scrape_logs: list[ScrapeLogStep],
+        notify_log_update: Callable[[], Awaitable[None]],
+        remember_manual_alias: bool,
+        parsed_title: str | None,
+    ) -> ScrapeResult:
+        """Finalize every successful output path in one place."""
+        if season_info and season_info.episodes:
+            result.episode_info = next(
+                (item for item in season_info.episodes if item.episode_number == episode),
+                None,
+            )
+
+        await self._record_media_version(
+            file_path=file_path,
+            target_path=result.dest_path,
+            tmdb_id=tmdb_id,
+            season=season,
+            episode=episode,
+            title=series.name,
+        )
+        if remember_manual_alias:
+            await self._remember_confirmed_aliases(
+                file_path=file_path,
+                parsed_title=parsed_title,
+                tmdb_id=tmdb_id,
+                season=season,
+                episode=episode,
+                series=series,
+                source="manual",
+            )
+
+        result.status = ScrapeStatus.SUCCESS
+        result.message = "刮削完成"
+        result.scrape_logs = scrape_logs
+        await notify_log_update()
+        return result
+
+    async def _execute_scrape_output(
+        self,
+        *,
+        request: ScrapeRequest | ScrapeByIdRequest,
+        result: ScrapeResult,
+        series: TMDBSeries,
+        season_info: TMDBSeason | None,
+        season: int,
+        episode: int,
+        scrape_logs: list[ScrapeLogStep],
+        notify_log_update: Callable[[], Awaitable[None]],
+        file_action: str | None = None,
+        remember_manual_alias: bool = False,
+        parsed_title: str | None = None,
+    ) -> ScrapeResult:
+        """Generate metadata and organize media for auto and manual matches."""
+        file_path = request.file_path
+        tmdb_id = result.selected_id
+        if tmdb_id is None:
+            raise ValueError("刮削输出缺少 TMDB ID")
+
+        result.parsed_season = season
+        result.parsed_episode = episode
+
+        nfo_step = ScrapeLogStep(name="生成 NFO", logs=[])
+        scrape_logs.append(nfo_step)
+        try:
+            nfo_content = self._generate_episode_nfo(series, season, episode, season_info)
+            nfo_step.logs.append(ScrapeLogEntry(message="NFO 内容生成成功"))
+            await notify_log_update()
+        except Exception as exc:
+            nfo_step.logs.append(
+                ScrapeLogEntry(message=f"NFO 生成失败: {exc}", level=LogLevel.ERROR)
+            )
+            nfo_step.completed = False
+            await notify_log_update()
+            result.status = ScrapeStatus.NFO_FAILED
+            result.message = f"NFO 生成失败: {exc}"
+            result.scrape_logs = scrape_logs
+            return result
+
+        mode_name = _get_mode_name(request.link_mode)
+        move_step = ScrapeLogStep(name=f"{mode_name}文件", logs=[])
+        scrape_logs.append(move_step)
+        try:
+            year = series.first_air_date.year if series.first_air_date else None
+            source_display_path, effective_output_dir, effective_metadata_dir = (
+                self._resolve_move_input(
+                    file_path=file_path,
+                    file_locator=request.file_locator,
+                    output_dir=request.output_dir,
+                    output_locator=request.output_locator,
+                    metadata_dir=request.metadata_dir,
+                    metadata_locator=request.metadata_locator,
+                )
+            )
+            should_process_subtitles = True
+
+            if request.file_locator and request.output_locator:
+                move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
+                move_step.logs.append(
+                    ScrapeLogEntry(message=f"目标目录: {request.output_locator.path}")
+                )
+                move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
+                await notify_log_update()
+
+                if request.output_locator.provider == StorageProvider.P115:
+                    dest_locator = await self._finalize_storage_output(
+                        file_locator=request.file_locator,
+                        output_locator=request.output_locator,
+                        metadata_locator=request.metadata_locator,
+                        link_mode=request.link_mode,
+                        title=series.name,
+                        season=season,
+                        episode=episode,
+                        source_path=source_display_path,
+                        year=year,
+                    )
+                    result.dest_path = dest_locator.path
+                    move_step.logs.append(
+                        ScrapeLogEntry(message=f"文件{mode_name}成功: {dest_locator.path}")
+                    )
+                    await notify_log_update()
+                    move_step.logs.append(
+                        ScrapeLogEntry(message="115 网盘视频已输出，开始生成本地元数据")
+                    )
+                    await notify_log_update()
+                    nfo_path_str, _, _ = await self._write_local_metadata_only(
+                        title=series.name,
+                        season=season,
+                        episode=episode,
+                        year=year,
+                        metadata_dir=effective_metadata_dir,
+                        output_dir_for_preview=effective_output_dir,
+                        nfo_content=nfo_content,
+                        series=series,
+                        season_info=season_info,
+                        move_step=move_step,
+                        notify_log_update=notify_log_update,
+                        link_mode=request.link_mode,
+                    )
+                    result.nfo_path = nfo_path_str or None
+                    return await self._complete_scrape_output(
+                        result=result,
+                        file_path=file_path,
+                        tmdb_id=tmdb_id,
+                        series=series,
+                        season_info=season_info,
+                        season=season,
+                        episode=episode,
+                        scrape_logs=scrape_logs,
+                        notify_log_update=notify_log_update,
+                        remember_manual_alias=remember_manual_alias,
+                        parsed_title=parsed_title,
+                    )
+
+                if request.output_locator.provider == StorageProvider.LOCAL:
+                    provider = self._get_storage_provider(request.file_locator.provider)
+                    with TemporaryDirectory(prefix="mhti-115-download-") as temp_dir:
+                        downloaded_path = await provider.download(
+                            request.file_locator, Path(temp_dir)
+                        )
+                        local_source_path = str(downloaded_path)
+                        should_process_subtitles = False
+                        rename_request = self._build_rename_request(
+                            source_path=local_source_path,
+                            title=series.name,
+                            season=season,
+                            episode=episode,
+                            year=year,
+                            output_dir=effective_output_dir,
+                            link_mode=request.link_mode,
+                        )
+                        rename_request.conflict_action = file_action
+                        dest_file, season_folder, series_folder = (
+                            await self._organize_local_output(
+                                rename_request=rename_request,
+                                source_display_path=source_display_path,
+                                output_dir_display=effective_output_dir,
+                                mode_name=mode_name,
+                                move_step=move_step,
+                                notify_log_update=notify_log_update,
+                                result=result,
+                            )
+                        )
+                else:
+                    local_source_path = source_display_path
+            else:
+                local_source_path = source_display_path
+
+            is_provider_to_local = bool(
+                request.file_locator
+                and request.output_locator
+                and request.output_locator.provider == StorageProvider.LOCAL
+            )
+            if not is_provider_to_local:
+                rename_request = self._build_rename_request(
+                    source_path=local_source_path,
+                    title=series.name,
+                    season=season,
+                    episode=episode,
+                    year=year,
+                    output_dir=effective_output_dir,
+                    link_mode=request.link_mode,
+                )
+                rename_request.conflict_action = file_action
+                dest_file, season_folder, series_folder = await self._organize_local_output(
+                    rename_request=rename_request,
+                    source_display_path=source_display_path,
+                    output_dir_display=effective_output_dir,
+                    mode_name=mode_name,
+                    move_step=move_step,
+                    notify_log_update=notify_log_update,
+                    result=result,
+                )
+
+            metadata_series_folder, metadata_season_folder = (
+                await self._resolve_metadata_folders(
+                    dest_file=dest_file,
+                    season_folder=season_folder,
+                    series_folder=series_folder,
+                    metadata_dir=effective_metadata_dir,
+                )
+            )
+            nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
+            if nfo_config["nfo_enabled"]:
+                nfo_path = metadata_season_folder / f"{dest_file.stem}.nfo"
+                await run_file_io(write_metadata_text, nfo_path, nfo_content)
+                result.nfo_path = str(nfo_path)
+                move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
+
+                tvshow_nfo_path = metadata_series_folder / "tvshow.nfo"
+                if not tvshow_nfo_path.exists():
+                    metadata_series_folder.mkdir(parents=True, exist_ok=True)
+                    tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
+                    tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
+                    await run_file_io(write_metadata_text, tvshow_nfo_path, tvshow_nfo_content)
+                    move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
+
+                season_nfo_path = metadata_season_folder / "season.nfo"
+                if not season_nfo_path.exists():
+                    season_nfo_data = self._get_season_nfo_data(series, season)
+                    season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
+                    await run_file_io(write_metadata_text, season_nfo_path, season_nfo_content)
+                    move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
+            else:
+                move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
+            await notify_log_update()
+
+            image_step = ScrapeLogStep(name="下载图片", logs=[])
+            scrape_logs.append(image_step)
+            await notify_log_update()
+            download_config = await self._get_effective_download_config(
+                request.advanced_settings
+            )
+            if download_config["download_poster"] or download_config["download_fanart"]:
+                await self._download_series_images(
+                    series,
+                    str(metadata_series_folder),
+                    download_poster=download_config["download_poster"],
+                    download_fanart=download_config["download_fanart"],
+                )
+                image_step.logs.append(ScrapeLogEntry(message="剧集图片处理完成"))
+            else:
+                image_step.logs.append(
+                    ScrapeLogEntry(message="剧集图片下载已跳过（配置禁用）")
+                )
+            await notify_log_update()
+
+            if download_config["download_thumb"]:
+                await self._download_episode_image(
+                    season_info,
+                    season,
+                    episode,
+                    str(metadata_season_folder),
+                    dest_file.stem,
+                )
+                image_step.logs.append(ScrapeLogEntry(message="集封面图处理完成"))
+            else:
+                image_step.logs.append(
+                    ScrapeLogEntry(message="集封面图下载已跳过（配置禁用）")
+                )
+            await notify_log_update()
+
+            if should_process_subtitles:
+                await run_file_io(
+                    self._process_subtitles,
+                    local_source_path,
+                    str(dest_file),
+                    request.link_mode,
+                )
+        except FileExistsError:
+            result.scrape_logs = scrape_logs
+            return result
+        except Exception as exc:
+            move_step.logs.append(
+                ScrapeLogEntry(
+                    message=f"文件{mode_name}失败: {exc}",
+                    level=LogLevel.ERROR,
+                )
+            )
+            move_step.completed = False
+            await notify_log_update()
+            result.status = ScrapeStatus.MOVE_FAILED
+            result.message = f"文件{mode_name}失败: {exc}"
+            result.scrape_logs = scrape_logs
+            return result
+
+        return await self._complete_scrape_output(
+            result=result,
+            file_path=file_path,
+            tmdb_id=tmdb_id,
+            series=series,
+            season_info=season_info,
+            season=season,
+            episode=episode,
+            scrape_logs=scrape_logs,
+            notify_log_update=notify_log_update,
+            remember_manual_alias=remember_manual_alias,
+            parsed_title=parsed_title,
+        )
+
     async def preview(self, file_path: str) -> ScrapePreview:
         """Preview scrape operation without executing.
 
@@ -1456,276 +1845,27 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         ))
         await notify_log_update()
 
-        # Step 5.5: Emby 冲突检查
-        emby_step = ScrapeLogStep(name="Emby 冲突检查", logs=[])
-        scrape_logs.append(emby_step)
-        try:
-            conflict_result = await self._check_emby_conflict(
-                series_name=series.name,
-                tmdb_id=result.selected_id,
-                season=season_num,
-                episode=episode_num,
-            )
-        except Exception as e:
-            logger.warning(f"Emby 冲突检查异常: {e}")
-            from server.models.emby import ConflictCheckResult
-            conflict_result = ConflictCheckResult(conflict_type=ConflictType.NO_CONFLICT)
-
-        if conflict_result.conflict_type == ConflictType.EPISODE_EXISTS:
-            emby_step.logs.append(ScrapeLogEntry(
-                message=conflict_result.message or "Emby 中已存在该集",
-                level=LogLevel.WARNING,
-            ))
-            emby_step.completed = False
-            await notify_log_update()
-            result.status = ScrapeStatus.EMBY_CONFLICT
-            result.message = conflict_result.message
-            result.emby_conflict = conflict_result
-            result.scrape_logs = scrape_logs
-            return result
-        elif conflict_result.conflict_type == ConflictType.SERIES_EXISTS:
-            emby_step.logs.append(ScrapeLogEntry(
-                message=conflict_result.message or "Emby 中已存在该剧集",
-                level=LogLevel.SUCCESS,
-            ))
-        else:
-            emby_step.logs.append(ScrapeLogEntry(message="无冲突"))
-        await notify_log_update()
-
-        # 更新实际使用的季/集号（经 _auto_correct_season 修正后的值）
-        # 提前赋值，确保所有成功 return 路径（115→115 / 115→本地 / 纯本地）都带正确值
-        result.parsed_season = season_num
-        result.parsed_episode = episode_num
-
-        # Step 6: Generate NFO
-        nfo_step = ScrapeLogStep(name="生成 NFO", logs=[])
-        scrape_logs.append(nfo_step)
-        try:
-            nfo_content = self._generate_episode_nfo(series, season_num, episode_num, season_info)
-            nfo_step.logs.append(ScrapeLogEntry(message="NFO 内容生成成功"))
-            await notify_log_update()
-        except Exception as e:
-            nfo_step.logs.append(ScrapeLogEntry(message=f"NFO 生成失败: {str(e)}", level=LogLevel.ERROR))
-            nfo_step.completed = False
-            await notify_log_update()
-            result.status = ScrapeStatus.NFO_FAILED
-            result.message = f"NFO 生成失败: {str(e)}"
-            result.scrape_logs = scrape_logs
-            return result
-
-        # Step 7: Move file using RenameService
-        mode_name = _get_mode_name(request.link_mode)
-        move_step = ScrapeLogStep(name=f"{mode_name}文件", logs=[])
-        scrape_logs.append(move_step)
-        try:
-            year = series.first_air_date.year if series.first_air_date else None
-            source_display_path, effective_output_dir, effective_metadata_dir = self._resolve_move_input(
-                file_path=file_path,
-                file_locator=request.file_locator,
-                output_dir=request.output_dir,
-                output_locator=request.output_locator,
-                metadata_dir=request.metadata_dir,
-                metadata_locator=request.metadata_locator,
-            )
-
-            should_process_subtitles = True
-
-            if request.file_locator and request.output_locator:
-                move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
-                move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {request.output_locator.path}"))
-                move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
-                await notify_log_update()
-
-                if request.output_locator.provider == StorageProvider.P115:
-                    dest_locator = await self._finalize_storage_output(
-                        file_locator=request.file_locator,
-                        output_locator=request.output_locator,
-                        metadata_locator=request.metadata_locator,
-                        link_mode=request.link_mode,
-                        title=series.name,
-                        season=season_num,
-                        episode=episode_num,
-                        source_path=source_display_path,
-                        year=year,
-                    )
-                    result.dest_path = dest_locator.path
-                    move_step.logs.append(ScrapeLogEntry(message=f"文件{mode_name}成功: {dest_locator.path}"))
-                    await notify_log_update()
-                    move_step.logs.append(ScrapeLogEntry(message="115 网盘视频已输出，开始生成本地元数据"))
-                    await notify_log_update()
-                    # 115→115：视频在 115，NFO/图片/字幕留本地
-                    nfo_path_str, _, _ = await self._write_local_metadata_only(
-                        title=series.name,
-                        season=season_num,
-                        episode=episode_num,
-                        year=year,
-                        metadata_dir=effective_metadata_dir,
-                        output_dir_for_preview=effective_output_dir,
-                        nfo_content=nfo_content,
-                        series=series,
-                        season_info=season_info,
-                        move_step=move_step,
-                        notify_log_update=notify_log_update,
-                        link_mode=request.link_mode,
-                    )
-                    result.nfo_path = nfo_path_str or None
-                    result.status = ScrapeStatus.SUCCESS
-                    result.message = "刮削完成"
-                    result.scrape_logs = scrape_logs
-                    await notify_log_update()
-                    return result
-
-                if request.output_locator.provider == StorageProvider.LOCAL:
-                    provider = self._get_storage_provider(request.file_locator.provider)
-                    with TemporaryDirectory(prefix="mhti-115-download-") as temp_dir:
-                        downloaded_path = await provider.download(request.file_locator, Path(temp_dir))
-                        local_source_path = str(downloaded_path)
-                        should_process_subtitles = False
-
-                        rename_request = self._build_rename_request(
-                            source_path=local_source_path,
-                            title=series.name,
-                            season=season_num,
-                            episode=episode_num,
-                            year=year,
-                            output_dir=effective_output_dir,
-                            link_mode=request.link_mode,
-                        )
-                        dest_file, season_folder, series_folder = await self._organize_local_output(
-                            rename_request=rename_request,
-                            source_display_path=source_display_path,
-                            output_dir_display=effective_output_dir,
-                            mode_name=mode_name,
-                            move_step=move_step,
-                            notify_log_update=notify_log_update,
-                            result=result,
-                        )
-                else:
-                    local_source_path = source_display_path
-            else:
-                local_source_path = source_display_path
-
-            if not (request.file_locator and request.output_locator and request.output_locator.provider == StorageProvider.LOCAL):
-                rename_request = self._build_rename_request(
-                    source_path=local_source_path,
-                    title=series.name,
-                    season=season_num,
-                    episode=episode_num,
-                    year=year,
-                    output_dir=effective_output_dir,
-                    link_mode=request.link_mode,
-                )
-                dest_file, season_folder, series_folder = await self._organize_local_output(
-                    rename_request=rename_request,
-                    source_display_path=source_display_path,
-                    output_dir_display=effective_output_dir,
-                    mode_name=mode_name,
-                    move_step=move_step,
-                    notify_log_update=notify_log_update,
-                    result=result,
-                )
-            metadata_series_folder, metadata_season_folder = await self._resolve_metadata_folders(
-                dest_file=dest_file,
-                season_folder=season_folder,
-                series_folder=series_folder,
-                metadata_dir=effective_metadata_dir,
-            )
-
-            # Write episode NFO file (if enabled)
-            nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
-            if nfo_config["nfo_enabled"]:
-                nfo_path = metadata_season_folder / f"{dest_file.stem}.nfo"
-                await run_file_io(write_metadata_text, nfo_path, nfo_content)
-                result.nfo_path = str(nfo_path)
-                move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
-
-                # 生成 tvshow.nfo（剧集信息）到剧集文件夹
-                tvshow_nfo_path = metadata_series_folder / "tvshow.nfo"
-                if not tvshow_nfo_path.exists():
-                    metadata_series_folder.mkdir(parents=True, exist_ok=True)
-                    tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
-                    tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
-                    await run_file_io(write_metadata_text, tvshow_nfo_path, tvshow_nfo_content)
-                    move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
-
-                # 生成 season.nfo 到季度文件夹
-                season_nfo_path = metadata_season_folder / "season.nfo"
-                if not season_nfo_path.exists():
-                    season_nfo_data = self._get_season_nfo_data(series, season_num)
-                    season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
-                    await run_file_io(write_metadata_text, season_nfo_path, season_nfo_content)
-                    move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
-            else:
-                move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
-
-            await notify_log_update()
-
-            # Step 8: Download images (based on config)
-            image_step = ScrapeLogStep(name="下载图片", logs=[])
-            scrape_logs.append(image_step)
-            await notify_log_update()
-
-            download_config = await self._get_effective_download_config(request.advanced_settings)
-
-            # 下载剧集封面和背景图到元数据剧集文件夹
-            if download_config["download_poster"] or download_config["download_fanart"]:
-                await self._download_series_images(
-                    series,
-                    str(metadata_series_folder),
-                    download_poster=download_config["download_poster"],
-                    download_fanart=download_config["download_fanart"],
-                )
-                image_step.logs.append(ScrapeLogEntry(message="剧集图片处理完成"))
-            else:
-                image_step.logs.append(ScrapeLogEntry(message="剧集图片下载已跳过（配置禁用）"))
-            await notify_log_update()
-
-            # 下载集封面图到元数据季度文件夹
-            if download_config["download_thumb"]:
-                await self._download_episode_image(
-                    season_info, season_num, episode_num, str(metadata_season_folder), dest_file.stem
-                )
-                image_step.logs.append(ScrapeLogEntry(message="集封面图处理完成"))
-            else:
-                image_step.logs.append(ScrapeLogEntry(message="集封面图下载已跳过（配置禁用）"))
-            await notify_log_update()
-
-            # 处理关联字幕文件
-            if should_process_subtitles:
-                await run_file_io(self._process_subtitles, local_source_path, str(dest_file), request.link_mode)
-
-        except FileExistsError:
-            result.scrape_logs = scrape_logs
-            return result
-        except Exception as e:
-            move_step.logs.append(ScrapeLogEntry(message=f"文件{mode_name}失败: {str(e)}", level=LogLevel.ERROR))
-            move_step.completed = False
-            await notify_log_update()
-            result.status = ScrapeStatus.MOVE_FAILED
-            result.message = f"文件{mode_name}失败: {str(e)}"
-            result.scrape_logs = scrape_logs
-            return result
-
-        # 设置集信息
-        if season_info and season_info.episodes:
-            for ep in season_info.episodes:
-                if ep.episode_number == episode_num:
-                    result.episode_info = ep
-                    break
-
-        await self._record_media_version(
-            file_path=file_path,
-            target_path=result.dest_path,
+        if not await self._check_emby_before_output(
+            result=result,
+            series=series,
             tmdb_id=result.selected_id,
             season=season_num,
             episode=episode_num,
-            title=series.name,
+            scrape_logs=scrape_logs,
+            notify_log_update=notify_log_update,
+        ):
+            return result
+
+        return await self._execute_scrape_output(
+            request=request,
+            result=result,
+            series=series,
+            season_info=season_info,
+            season=season_num,
+            episode=episode_num,
+            scrape_logs=scrape_logs,
+            notify_log_update=notify_log_update,
         )
-        result.status = ScrapeStatus.SUCCESS
-        result.message = "刮削完成"
-        result.scrape_logs = scrape_logs
-        await notify_log_update()
-        return result
 
     async def scrape_by_id(
         self,
@@ -1861,260 +2001,31 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         ))
         await notify_log_update()
 
-        # Step 2: 生成 NFO
-        nfo_step = ScrapeLogStep(name="生成 NFO", logs=[])
-        scrape_logs.append(nfo_step)
-        await notify_log_update()
-        try:
-            nfo_content = self._generate_episode_nfo(
-                series, request.season, request.episode, season_info
-            )
-            nfo_step.logs.append(ScrapeLogEntry(message="NFO 内容生成成功"))
-            await notify_log_update()
-        except Exception as e:
-            nfo_step.logs.append(ScrapeLogEntry(message=f"NFO 生成失败: {str(e)}", level=LogLevel.ERROR))
-            nfo_step.completed = False
-            await notify_log_update()
-            result.status = ScrapeStatus.NFO_FAILED
-            result.message = f"NFO 生成失败: {str(e)}"
-            result.scrape_logs = scrape_logs
-            return result
-
-        # Step 3: 移动文件
-        mode_name = _get_mode_name(request.link_mode)
-        move_step = ScrapeLogStep(name=f"{mode_name}文件", logs=[])
-        scrape_logs.append(move_step)
-        await notify_log_update()
-        try:
-            year = series.first_air_date.year if series.first_air_date else None
-            source_display_path, effective_output_dir, effective_metadata_dir = self._resolve_move_input(
-                file_path=file_path,
-                file_locator=request.file_locator,
-                output_dir=request.output_dir,
-                output_locator=request.output_locator,
-                metadata_dir=request.metadata_dir,
-                metadata_locator=request.metadata_locator,
-            )
-            should_process_subtitles = True
-
-            if request.file_locator and request.output_locator:
-                move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
-                move_step.logs.append(ScrapeLogEntry(message=f"目标目录: {request.output_locator.path}"))
-                move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
-                await notify_log_update()
-
-                if request.output_locator.provider == StorageProvider.P115:
-                    dest_locator = await self._finalize_storage_output(
-                        file_locator=request.file_locator,
-                        output_locator=request.output_locator,
-                        metadata_locator=request.metadata_locator,
-                        link_mode=request.link_mode,
-                        title=series.name,
-                        season=request.season,
-                        episode=request.episode,
-                        source_path=source_display_path,
-                        year=year,
-                    )
-                    result.dest_path = dest_locator.path
-                    move_step.logs.append(ScrapeLogEntry(message=f"文件{mode_name}成功: {dest_locator.path}"))
-                    await notify_log_update()
-                    move_step.logs.append(ScrapeLogEntry(message="115 网盘视频已输出，开始生成本地元数据"))
-                    await notify_log_update()
-                    # 115→115：视频在 115，NFO/图片/字幕留本地
-                    nfo_path_str, _, _ = await self._write_local_metadata_only(
-                        title=series.name,
-                        season=request.season,
-                        episode=request.episode,
-                        year=year,
-                        metadata_dir=effective_metadata_dir,
-                        output_dir_for_preview=effective_output_dir,
-                        nfo_content=nfo_content,
-                        series=series,
-                        season_info=season_info,
-                        move_step=move_step,
-                        notify_log_update=notify_log_update,
-                        link_mode=request.link_mode,
-                    )
-                    result.nfo_path = nfo_path_str or None
-                    await self._remember_confirmed_aliases(
-                        file_path=file_path,
-                        parsed_title=manual_parsed_title,
-                        tmdb_id=request.tmdb_id,
-                        season=request.season,
-                        episode=request.episode,
-                        series=series,
-                        source="manual",
-                    )
-                    result.status = ScrapeStatus.SUCCESS
-                    result.message = "刮削完成"
-                    result.scrape_logs = scrape_logs
-                    await notify_log_update()
-                    return result
-
-                if request.output_locator.provider == StorageProvider.LOCAL:
-                    provider = self._get_storage_provider(request.file_locator.provider)
-                    with TemporaryDirectory(prefix="mhti-115-download-") as temp_dir:
-                        downloaded_path = await provider.download(request.file_locator, Path(temp_dir))
-                        local_source_path = str(downloaded_path)
-                        should_process_subtitles = False
-
-                        rename_request = self._build_rename_request(
-                            source_path=local_source_path,
-                            title=series.name,
-                            season=request.season,
-                            episode=request.episode,
-                            year=year,
-                            output_dir=effective_output_dir,
-                            link_mode=request.link_mode,
-                        )
-                        rename_request.conflict_action = request.file_action
-
-                        dest_file, season_folder, series_folder = await self._organize_local_output(
-                            rename_request=rename_request,
-                            source_display_path=source_display_path,
-                            output_dir_display=effective_output_dir,
-                            mode_name=mode_name,
-                            move_step=move_step,
-                            notify_log_update=notify_log_update,
-                            result=result,
-                        )
-                else:
-                    local_source_path = source_display_path
-            else:
-                local_source_path = source_display_path
-
-            if not (request.file_locator and request.output_locator and request.output_locator.provider == StorageProvider.LOCAL):
-                rename_request = self._build_rename_request(
-                    source_path=local_source_path,
-                    title=series.name,
-                    season=request.season,
-                    episode=request.episode,
-                    year=year,
-                    output_dir=effective_output_dir,
-                    link_mode=request.link_mode,
-                )
-                rename_request.conflict_action = request.file_action
-
-                dest_file, season_folder, series_folder = await self._organize_local_output(
-                    rename_request=rename_request,
-                    source_display_path=source_display_path,
-                    output_dir_display=effective_output_dir,
-                    mode_name=mode_name,
-                    move_step=move_step,
-                    notify_log_update=notify_log_update,
-                    result=result,
-                )
-            metadata_series_folder, metadata_season_folder = await self._resolve_metadata_folders(
-                dest_file=dest_file,
-                season_folder=season_folder,
-                series_folder=series_folder,
-                metadata_dir=effective_metadata_dir,
-            )
-
-            # Write episode NFO (if enabled)
-            nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
-            if nfo_config["nfo_enabled"]:
-                nfo_path = metadata_season_folder / f"{dest_file.stem}.nfo"
-                await run_file_io(write_metadata_text, nfo_path, nfo_content)
-                result.nfo_path = str(nfo_path)
-                move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
-
-                # 生成 tvshow.nfo（剧集信息）到剧集文件夹
-                tvshow_nfo_path = metadata_series_folder / "tvshow.nfo"
-                if not tvshow_nfo_path.exists():
-                    metadata_series_folder.mkdir(parents=True, exist_ok=True)
-                    tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
-                    tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
-                    await run_file_io(write_metadata_text, tvshow_nfo_path, tvshow_nfo_content)
-                    move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
-
-                # 生成 season.nfo 到季度文件夹
-                season_nfo_path = metadata_season_folder / "season.nfo"
-                if not season_nfo_path.exists():
-                    season_nfo_data = self._get_season_nfo_data(series, request.season)
-                    season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
-                    await run_file_io(write_metadata_text, season_nfo_path, season_nfo_content)
-                    move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
-            else:
-                move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
-
-            await notify_log_update()
-
-            # Step 4: 下载图片 (based on config)
-            image_step = ScrapeLogStep(name="下载图片", logs=[])
-            scrape_logs.append(image_step)
-            await notify_log_update()
-
-            download_config = await self._get_effective_download_config(request.advanced_settings)
-
-            # 下载剧集封面和背景图到元数据剧集文件夹
-            if download_config["download_poster"] or download_config["download_fanart"]:
-                await self._download_series_images(
-                    series,
-                    str(metadata_series_folder),
-                    download_poster=download_config["download_poster"],
-                    download_fanart=download_config["download_fanart"],
-                )
-                image_step.logs.append(ScrapeLogEntry(message="剧集图片处理完成"))
-            else:
-                image_step.logs.append(ScrapeLogEntry(message="剧集图片下载已跳过（配置禁用）"))
-            await notify_log_update()
-
-            # 下载集封面图到元数据季度文件夹
-            if download_config["download_thumb"]:
-                await self._download_episode_image(
-                    season_info, request.season, request.episode, str(metadata_season_folder), dest_file.stem
-                )
-                image_step.logs.append(ScrapeLogEntry(message="集封面图处理完成"))
-            else:
-                image_step.logs.append(ScrapeLogEntry(message="集封面图下载已跳过（配置禁用）"))
-            await notify_log_update()
-
-            # 处理关联字幕文件
-            if should_process_subtitles:
-                await run_file_io(self._process_subtitles, local_source_path, str(dest_file), request.link_mode)
-
-        except FileExistsError:
-            result.scrape_logs = scrape_logs
-            return result
-        except Exception as e:
-            move_step.logs.append(ScrapeLogEntry(message=f"文件{mode_name}失败: {str(e)}", level=LogLevel.ERROR))
-            move_step.completed = False
-            await notify_log_update()
-            result.status = ScrapeStatus.MOVE_FAILED
-            result.message = f"文件{mode_name}失败: {str(e)}"
-            result.scrape_logs = scrape_logs
-            return result
-
-        # 设置集信息
-        if season_info and season_info.episodes:
-            for ep in season_info.episodes:
-                if ep.episode_number == request.episode:
-                    result.episode_info = ep
-                    break
-
-        await self._record_media_version(
-            file_path=file_path,
-            target_path=result.dest_path,
-            tmdb_id=request.tmdb_id,
-            season=request.season,
-            episode=request.episode,
-            title=series.name,
-        )
-        await self._remember_confirmed_aliases(
-            file_path=file_path,
-            parsed_title=manual_parsed_title,
-            tmdb_id=request.tmdb_id,
-            season=request.season,
-            episode=request.episode,
+        if not await self._check_emby_before_output(
+            result=result,
             series=series,
-            source="manual",
+            tmdb_id=request.tmdb_id,
+            season=request.season,
+            episode=request.episode,
+            scrape_logs=scrape_logs,
+            notify_log_update=notify_log_update,
+            skip=request.skip_emby_check,
+        ):
+            return result
+
+        return await self._execute_scrape_output(
+            request=request,
+            result=result,
+            series=series,
+            season_info=season_info,
+            season=request.season,
+            episode=request.episode,
+            scrape_logs=scrape_logs,
+            notify_log_update=notify_log_update,
+            file_action=request.file_action,
+            remember_manual_alias=True,
+            parsed_title=manual_parsed_title,
         )
-        result.status = ScrapeStatus.SUCCESS
-        result.message = "刮削完成"
-        result.scrape_logs = scrape_logs
-        await notify_log_update()
-        return result
 
     async def batch_scrape(self, request: BatchScrapeRequest) -> BatchScrapeResponse:
         """Batch scrape multiple files.

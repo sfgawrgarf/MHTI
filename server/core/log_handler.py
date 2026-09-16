@@ -40,6 +40,7 @@ class DatabaseLogHandler(logging.Handler):
         self._flush_interval = flush_interval
         self._loop: asyncio.AbstractEventLoop | None = None
         self._flush_task: asyncio.Task | None = None
+        self._flush_lock = asyncio.Lock()
         self._started = False
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
@@ -92,17 +93,21 @@ class DatabaseLogHandler(logging.Handler):
 
     async def _flush(self) -> None:
         """将缓冲的日志批量写入数据库。"""
-        if not self._batch:
-            return
+        async with self._flush_lock:
+            if not self._batch:
+                return
 
-        batch = self._batch.copy()
-        self._batch.clear()
+            batch = self._batch.copy()
+            self._batch.clear()
 
-        try:
-            await self._log_service.batch_insert(batch)
-        except Exception as e:
-            # 写入失败时，尝试恢复部分日志
-            print(f"Failed to flush logs to database: {e}")
+            try:
+                await self._log_service.batch_insert(batch)
+            except Exception as e:
+                # New entries may have arrived while the database call was in
+                # flight. Restore the failed batch in front of them so the next
+                # periodic flush retries every record in its original order.
+                self._batch[0:0] = batch
+                print(f"Failed to flush logs to database: {e}")
 
     def emit(self, record: logging.LogRecord) -> None:
         """

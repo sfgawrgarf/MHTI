@@ -490,11 +490,19 @@ class HistoryService:
                 await db.execute(
                     """UPDATE scrape_jobs
                        SET status = ?,
+                           error_message = CASE WHEN ? IS NOT NULL
+                                                THEN ? ELSE error_message END,
                            finished_at = CASE WHEN ? IN ('pending', 'running')
                                               THEN finished_at
                                               ELSE COALESCE(finished_at, CURRENT_TIMESTAMP) END
                        WHERE history_record_id = ?""",
-                    (status.value, status.value, record_id),
+                    (
+                        status.value,
+                        error_message,
+                        error_message,
+                        status.value,
+                        record_id,
+                    ),
                 )
             await db.commit()
             updated = cursor.rowcount > 0
