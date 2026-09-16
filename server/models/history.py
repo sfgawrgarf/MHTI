@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import BaseModel
 
@@ -38,6 +38,28 @@ class ConflictType(str, Enum):
     SEARCH_FAILED = "search_failed"  # 搜索失败，需手动输入 TMDB ID
     API_FAILED = "api_failed"  # API 失败，需手动输入 TMDB ID
     EMBY_CONFLICT = "emby_conflict"  # Emby 中已存在该集
+
+
+class ConflictData(TypedDict, total=False):
+    """Persisted context used to resume every supported conflict flow."""
+
+    output_dir: str | None
+    metadata_dir: str | None
+    link_mode: str | None
+    tmdb_id: int
+    season: int
+    episode: int
+    dest_path: str | None
+    search_results: list[dict[str, Any]]
+    parsed_title: str | None
+    parsed_season: int | None
+    parsed_episode: int | None
+    series_info: dict[str, Any] | None
+    emby_message: str | None
+    emby_conflict: dict[str, Any] | None
+    replaced_by_job_id: str
+    replaced_by_history_id: str
+    correction_backup_retention_days: int
 
 
 class LogLevel(str, Enum):
@@ -101,7 +123,7 @@ class HistoryRecordCreate(BaseModel):
     scrape_job_id: str | None = None  # 关联的刮削任务ID
     file_fingerprint: str | None = None  # 文件指纹，用于去重
     conflict_type: ConflictType | None = None
-    conflict_data: dict[str, Any] | None = None
+    conflict_data: ConflictData | None = None
     # 刮削日志
     scrape_logs: list[ScrapeLogStep] = []
 
@@ -148,4 +170,4 @@ class HistoryRecordDetail(HistoryRecord):
     scrape_logs: list[ScrapeLogStep] = []
     # 冲突处理
     conflict_type: ConflictType | None = None  # 冲突类型
-    conflict_data: dict[str, Any] | None = None  # 冲突上下文数据
+    conflict_data: ConflictData | None = None  # 冲突上下文数据

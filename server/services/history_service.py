@@ -16,6 +16,7 @@ from server.core.db.connection import DatabaseManager, db_connection
 from server.core.db.schema import migrate_history_table
 from server.models.history import (
     ConflictType,
+    ConflictData,
     HistoryRecord,
     HistoryRecordCreate,
     HistoryRecordDetail,
@@ -399,7 +400,7 @@ class HistoryService:
         status: TaskStatus | None = None,
         error_message: str | None = None,
         conflict_type: ConflictType | None = None,
-        conflict_data: dict | None = None,
+        conflict_data: ConflictData | None = None,
         title: str | None = None,
         original_title: str | None = None,
         plot: str | None = None,

@@ -98,6 +98,10 @@ jobs:
         working-directory: web
         run: npm run build:check
 
+      - name: 前端单元测试
+        working-directory: web
+        run: npm run test:unit
+
       - name: 依赖安全审计
         working-directory: web
         run: npm audit --omit=dev --audit-level=high

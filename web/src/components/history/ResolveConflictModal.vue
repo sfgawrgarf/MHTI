@@ -7,15 +7,12 @@ import {
   NButton,
   NRadioGroup,
   NRadio,
-  NInputNumber,
   NInput,
   NScrollbar,
   NImage,
   NTag,
   NIcon,
   NSpin,
-  NTabs,
-  NTabPane,
   NList,
   NListItem,
   NThing,
@@ -24,7 +21,6 @@ import {
 } from 'naive-ui'
 import {
   CloseOutline,
-  CheckmarkOutline,
   StarOutline,
   CalendarOutline,
   ArrowBackOutline,
@@ -35,6 +31,7 @@ import { tmdbApi } from '@/api/tmdb'
 import type {
   HistoryRecordDetail,
   HistoryActionResponse,
+  ResolveConflictRequest,
   ConflictType,
   TMDBSearchResult,
   TMDBSeason,
@@ -42,6 +39,17 @@ import type {
   TMDBSeries,
 } from '@/api/types'
 import EmptyState from '@/components/common/EmptyState.vue'
+import ManualMatchPanel from './ManualMatchPanel.vue'
+import SeasonEpisodePicker from './SeasonEpisodePicker.vue'
+import {
+  getConflictData,
+  getDefaultSeason,
+  getEmbyFileAction,
+  getImageUrl,
+  getSelectableSeasons,
+  getYear,
+  type EmbyResolutionAction,
+} from './conflict-state'
 
 const props = defineProps<{
   show: boolean
@@ -68,7 +76,7 @@ const selectedSeriesName = ref('')
 const selectedSeason = ref<number>(1)
 const selectedEpisode = ref<number | null>(null)
 const fileAction = ref<'overwrite' | 'skip' | 'rename'>('skip')
-const embyAction = ref<'skip' | 'force' | 'change'>('force')
+const embyAction = ref<EmbyResolutionAction>('force')
 const embyStep = ref(1)  // 1=选择处理方式, 2=选择季/集
 
 // 加载的季/集数据
@@ -142,20 +150,19 @@ const modalTitle = computed(() => {
 // 是否需要手动输入 TMDB ID
 const needManualInput = computed(() => {
   const types: ConflictType[] = ['no_match', 'search_failed', 'api_failed']
-  return props.record?.conflict_type && types.includes(props.record.conflict_type)
+  return props.record?.conflict_type ? types.includes(props.record.conflict_type) : false
 })
 
 // 搜索结果列表
 const searchResults = computed(() => {
-  if (!props.record?.conflict_data?.search_results) return []
-  return props.record.conflict_data.search_results as TMDBSearchResult[]
+  return getConflictData(props.record, 'need_selection')?.search_results ?? []
 })
 
 // 解析出的季/集信息
 const parsedSeasonEpisode = computed(() => {
-  if (!props.record?.conflict_data) return null
-  const season = props.record.conflict_data.parsed_season as number | null
-  const episode = props.record.conflict_data.parsed_episode as number | null
+  const data = getConflictData(props.record, 'need_selection')
+  const season = data?.parsed_season
+  const episode = data?.parsed_episode
   if (season != null && episode != null) {
     return { season, episode }
   }
@@ -164,64 +171,29 @@ const parsedSeasonEpisode = computed(() => {
 
 // 获取 series_info
 const seriesInfo = computed(() => {
-  if (!props.record?.conflict_data?.series_info) return null
-  return props.record.conflict_data.series_info as {
-    name?: string
-    poster_path?: string
-    seasons?: TMDBSeason[]
-  }
+  return (
+    getConflictData(props.record, 'need_season_episode')?.series_info
+    ?? getConflictData(props.record, 'emby_conflict')?.series_info
+    ?? null
+  )
 })
 
 // Emby 冲突信息
 const embyConflictInfo = computed(() => {
-  if (!props.record?.conflict_data) return null
+  const data = getConflictData(props.record, 'emby_conflict')
+  if (!data) return null
   return {
-    message: props.record.conflict_data.emby_message as string | null,
-    season: props.record.conflict_data.season as number | null,
-    episode: props.record.conflict_data.episode as number | null,
+    message: data.emby_message,
+    season: data.season,
+    episode: data.episode,
   }
 })
-
-// TMDB 图片基础 URL
-const getImageUrl = (path: string | null, size = 'w300') => {
-  if (!path) return null
-  return `https://image.tmdb.org/t/p/${size}${path}`
-}
-
-const getSelectableSeasons = (items: TMDBSeason[], requireEpisodes = false) => {
-  return items.filter((season) =>
-    season.season_number >= 0 && (!requireEpisodes || (season.episode_count ?? 0) > 0)
-  )
-}
-
-const getDefaultSeason = (items: TMDBSeason[], requireEpisodes = false) => {
-  const selectable = getSelectableSeasons(items, requireEpisodes)
-  return selectable.find((season) => season.season_number > 0) ?? selectable[0]
-}
-
-const getSeasonLabel = (season: TMDBSeason) => {
-  return season.season_number === 0
-    ? '特别篇 / Season 00'
-    : season.name || `第 ${season.season_number} 季`
-}
 
 // 季列表包含 Season 0（特别篇）- 优先使用加载的数据
 const seasons = computed(() => {
   const list = loadedSeasons.value.length ? loadedSeasons.value : (seriesInfo.value?.seasons || [])
   return getSelectableSeasons(list)
 })
-
-// 当前选中季的集列表
-const currentSeasonEpisodes = computed(() => {
-  if (!seasons.value.length) return []
-  const season = seasons.value.find((s) => s.season_number === selectedSeason.value)
-  return season?.episodes || []
-})
-
-// 选择集
-const selectEpisode = (ep: TMDBEpisode) => {
-  selectedEpisode.value = ep.episode_number
-}
 
 // 选择剧集并加载季/集数据
 const selectSeries = async (result: TMDBSearchResult) => {
@@ -269,7 +241,7 @@ const goBackToStep1 = () => {
 
 // Emby 冲突：进入选择季/集步骤
 const enterEmbySeasonSelect = async () => {
-  const tmdbId = props.record?.conflict_data?.tmdb_id as number | null
+  const tmdbId = getConflictData(props.record, 'emby_conflict')?.tmdb_id
   if (!tmdbId) {
     message.error('缺少 TMDB ID')
     return
@@ -288,6 +260,7 @@ const enterEmbySeasonSelect = async () => {
       }
     }
 
+    embyAction.value = 'change'
     embyStep.value = 2
   } catch (error: unknown) {
     const err = error as { response?: { data?: { error?: string; message?: string } } }
@@ -407,17 +380,6 @@ const goBackManualStep = () => {
   }
 }
 
-// 手动匹配：有效季列表
-const manualValidSeasons = computed(() => {
-  return getSelectableSeasons(loadedSeasons.value, true)
-})
-
-// 手动匹配：当前季的集列表
-const manualCurrentEpisodes = computed(() => {
-  const season = loadedSeasons.value.find(s => s.season_number === selectedSeason.value)
-  return season?.episodes || []
-})
-
 // TMDB 搜索弹窗状态
 const showTmdbSearchModal = ref(false)
 const tmdbSearchQuery = ref('')
@@ -479,10 +441,10 @@ const showRequiredAction = (response: HistoryActionResponse) => {
   if (!props.record) return
 
   const conflictType = response.conflict_type || 'file_conflict'
-  const conflictData = response.conflict_data || {
+  const conflictData = response.conflict_data || ({
     ...(props.record.conflict_data || {}),
     dest_path: response.dest_path,
-  }
+  } as HistoryRecordDetail['conflict_data'])
 
   rematchMode.value = false
   manualStep.value = 1
@@ -524,20 +486,24 @@ watch(() => props.show, (show) => {
 
     // 预填充数据
     if (props.record.conflict_data) {
-      if (props.record.conflict_data.tmdb_id) {
-        selectedTmdbId.value = props.record.conflict_data.tmdb_id as number
+      const data = props.record.conflict_data
+      if ('tmdb_id' in data && data.tmdb_id) {
+        selectedTmdbId.value = data.tmdb_id
       }
-      if (props.record.conflict_data.season) {
-        selectedSeason.value = props.record.conflict_data.season as number
+      if ('season' in data && data.season !== undefined) {
+        selectedSeason.value = data.season
       }
-      if (props.record.conflict_data.episode) {
-        selectedEpisode.value = props.record.conflict_data.episode as number
+      if ('episode' in data && data.episode !== undefined) {
+        selectedEpisode.value = data.episode
       }
     }
 
     // 如果有季信息，默认选中第一季
     const firstSeason = seasons.value[0]
-    if (firstSeason && !props.record.conflict_data?.season) {
+    const hasSavedSeason = props.record.conflict_data
+      && 'season' in props.record.conflict_data
+      && props.record.conflict_data.season !== undefined
+    if (firstSeason && !hasSavedSeason) {
       selectedSeason.value = firstSeason.season_number
     }
   }
@@ -647,11 +613,13 @@ const handleSubmit = async () => {
     }
 
     // Emby 冲突处理
-    let fileActionValue = conflictType === 'file_conflict' ? fileAction.value : null
+    let fileActionValue: ResolveConflictRequest['file_action'] = (
+      conflictType === 'file_conflict' ? fileAction.value : null
+    )
     if (conflictType === 'emby_conflict') {
       // 步骤2表示选择了更改季/集
       const isChangeMode = embyStep.value === 2
-      fileActionValue = embyAction.value === 'skip' ? 'skip' : 'overwrite'
+      fileActionValue = getEmbyFileAction(embyAction.value)
       if (isChangeMode) {
         season = selectedSeason.value
         episode = selectedEpisode.value || 1
@@ -661,8 +629,8 @@ const handleSubmit = async () => {
     const response = await historyApi.resolveConflict(props.record.id, {
       conflict_type: conflictType,
       tmdb_id: selectedTmdbId.value,
-      season: conflictType === 'emby_conflict' ? season : season,
-      episode: conflictType === 'emby_conflict' ? episode : episode,
+      season,
+      episode,
       file_action: fileActionValue,
     })
     if (response.requires_action) {
@@ -683,10 +651,6 @@ const handleClose = () => {
   emit('update:show', false)
 }
 
-const getYear = (date: string | null) => {
-  if (!date) return '未知'
-  return date.split('-')[0]
-}
 </script>
 
 <template>
@@ -735,152 +699,24 @@ const getYear = (date: string | null) => {
             重新匹配（支持 TMDB ID）
           </NButton>
 
-          <!-- 重试模式 - 复用手动匹配三步流程 -->
-          <template v-if="isManualMatchMode">
-            <!-- 步骤 1: 搜索 -->
-            <template v-if="manualStep === 1">
-              <NSpace>
-                <NInput
-                  v-model:value="manualSearchQuery"
-                  placeholder="输入剧集名称搜索..."
-                  style="width: 450px"
-                  @keyup.enter="handleManualSearch"
-                />
-                <NButton type="primary" :loading="manualSearching" @click="handleManualSearch">
-                  搜索
-                </NButton>
-              </NSpace>
-              <NSpace align="center" style="margin-top: 12px">
-                <span class="tmdb-id-label">或直接输入 TMDB ID</span>
-                <NInputNumber
-                  v-model:value="manualTmdbId"
-                  :min="1"
-                  :precision="0"
-                  :show-button="false"
-                  placeholder="例如：1396"
-                  style="width: 180px"
-                  @keyup.enter="handleManualTmdbId"
-                />
-                <NButton :loading="loadingSeasons" @click="handleManualTmdbId">
-                  按 ID 识别
-                </NButton>
-              </NSpace>
-
-              <NSpin :show="manualSearching || loadingSeasons">
-                <div style="min-height: 200px; max-height: 400px; overflow-y: auto">
-                  <NEmpty v-if="manualHasSearched && manualSearchResults.length === 0" description="未找到匹配结果" />
-                  <NList v-else-if="manualSearchResults.length > 0" hoverable clickable>
-                    <NListItem v-for="item in manualSearchResults" :key="item.id" @click="handleManualSelectSeries(item)">
-                      <NThing>
-                        <template #avatar>
-                          <NImage
-                            v-if="getImageUrl(item.poster_path, 'w92')"
-                            :src="getImageUrl(item.poster_path, 'w92')!"
-                            width="60"
-                            height="90"
-                            object-fit="cover"
-                            preview-disabled
-                          />
-                          <div v-else class="no-poster-small">无图</div>
-                        </template>
-                        <template #header>
-                          {{ item.name }}
-                          <NTag v-if="item.first_air_date" size="small" style="margin-left: 8px">
-                            {{ getYear(item.first_air_date) }}
-                          </NTag>
-                        </template>
-                        <template #header-extra>
-                          <NTag v-if="item.vote_average" type="warning" size="small">
-                            {{ item.vote_average?.toFixed(1) }}
-                          </NTag>
-                        </template>
-                        <template #description>
-                          <div v-if="item.original_name && item.original_name !== item.name" style="color: #999; font-size: 12px">
-                            {{ item.original_name }}
-                          </div>
-                          <div v-if="item.overview" style="font-size: 12px; color: #666; margin-top: 4px; max-height: 40px; overflow: hidden">
-                            {{ item.overview }}
-                          </div>
-                        </template>
-                      </NThing>
-                    </NListItem>
-                  </NList>
-                </div>
-              </NSpin>
-            </template>
-
-            <!-- 步骤 2: 选择季 -->
-            <template v-else-if="manualStep === 2">
-              <div style="min-height: 200px; max-height: 350px; overflow-y: auto">
-                <NEmpty v-if="manualValidSeasons.length === 0" description="暂无可用季" />
-                <NList v-else hoverable clickable>
-                  <NListItem v-for="season in manualValidSeasons" :key="season.season_number" @click="handleManualSelectSeason(season)">
-                    <NThing>
-                      <template #avatar>
-                        <NImage
-                          v-if="getImageUrl(season.poster_path, 'w92')"
-                          :src="getImageUrl(season.poster_path, 'w92')!"
-                          width="60"
-                          height="90"
-                          object-fit="cover"
-                          preview-disabled
-                        />
-                        <div v-else class="no-poster-small">S{{ season.season_number }}</div>
-                      </template>
-                      <template #header>
-                        {{ getSeasonLabel(season) }}
-                        <NTag size="small" style="margin-left: 8px">
-                          {{ season.episode_count }} 集
-                        </NTag>
-                      </template>
-                      <template #description>
-                        <div v-if="season.air_date" style="font-size: 12px; color: #999">
-                          首播: {{ season.air_date }}
-                        </div>
-                      </template>
-                    </NThing>
-                  </NListItem>
-                </NList>
-              </div>
-            </template>
-
-            <!-- 步骤 3: 选择集 -->
-            <template v-else-if="manualStep === 3">
-              <div style="min-height: 200px; max-height: 350px; overflow-y: auto">
-                <NEmpty v-if="manualCurrentEpisodes.length === 0" description="暂无集信息" />
-                <NList v-else hoverable clickable>
-                  <NListItem v-for="ep in manualCurrentEpisodes" :key="ep.episode_number" @click="handleManualSelectEpisode(ep)">
-                    <NThing>
-                      <template #avatar>
-                        <NImage
-                          v-if="getImageUrl(ep.still_path, 'w185')"
-                          :src="getImageUrl(ep.still_path, 'w185')!"
-                          width="120"
-                          height="68"
-                          object-fit="cover"
-                          preview-disabled
-                        />
-                        <div v-else class="no-still">E{{ ep.episode_number }}</div>
-                      </template>
-                      <template #header>
-                        第{{ ep.episode_number }}集 - {{ ep.name || '未命名' }}
-                      </template>
-                      <template #header-extra>
-                        <NTag v-if="ep.vote_average" type="warning" size="small">
-                          {{ ep.vote_average?.toFixed(1) }}
-                        </NTag>
-                      </template>
-                      <template #description>
-                        <div v-if="ep.air_date" style="font-size: 12px; color: #999">
-                          播出: {{ ep.air_date }}
-                        </div>
-                      </template>
-                    </NThing>
-                  </NListItem>
-                </NList>
-              </div>
-            </template>
-          </template>
+          <!-- 手动匹配、重试和重新匹配共用同一套三步流程 -->
+          <ManualMatchPanel
+            v-if="isManualMatchMode || needManualInput"
+            v-model:searchQuery="manualSearchQuery"
+            v-model:tmdbId="manualTmdbId"
+            :step="manualStep"
+            :searching="manualSearching"
+            :loading-seasons="loadingSeasons"
+            :has-searched="manualHasSearched"
+            :search-results="manualSearchResults"
+            :seasons="loadedSeasons"
+            :selected-season="selectedSeason"
+            @search="handleManualSearch"
+            @identify="handleManualTmdbId"
+            @select-series="handleManualSelectSeries"
+            @select-season="handleManualSelectSeason"
+            @select-episode="handleManualSelectEpisode"
+          />
 
           <!-- 多结果选择 - 两步流程 -->
           <template v-else-if="record.conflict_type === 'need_selection'">
@@ -959,61 +795,11 @@ const getYear = (date: string | null) => {
                 </NButton>
               </div>
 
-              <div v-if="seasons.length" class="season-picker">
-                <NTabs v-model:value="selectedSeason" type="segment" size="small">
-                  <NTabPane
-                    v-for="season in seasons"
-                    :key="season.season_number"
-                    :name="season.season_number"
-                    :tab="getSeasonLabel(season)"
-                  />
-                </NTabs>
-
-                <NScrollbar style="max-height: 40vh; margin-top: 16px">
-                  <div v-if="currentSeasonEpisodes.length" class="episodes-grid">
-                    <div
-                      v-for="ep in currentSeasonEpisodes"
-                      :key="ep.episode_number"
-                      class="episode-card"
-                      :class="{ selected: selectedEpisode === ep.episode_number }"
-                      @click="selectEpisode(ep)"
-                    >
-                      <div class="still-wrapper">
-                        <NImage
-                          v-if="ep.still_path"
-                          :src="getImageUrl(ep.still_path)!"
-                          object-fit="cover"
-                          preview-disabled
-                          lazy
-                          class="still"
-                        />
-                        <div v-else class="no-still">E{{ ep.episode_number }}</div>
-                        <div class="ep-badge">E{{ String(ep.episode_number).padStart(2, '0') }}</div>
-                        <div v-if="selectedEpisode === ep.episode_number" class="selected-overlay">
-                          <NIcon :component="CheckmarkOutline" :size="24" />
-                        </div>
-                      </div>
-                      <div class="ep-info">
-                        <div class="ep-title">{{ ep.name || `第 ${ep.episode_number} 集` }}</div>
-                        <div v-if="ep.air_date" class="ep-date">{{ ep.air_date }}</div>
-                      </div>
-                    </div>
-                  </div>
-                  <EmptyState v-else title="该季暂无可用集数" />
-                </NScrollbar>
-              </div>
-
-              <!-- 无季信息时回退到手动输入 -->
-              <div v-else class="manual-input">
-                <div class="input-group">
-                  <label>季</label>
-                  <NInputNumber v-model:value="selectedSeason" :min="0" :max="99" size="small" />
-                </div>
-                <div class="input-group">
-                  <label>集</label>
-                  <NInputNumber v-model:value="selectedEpisode" :min="1" :max="9999" size="small" />
-                </div>
-              </div>
+              <SeasonEpisodePicker
+                v-model:season="selectedSeason"
+                v-model:episode="selectedEpisode"
+                :seasons="seasons"
+              />
             </template>
           </template>
 
@@ -1026,61 +812,11 @@ const getYear = (date: string | null) => {
               </NButton>
             </div>
 
-            <div v-if="seasons.length" class="season-picker">
-              <NTabs v-model:value="selectedSeason" type="segment" size="small">
-                <NTabPane
-                  v-for="season in seasons"
-                  :key="season.season_number"
-                  :name="season.season_number"
-                  :tab="getSeasonLabel(season)"
-                />
-              </NTabs>
-
-              <NScrollbar style="max-height: 40vh; margin-top: 16px">
-                <div v-if="currentSeasonEpisodes.length" class="episodes-grid">
-                  <div
-                    v-for="ep in currentSeasonEpisodes"
-                    :key="ep.episode_number"
-                    class="episode-card"
-                    :class="{ selected: selectedEpisode === ep.episode_number }"
-                    @click="selectEpisode(ep)"
-                  >
-                    <div class="still-wrapper">
-                      <NImage
-                        v-if="ep.still_path"
-                        :src="getImageUrl(ep.still_path)!"
-                        object-fit="cover"
-                        preview-disabled
-                        lazy
-                        class="still"
-                      />
-                      <div v-else class="no-still">E{{ ep.episode_number }}</div>
-                      <div class="ep-badge">E{{ String(ep.episode_number).padStart(2, '0') }}</div>
-                      <div v-if="selectedEpisode === ep.episode_number" class="selected-overlay">
-                        <NIcon :component="CheckmarkOutline" :size="24" />
-                      </div>
-                    </div>
-                    <div class="ep-info">
-                      <div class="ep-title">{{ ep.name || `第 ${ep.episode_number} 集` }}</div>
-                      <div v-if="ep.air_date" class="ep-date">{{ ep.air_date }}</div>
-                    </div>
-                  </div>
-                </div>
-                <EmptyState v-else title="该季暂无可用集数" />
-              </NScrollbar>
-            </div>
-
-            <!-- 无季信息时回退到手动输入 -->
-            <div v-else class="manual-input">
-              <div class="input-group">
-                <label>季</label>
-                <NInputNumber v-model:value="selectedSeason" :min="0" :max="99" />
-              </div>
-              <div class="input-group">
-                <label>集</label>
-                <NInputNumber v-model:value="selectedEpisode" :min="1" :max="9999" />
-              </div>
-            </div>
+            <SeasonEpisodePicker
+              v-model:season="selectedSeason"
+              v-model:episode="selectedEpisode"
+              :seasons="seasons"
+            />
           </template>
 
           <!-- 文件冲突 -->
@@ -1169,221 +905,23 @@ const getYear = (date: string | null) => {
                 </NButton>
               </div>
 
-              <div v-if="seasons.length" class="season-picker">
-                <NTabs v-model:value="selectedSeason" type="segment" size="small">
-                  <NTabPane
-                    v-for="season in seasons"
-                    :key="season.season_number"
-                    :name="season.season_number"
-                    :tab="getSeasonLabel(season)"
-                  />
-                </NTabs>
-
-                <NScrollbar style="max-height: 40vh; margin-top: 16px">
-                  <div v-if="currentSeasonEpisodes.length" class="episodes-grid">
-                    <div
-                      v-for="ep in currentSeasonEpisodes"
-                      :key="ep.episode_number"
-                      class="episode-card"
-                      :class="{ selected: selectedEpisode === ep.episode_number }"
-                      @click="selectEpisode(ep)"
-                    >
-                      <div class="still-wrapper">
-                        <NImage
-                          v-if="ep.still_path"
-                          :src="getImageUrl(ep.still_path)!"
-                          object-fit="cover"
-                          preview-disabled
-                          lazy
-                          class="still"
-                        />
-                        <div v-else class="no-still">E{{ ep.episode_number }}</div>
-                        <div class="ep-badge">E{{ String(ep.episode_number).padStart(2, '0') }}</div>
-                        <div v-if="selectedEpisode === ep.episode_number" class="selected-overlay">
-                          <NIcon :component="CheckmarkOutline" :size="24" />
-                        </div>
-                      </div>
-                      <div class="ep-info">
-                        <div class="ep-title">{{ ep.name || `第 ${ep.episode_number} 集` }}</div>
-                        <div v-if="ep.air_date" class="ep-date">{{ ep.air_date }}</div>
-                      </div>
-                    </div>
-                  </div>
-                  <EmptyState v-else title="该季暂无可用集数" />
-                </NScrollbar>
-              </div>
-
-              <!-- 无季信息时手动输入 -->
-              <div v-else class="manual-input">
-                <div class="input-group">
-                  <label>季</label>
-                  <NInputNumber v-model:value="selectedSeason" :min="0" :max="99" />
-                </div>
-                <div class="input-group">
-                  <label>集</label>
-                  <NInputNumber v-model:value="selectedEpisode" :min="1" :max="9999" />
-                </div>
-              </div>
+              <SeasonEpisodePicker
+                v-model:season="selectedSeason"
+                v-model:episode="selectedEpisode"
+                :seasons="seasons"
+              />
             </template>
           </template>
 
-          <!-- 手动匹配 - 三步流程 -->
-          <template v-else-if="needManualInput">
-            <!-- 步骤 1: 搜索 -->
-            <template v-if="manualStep === 1">
-              <NSpace>
-                <NInput
-                  v-model:value="manualSearchQuery"
-                  placeholder="输入剧集名称搜索..."
-                  style="width: 450px"
-                  @keyup.enter="handleManualSearch"
-                />
-                <NButton type="primary" :loading="manualSearching" @click="handleManualSearch">
-                  搜索
-                </NButton>
-              </NSpace>
-              <NSpace align="center" style="margin-top: 12px">
-                <span class="tmdb-id-label">或直接输入 TMDB ID</span>
-                <NInputNumber
-                  v-model:value="manualTmdbId"
-                  :min="1"
-                  :precision="0"
-                  :show-button="false"
-                  placeholder="例如：1396"
-                  style="width: 180px"
-                  @keyup.enter="handleManualTmdbId"
-                />
-                <NButton :loading="loadingSeasons" @click="handleManualTmdbId">
-                  按 ID 识别
-                </NButton>
-              </NSpace>
-
-              <NSpin :show="manualSearching || loadingSeasons">
-                <div style="min-height: 200px; max-height: 400px; overflow-y: auto">
-                  <NEmpty v-if="manualHasSearched && manualSearchResults.length === 0" description="未找到成人内容匹配结果" />
-                  <NList v-else-if="manualSearchResults.length > 0" hoverable clickable>
-                    <NListItem v-for="item in manualSearchResults" :key="item.id" @click="handleManualSelectSeries(item)">
-                      <NThing>
-                        <template #avatar>
-                          <NImage
-                            v-if="getImageUrl(item.poster_path, 'w92')"
-                            :src="getImageUrl(item.poster_path, 'w92')!"
-                            width="60"
-                            height="90"
-                            object-fit="cover"
-                            preview-disabled
-                          />
-                          <div v-else class="no-poster-small">无图</div>
-                        </template>
-                        <template #header>
-                          {{ item.name }}
-                          <NTag v-if="item.first_air_date" size="small" style="margin-left: 8px">
-                            {{ getYear(item.first_air_date) }}
-                          </NTag>
-                        </template>
-                        <template #header-extra>
-                          <NTag v-if="item.vote_average" type="warning" size="small">
-                            {{ item.vote_average?.toFixed(1) }}
-                          </NTag>
-                        </template>
-                        <template #description>
-                          <div v-if="item.original_name && item.original_name !== item.name" style="color: #999; font-size: 12px">
-                            {{ item.original_name }}
-                          </div>
-                          <div v-if="item.overview" style="font-size: 12px; color: #666; margin-top: 4px; max-height: 40px; overflow: hidden">
-                            {{ item.overview }}
-                          </div>
-                        </template>
-                      </NThing>
-                    </NListItem>
-                  </NList>
-                </div>
-              </NSpin>
-            </template>
-
-            <!-- 步骤 2: 选择季 -->
-            <template v-else-if="manualStep === 2">
-              <div style="min-height: 200px; max-height: 350px; overflow-y: auto">
-                <NEmpty v-if="manualValidSeasons.length === 0" description="暂无可用季" />
-                <NList v-else hoverable clickable>
-                  <NListItem v-for="season in manualValidSeasons" :key="season.season_number" @click="handleManualSelectSeason(season)">
-                    <NThing>
-                      <template #avatar>
-                        <NImage
-                          v-if="getImageUrl(season.poster_path, 'w92')"
-                          :src="getImageUrl(season.poster_path, 'w92')!"
-                          width="60"
-                          height="90"
-                          object-fit="cover"
-                          preview-disabled
-                        />
-                        <div v-else class="no-poster-small">S{{ season.season_number }}</div>
-                      </template>
-                      <template #header>
-                        {{ getSeasonLabel(season) }}
-                        <NTag size="small" style="margin-left: 8px">
-                          {{ season.episode_count }} 集
-                        </NTag>
-                      </template>
-                      <template #description>
-                        <div v-if="season.air_date" style="font-size: 12px; color: #999">
-                          首播: {{ season.air_date }}
-                        </div>
-                      </template>
-                    </NThing>
-                  </NListItem>
-                </NList>
-              </div>
-            </template>
-
-            <!-- 步骤 3: 选择集 -->
-            <template v-else-if="manualStep === 3">
-              <div style="min-height: 200px; max-height: 350px; overflow-y: auto">
-                <NEmpty v-if="manualCurrentEpisodes.length === 0" description="暂无集信息" />
-                <NList v-else hoverable clickable>
-                  <NListItem v-for="ep in manualCurrentEpisodes" :key="ep.episode_number" @click="handleManualSelectEpisode(ep)">
-                    <NThing>
-                      <template #avatar>
-                        <NImage
-                          v-if="getImageUrl(ep.still_path, 'w185')"
-                          :src="getImageUrl(ep.still_path, 'w185')!"
-                          width="120"
-                          height="68"
-                          object-fit="cover"
-                          preview-disabled
-                        />
-                        <div v-else class="no-still">E{{ ep.episode_number }}</div>
-                      </template>
-                      <template #header>
-                        第{{ ep.episode_number }}集 - {{ ep.name || '未命名' }}
-                      </template>
-                      <template #header-extra>
-                        <NTag v-if="ep.vote_average" type="warning" size="small">
-                          {{ ep.vote_average?.toFixed(1) }}
-                        </NTag>
-                      </template>
-                      <template #description>
-                        <div v-if="ep.air_date" style="font-size: 12px; color: #999">
-                          播出: {{ ep.air_date }}
-                        </div>
-                      </template>
-                    </NThing>
-                  </NListItem>
-                </NList>
-              </div>
-            </template>
-          </template>
         </div>
       </NSpin>
 
       <template #footer>
         <NSpace justify="end">
-          <!-- 重试模式返回按钮 -->
-          <NButton v-if="isManualMatchMode && manualStep > 1" @click="goBackManualStep">
-            ← 返回
-          </NButton>
-          <!-- 手动匹配返回按钮 -->
-          <NButton v-else-if="needManualInput && manualStep > 1" @click="goBackManualStep">
+          <NButton
+            v-if="(isManualMatchMode || needManualInput) && manualStep > 1"
+            @click="goBackManualStep"
+          >
             ← 返回
           </NButton>
           <NButton @click="handleClose">取消</NButton>
@@ -1637,32 +1175,6 @@ const getYear = (date: string | null) => {
   border-radius: 4px;
 }
 
-.no-still {
-  width: 120px;
-  height: 68px;
-  background: #f0f0f0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  color: #999;
-  border-radius: 4px;
-}
-
-.selected-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--n-primary-color);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .info {
   flex: 1;
   min-width: 0;
@@ -1707,151 +1219,6 @@ const getYear = (date: string | null) => {
   font-size: 12px;
   color: var(--n-text-color-2);
   line-height: 1.5;
-}
-
-/* 手动输入 */
-.manual-input {
-  display: flex;
-  gap: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--n-border-color);
-}
-
-.input-group {
-  flex: 1;
-}
-
-.input-group.full {
-  flex: none;
-  width: 100%;
-}
-
-.input-group label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--n-text-color-2);
-}
-
-.input-hint {
-  display: block;
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--n-text-color-3);
-}
-
-.input-hint a {
-  color: var(--n-primary-color);
-}
-
-.input-row {
-  display: flex;
-  gap: 16px;
-  margin-top: 16px;
-}
-
-/* 季集选择 */
-.season-picker {
-  margin-top: 8px;
-}
-
-.episodes-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 12px;
-  padding: 4px;
-}
-
-.episode-card {
-  border-radius: 10px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  background: var(--n-color-embedded);
-}
-
-.episode-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
-}
-
-.episode-card.selected {
-  box-shadow: inset 0 0 0 2px var(--n-primary-color);
-}
-
-.still-wrapper {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16/9;
-  background: #1a1a1a;
-}
-
-.still {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-}
-
-.still :deep(img) {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.no-still {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 20px;
-  font-weight: bold;
-  color: #666;
-  background: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
-}
-
-.ep-badge {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  padding: 3px 8px;
-  background: rgba(0, 0, 0, 0.75);
-  color: white;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.selected-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(99, 102, 241, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-}
-
-.ep-info {
-  padding: 10px 12px;
-}
-
-.ep-title {
-  font-size: 13px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--n-text-color-1);
-}
-
-.ep-date {
-  font-size: 11px;
-  color: var(--n-text-color-3);
-  margin-top: 2px;
 }
 
 /* 文件冲突选项 */
