@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:check": "vue-tsc -b && vite build",
+    "lint": "eslint src --max-warnings=0",
     "test:unit": "vitest run",
     "preview": "vite preview"
   },
