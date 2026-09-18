@@ -144,10 +144,9 @@ async def lifespan(app: FastAPI):
             recovered_manual,
         )
 
-    # Initialize and start log service
+    # Initialize the direct database log persistence service.
     from server.core.container import get_log_service
     log_service = get_log_service()
-    await log_service.start()
 
     # Setup database log handler (仅记录 WARNING 及以上级别，减少性能开销)
     from server.core.log_handler import DatabaseLogHandler
@@ -187,12 +186,12 @@ async def lifespan(app: FastAPI):
     shutdown_file_io()
 
     # Stop database log handler
-    db_log_handler.stop()
     logging.getLogger().removeHandler(db_log_handler)
-
-    # Stop log service (flush remaining logs)
-    await log_service.stop()
-    logger.info("Log service stopped")
+    logs_flushed = await db_log_handler.aclose()
+    if not logs_flushed:
+        logger.error("Database log handler stopped with unpersisted entries")
+    else:
+        logger.info("Log service stopped")
 
     # Remove file handler
     if file_handler:

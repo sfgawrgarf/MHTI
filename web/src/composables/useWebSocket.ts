@@ -1,7 +1,7 @@
 /**
  * WebSocket 客户端 - 实时接收刮削进度
  */
-import { ref, reactive, onUnmounted, computed } from 'vue'
+import { ref, computed } from 'vue'
 
 // WebSocket 消息类型
 export interface WSMessage {
@@ -10,45 +10,6 @@ export interface WSMessage {
   client_id?: string
   payload: any
   timestamp: string
-}
-
-// 任务进度信息
-export interface JobProgress {
-  step: string
-  progress: number
-  message: string
-}
-
-// 需要用户操作的信息
-export interface NeedActionInfo {
-  job_id: string
-  action_type: string
-  options: any
-}
-
-// 历史记录更新信息
-export interface HistoryUpdate {
-  type: 'created' | 'updated' | 'deleted' | 'cleared'
-  record?: any
-  id?: string
-  updates?: any
-  count?: number
-}
-
-// 历史记录详情更新信息（用于详情页实时刷新）
-export interface HistoryDetailUpdate {
-  record_id: string
-  status?: string
-  progress?: number
-  logs?: any[]
-  [key: string]: any
-}
-
-// 历史记录详情日志步骤
-export interface HistoryDetailLogStep {
-  name: string
-  completed: boolean
-  logs: Array<{ level: string; message: string }>
 }
 
 // 事件处理器类型
@@ -61,10 +22,7 @@ interface WebSocketGlobalState {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   heartbeatTimer: ReturnType<typeof setInterval> | null
   isConnected: ReturnType<typeof ref<boolean>>
-  jobProgress: Map<string, JobProgress>
-  pendingActions: Map<string, NeedActionInfo>
   handlers: Set<MessageHandler>
-  historyUpdates: ReturnType<typeof ref<HistoryUpdate[]>>
 }
 
 declare global {
@@ -82,10 +40,7 @@ function getGlobalState(): WebSocketGlobalState {
       reconnectTimer: null,
       heartbeatTimer: null,
       isConnected: ref(false),
-      jobProgress: reactive(new Map()),
-      pendingActions: reactive(new Map()),
       handlers: new Set(),
-      historyUpdates: ref([]),
     }
   }
   return window.__WS_STATE__
@@ -100,53 +55,9 @@ const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${win
 const RECONNECT_DELAY = 3000
 const HEARTBEAT_INTERVAL = 30000
 
-// 进度更新节流配置
-const PROGRESS_THROTTLE_MS = 200
-let progressBuffer: Map<string, JobProgress> = new Map()
-let rafId: number | null = null
-let lastFlushTime = 0
-
-/**
- * 批量刷新进度更新到 state
- */
-function flushProgressUpdates(): void {
-  if (progressBuffer.size === 0) {
-    rafId = null
-    return
-  }
-
-  progressBuffer.forEach((progress, jobId) => {
-    state.jobProgress.set(jobId, progress)
-  })
-  progressBuffer.clear()
-  lastFlushTime = Date.now()
-  rafId = null
-}
-
-/**
- * 节流的进度更新
- */
-function throttledProgressUpdate(jobId: string, payload: JobProgress): void {
-  progressBuffer.set(jobId, payload)
-
-  // 使用 requestAnimationFrame 批量更新，避免阻塞 UI
-  if (!rafId) {
-    const timeSinceLastFlush = Date.now() - lastFlushTime
-    if (timeSinceLastFlush >= PROGRESS_THROTTLE_MS) {
-      // 立即刷新
-      rafId = requestAnimationFrame(flushProgressUpdates)
-    } else {
-      // 延迟刷新
-      rafId = requestAnimationFrame(() => {
-        setTimeout(flushProgressUpdates, PROGRESS_THROTTLE_MS - timeSinceLastFlush)
-      })
-    }
-  }
-}
-
 // Handler 通知节流
 let handlerBuffer: WSMessage[] = []
-let handlerRafId: number | null = null
+let handlerTimer: ReturnType<typeof setTimeout> | null = null
 let handlerLastFlushTime = 0
 
 // Handler 节流配置
@@ -169,8 +80,8 @@ function notifyHandlers(msg: WSMessage): void {
  * 批量通知处理器（用于 job_progress 消息）
  */
 function flushHandlerNotifications(): void {
+  handlerTimer = null
   if (handlerBuffer.length === 0) {
-    handlerRafId = null
     return
   }
 
@@ -187,7 +98,6 @@ function flushHandlerNotifications(): void {
   })
 
   handlerBuffer = []
-  handlerRafId = null
   handlerLastFlushTime = Date.now()
 }
 
@@ -196,17 +106,10 @@ function flushHandlerNotifications(): void {
  */
 function scheduleHandlerNotification(msg: WSMessage): void {
   handlerBuffer.push(msg)
-  if (!handlerRafId) {
+  if (!handlerTimer) {
     const timeSinceLastFlush = Date.now() - handlerLastFlushTime
-    if (timeSinceLastFlush >= HANDLER_THROTTLE_MS) {
-      // 立即刷新
-      handlerRafId = requestAnimationFrame(flushHandlerNotifications)
-    } else {
-      // 延迟刷新
-      handlerRafId = requestAnimationFrame(() => {
-        setTimeout(flushHandlerNotifications, HANDLER_THROTTLE_MS - timeSinceLastFlush)
-      })
-    }
+    const delay = Math.max(0, HANDLER_THROTTLE_MS - timeSinceLastFlush)
+    handlerTimer = setTimeout(flushHandlerNotifications, delay)
   }
 }
 
@@ -289,59 +192,11 @@ function handleMessage(msg: WSMessage): void {
       console.log('[WS] 任务创建:', job_id)
       break
 
-    case 'job_progress':
-      if (job_id && payload) {
-        // 使用节流更新，避免频繁触发 Vue 响应式更新导致 UI 卡死
-        throttledProgressUpdate(job_id, payload as JobProgress)
-      }
-      break
-
-    case 'job_completed':
-      if (job_id) {
-        state.jobProgress.delete(job_id)
-        state.pendingActions.delete(job_id)
-      }
-      break
-
-    case 'job_failed':
-      if (job_id) {
-        state.jobProgress.delete(job_id)
-        state.pendingActions.delete(job_id)
-      }
-      break
-
-    case 'need_action':
-      if (job_id && payload) {
-        state.pendingActions.set(job_id, {
-          job_id,
-          action_type: payload.action_type,
-          options: payload.options,
-        })
-      }
-      break
-
     case 'log':
       // 日志消息，可以在控制台输出或存储
       if (job_id && payload) {
         console.log(`[WS] [${job_id}] ${payload.level}: ${payload.message}`)
       }
-      break
-
-    // 历史记录相关消息
-    case 'history_created':
-      state.historyUpdates.value?.push({ type: 'created', record: payload })
-      break
-
-    case 'history_updated':
-      state.historyUpdates.value?.push({ type: 'updated', id: payload.id, updates: payload })
-      break
-
-    case 'history_deleted':
-      state.historyUpdates.value?.push({ type: 'deleted', id: payload.id })
-      break
-
-    case 'history_cleared':
-      state.historyUpdates.value?.push({ type: 'cleared', count: payload.count })
       break
 
     // 历史记录详情页实时更新（由注册的 handler 处理，这里只做日志）
@@ -356,8 +211,8 @@ function handleMessage(msg: WSMessage): void {
 
   // 通知所有注册的处理器（对 job_progress 消息进行节流）
   if (type === 'job_progress') {
-    // job_progress 消息已通过 throttledProgressUpdate 处理，
-    // 对 handlers 也进行节流，避免频繁调用
+    // Only the registered consumers need progress updates. Coalesce them here
+    // instead of retaining a second, unconsumed global progress cache.
     scheduleHandlerNotification(msg)
   } else {
     // 其他消息立即通知
@@ -389,20 +244,6 @@ function subscribe(jobIds: string[]): void {
  */
 function unsubscribe(jobIds: string[]): void {
   send({ type: 'unsubscribe', job_ids: jobIds })
-}
-
-/**
- * 发送用户操作响应
- */
-function sendUserAction(jobId: string, actionType: string, selection: any): void {
-  send({
-    type: 'user_action',
-    job_id: jobId,
-    action_type: actionType,
-    selection,
-  })
-  // 清除待处理操作
-  state.pendingActions.delete(jobId)
 }
 
 /**
@@ -447,6 +288,11 @@ function disconnect(): void {
     state.reconnectTimer = null
   }
   stopHeartbeat()
+  if (handlerTimer) {
+    clearTimeout(handlerTimer)
+    handlerTimer = null
+  }
+  handlerBuffer = []
   if (state.ws) {
     state.ws.close()
     state.ws = null
@@ -469,59 +315,20 @@ export function useWebSocket() {
     state.handlers.delete(handler)
   }
 
-  // 组件卸载时自动清理
-  onUnmounted(() => {
-    // 不断开全局连接，只清理当前组件的处理器
-  })
-
-  // 获取任务进度
-  const getJobProgress = (jobId: string): JobProgress | undefined => {
-    return state.jobProgress.get(jobId)
-  }
-
-  // 获取待处理操作
-  const getPendingAction = (jobId: string): NeedActionInfo | undefined => {
-    return state.pendingActions.get(jobId)
-  }
-
-  // 消费历史记录更新
-  const consumeHistoryUpdates = (): HistoryUpdate[] => {
-    const updates = [...(state.historyUpdates.value ?? [])]
-    state.historyUpdates.value = []
-    return updates
-  }
-
-  // 清空历史记录更新
-  const clearHistoryUpdates = () => {
-    if (state.historyUpdates.value) {
-      state.historyUpdates.value = []
-    }
-  }
-
   return {
     // 状态
     isConnected: state.isConnected,
     clientId: computed(() => state.clientId),
-    jobProgress: state.jobProgress,
-    pendingActions: state.pendingActions,
-    historyUpdates: state.historyUpdates,
 
     // 方法
     connect,
     disconnect,
     subscribe,
     unsubscribe,
-    sendUserAction,
     send,
 
     // 处理器管理
     registerHandler,
     unregisterHandler,
-
-    // 辅助方法
-    getJobProgress,
-    getPendingAction,
-    consumeHistoryUpdates,
-    clearHistoryUpdates,
   }
 }
