@@ -229,6 +229,8 @@ export function useResponsiveValue<T>(values: {
         return values.tablet ?? values.mobile
       case 'desktop':
         return values.desktop ?? values.tablet ?? values.mobile
+      default:
+        return values.mobile
     }
   })
 }

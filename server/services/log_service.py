@@ -250,7 +250,7 @@ class LogService:
             )
             await db.commit()
 
-            return cursor.rowcount
+            return int(cursor.rowcount)
 
     async def cleanup_old_logs(self) -> int:
         """清理过期日志（根据配置的保留天数）。"""

@@ -255,7 +255,7 @@ jobs:
           echo "✅ 镜像导出成功: $FILENAME"
 
       - name: 上传镜像文件
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: docker-image-${{ matrix.arch }}
           path: mhti-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz
@@ -274,7 +274,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: 设置 Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -293,7 +293,7 @@ jobs:
           ls -lh ../mhti-frontend-*.zip
 
       - name: 上传前端包
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-zip
           path: mhti-frontend-${{ needs.prepare.outputs.version }}.zip
@@ -315,19 +315,19 @@ jobs:
           fetch-depth: 0
 
       - name: 下载 Docker 镜像 (amd64)
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: docker-image-amd64
           path: artifacts/docker-image-amd64
 
       - name: 下载 Docker 镜像 (arm64)
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: docker-image-arm64
           path: artifacts/docker-image-arm64
 
       - name: 下载前端包
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: frontend-zip
           path: artifacts/frontend-zip

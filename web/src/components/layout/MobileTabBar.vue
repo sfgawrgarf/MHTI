@@ -28,7 +28,7 @@ export interface TabBarItem {
   badge?: number | string
 }
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   /** 是否显示徽章动画 */
   animateBadge?: boolean
 }>(), {
