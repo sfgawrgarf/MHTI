@@ -9,7 +9,7 @@ import { RefreshOutline, MenuOutline } from '@vicons/ionicons5'
  * 支持移动端菜单按钮
  */
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   /** 是否显示菜单按钮（移动端） */
   showMenuButton?: boolean
 }>(), {

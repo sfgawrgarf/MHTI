@@ -192,7 +192,7 @@ async function loadSessions() {
   loadingSessions.value = true
   try {
     sessions.value = await authStore.getSessions()
-  } catch (error: any) {
+  } catch {
     message.error('加载会话列表失败')
   } finally {
     loadingSessions.value = false
@@ -209,7 +209,7 @@ async function loadHistory(page = 1) {
     historyTotal.value = result.total
     pagination.value.itemCount = result.total
     pagination.value.page = page
-  } catch (error: any) {
+  } catch {
     message.error('加载登录历史失败')
   } finally {
     loadingHistory.value = false
@@ -228,7 +228,7 @@ async function handleRevokeSession(sessionId: string) {
         await authStore.revokeSession(sessionId)
         message.success('会话已注销')
         await loadSessions()
-      } catch (error: any) {
+      } catch {
         message.error('注销失败')
       }
     },
@@ -247,7 +247,7 @@ async function handleRevokeAll() {
         await authStore.revokeAllSessions()
         message.success('已注销所有其他会话')
         await loadSessions()
-      } catch (error: any) {
+      } catch {
         message.error('注销失败')
       }
     },

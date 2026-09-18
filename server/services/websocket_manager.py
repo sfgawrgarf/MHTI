@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from typing import Any
 
 from fastapi import WebSocket
 
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 class ConnectionManager:
     """WebSocket 连接管理器"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # client_id -> WebSocket
         self.active_connections: dict[str, WebSocket] = {}
         # client_id -> authenticated session_id
@@ -51,7 +52,7 @@ class ConnectionManager:
             if job_id in self.subscriptions:
                 self.subscriptions[job_id].discard(client_id)
 
-    async def send_to_client(self, client_id: str, message: dict) -> bool:
+    async def send_to_client(self, client_id: str, message: dict[str, Any]) -> bool:
         """发送消息给指定客户端"""
         if client_id not in self.active_connections:
             return False
@@ -63,13 +64,13 @@ class ConnectionManager:
             self.disconnect(client_id)
             return False
 
-    async def broadcast_to_job(self, job_id: str, message: dict) -> None:
+    async def broadcast_to_job(self, job_id: str, message: dict[str, Any]) -> None:
         """向订阅了该任务的所有客户端广播消息"""
         client_ids = self.subscriptions.get(job_id, set()).copy()
         for client_id in client_ids:
             await self.send_to_client(client_id, message)
 
-    async def broadcast_all(self, message: dict) -> None:
+    async def broadcast_all(self, message: dict[str, Any]) -> None:
         """向所有连接的客户端广播消息"""
         for client_id in list(self.active_connections.keys()):
             await self.send_to_client(client_id, message)
@@ -92,7 +93,9 @@ class ProgressNotifier:
     def __init__(self, manager: ConnectionManager | None = None):
         self.manager = manager or get_ws_manager()
 
-    def _make_message(self, msg_type: str, job_id: str | None, payload: dict) -> dict:
+    def _make_message(
+        self, msg_type: str, job_id: str | None, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """构造消息"""
         msg = {
             "type": msg_type,
@@ -130,7 +133,7 @@ class ProgressNotifier:
         })
         await self.manager.broadcast_to_job(job_id, msg)
 
-    async def notify_completed(self, job_id: str, result: dict) -> None:
+    async def notify_completed(self, job_id: str, result: dict[str, Any]) -> None:
         """通知任务完成"""
         msg = self._make_message("job_completed", job_id, result)
         await self.manager.broadcast_to_job(job_id, msg)
@@ -149,7 +152,10 @@ class ProgressNotifier:
         await self.manager.broadcast_to_job(job_id, msg)
 
     async def notify_need_action(
-        self, job_id: str, action_type: str, options: list | dict
+        self,
+        job_id: str,
+        action_type: str,
+        options: list[Any] | dict[str, Any],
     ) -> None:
         """通知需要用户操作"""
         msg = self._make_message("need_action", job_id, {
@@ -160,12 +166,14 @@ class ProgressNotifier:
 
     # ========== 历史记录通知 ==========
 
-    async def notify_history_created(self, record: dict) -> None:
+    async def notify_history_created(self, record: dict[str, Any]) -> None:
         """通知新历史记录创建"""
         msg = self._make_message("history_created", None, record)
         await self.manager.broadcast_all(msg)
 
-    async def notify_history_updated(self, record_id: str, updates: dict) -> None:
+    async def notify_history_updated(
+        self, record_id: str, updates: dict[str, Any]
+    ) -> None:
         """通知历史记录更新"""
         msg = self._make_message("history_updated", None, {"id": record_id, **updates})
         await self.manager.broadcast_all(msg)
@@ -183,7 +191,7 @@ class ProgressNotifier:
     # ========== 历史记录详情页实时更新 ==========
 
     async def notify_history_detail_update(
-        self, record_id: str, updates: dict
+        self, record_id: str, updates: dict[str, Any]
     ) -> None:
         """通知历史记录详情更新（用于详情页实时刷新）
 
@@ -202,7 +210,7 @@ class ProgressNotifier:
         await self.manager.broadcast_to_job(record_id, msg)
 
     async def notify_history_detail_log(
-        self, record_id: str, log_step: dict
+        self, record_id: str, log_step: dict[str, Any]
     ) -> None:
         """通知历史记录详情页新增日志步骤
 

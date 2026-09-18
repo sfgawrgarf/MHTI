@@ -14,7 +14,7 @@ import { configApi } from '@/api/config'
 import type { ApiTokenStatus } from '@/api/types'
 import TmdbSetupWizard from '@/components/settings/TmdbSetupWizard.vue'
 
-const props = defineProps<{
+defineProps<{
   // 是否紧凑模式（用于设置页面）
   compact?: boolean
 }>()

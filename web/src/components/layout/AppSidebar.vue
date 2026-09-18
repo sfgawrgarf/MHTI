@@ -17,7 +17,7 @@ import { useTheme } from '@/composables/useTheme'
 import { useAuthStore } from '@/stores/auth'
 import AdminConfigDrawer from './AdminConfigDrawer.vue'
 
-const props = defineProps<{
+defineProps<{
   collapsed?: boolean
 }>()
 
