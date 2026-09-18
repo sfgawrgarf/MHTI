@@ -1362,7 +1362,9 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
         await notifier.notify_failed(job_id, error_msg)
         await history_service.flush_and_clear_log_cache(record_id)
 
-    logger.info(f"ScrapeJob {job_id} completed with status: {job.status}")
+    # ``job`` is the snapshot loaded immediately after the claim and therefore
+    # does not contain the terminal status persisted above.
+    logger.info("ScrapeJob %s processing finished", job_id)
 
 
 async def shutdown_workers() -> None:

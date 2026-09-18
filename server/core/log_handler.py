@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import sys
 from datetime import datetime
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -39,46 +41,73 @@ class DatabaseLogHandler(logging.Handler):
         self._batch_size = batch_size
         self._flush_interval = flush_interval
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._flush_task: asyncio.Task | None = None
+        self._periodic_task: asyncio.Task[None] | None = None
+        self._immediate_task: asyncio.Task[bool] | None = None
         self._flush_lock = asyncio.Lock()
+        self._batch_guard = Lock()
+        self._flush_requested = False
         self._started = False
-
-    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
-        """确保获取事件循环。"""
-        try:
-            return asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.get_event_loop()
+        self._accepting = True
 
     def start(self) -> None:
         """启动定时刷新任务。"""
         if self._started:
             return
 
-        try:
-            self._loop = self._ensure_loop()
-            self._flush_task = self._loop.create_task(self._periodic_flush())
+        self._loop = asyncio.get_running_loop()
+        with self._batch_guard:
+            self._accepting = True
             self._started = True
-        except RuntimeError:
-            # 如果没有运行的事件循环，稍后再启动
-            pass
+        self._periodic_task = self._loop.create_task(self._periodic_flush())
 
-    def stop(self) -> None:
-        """停止处理器并刷新剩余日志。"""
-        self._started = False
-        if self._flush_task:
-            self._flush_task.cancel()
-            self._flush_task = None
+    @property
+    def pending_count(self) -> int:
+        """Return the number of entries still waiting for persistence."""
+        with self._batch_guard:
+            return len(self._batch)
 
-        # 同步刷新剩余日志
-        if self._batch and self._loop:
+    async def aclose(self, retries: int = 3) -> bool:
+        """Stop background work and wait for the final buffered write.
+
+        The handler should be removed from the root logger before this method is
+        called so no new records can arrive while shutdown drains the buffer.
+        """
+        with self._batch_guard:
+            self._accepting = False
+            self._started = False
+
+        if self._periodic_task is not None:
+            self._periodic_task.cancel()
             try:
-                if self._loop.is_running():
-                    asyncio.create_task(self._flush())
-                else:
-                    self._loop.run_until_complete(self._flush())
-            except Exception:
+                await self._periodic_task
+            except asyncio.CancelledError:
                 pass
+            self._periodic_task = None
+
+        if self._immediate_task is not None:
+            try:
+                await self._immediate_task
+            except asyncio.CancelledError:
+                pass
+            self._immediate_task = None
+
+        attempts = max(1, retries)
+        for attempt in range(attempts):
+            if not self.pending_count:
+                self._loop = None
+                return True
+            if await self._flush():
+                self._loop = None
+                return True
+            if attempt + 1 < attempts:
+                await asyncio.sleep(0.05 * (attempt + 1))
+
+        remaining = self.pending_count
+        sys.stderr.write(
+            f"Failed to persist {remaining} buffered database log entries during shutdown\n"
+        )
+        self._loop = None
+        return False
 
     async def _periodic_flush(self) -> None:
         """定时刷新日志到数据库。"""
@@ -88,26 +117,64 @@ class DatabaseLogHandler(logging.Handler):
                 await self._flush()
             except asyncio.CancelledError:
                 break
-            except Exception:
-                pass
 
-    async def _flush(self) -> None:
+    async def _flush(self) -> bool:
         """将缓冲的日志批量写入数据库。"""
         async with self._flush_lock:
-            if not self._batch:
-                return
-
-            batch = self._batch.copy()
-            self._batch.clear()
+            with self._batch_guard:
+                if not self._batch:
+                    return True
+                batch = self._batch
+                self._batch = []
 
             try:
                 await self._log_service.batch_insert(batch)
-            except Exception as e:
+            except asyncio.CancelledError:
+                with self._batch_guard:
+                    self._batch[0:0] = batch
+                raise
+            except Exception as exc:
                 # New entries may have arrived while the database call was in
                 # flight. Restore the failed batch in front of them so the next
                 # periodic flush retries every record in its original order.
-                self._batch[0:0] = batch
-                print(f"Failed to flush logs to database: {e}")
+                with self._batch_guard:
+                    self._batch[0:0] = batch
+                sys.stderr.write(f"Failed to flush logs to database: {exc}\n")
+                return False
+            return True
+
+    def _request_flush(self) -> None:
+        """Request one coalesced immediate flush from any logging thread."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+
+        with self._batch_guard:
+            if not self._started or self._flush_requested:
+                return
+            self._flush_requested = True
+        loop.call_soon_threadsafe(self._launch_immediate_flush)
+
+    def _launch_immediate_flush(self) -> None:
+        """Create the coalesced flush task on the owning event loop."""
+        if not self._started:
+            with self._batch_guard:
+                self._flush_requested = False
+            return
+        if self._immediate_task is None or self._immediate_task.done():
+            self._immediate_task = asyncio.create_task(self._run_immediate_flush())
+
+    async def _run_immediate_flush(self) -> bool:
+        succeeded = await self._flush()
+        request_another = False
+        with self._batch_guard:
+            self._flush_requested = False
+            if succeeded and self._started and len(self._batch) >= self._batch_size:
+                self._flush_requested = True
+                request_another = True
+        if request_another and self._loop is not None:
+            self._loop.call_soon(self._launch_immediate_flush)
+        return succeeded
 
     def emit(self, record: logging.LogRecord) -> None:
         """
@@ -128,97 +195,13 @@ class DatabaseLogHandler(logging.Handler):
                 "user_id": getattr(record, "user_id", None),
             }
 
-            self._batch.append(entry)
-
-            # 达到批量大小时异步刷新
-            if len(self._batch) >= self._batch_size:
-                if self._loop and self._loop.is_running():
-                    asyncio.create_task(self._flush())
-
-            # 如果还没启动，尝试启动
-            if not self._started:
-                self.start()
+            with self._batch_guard:
+                if not self._accepting:
+                    return
+                self._batch.append(entry)
+                should_flush = len(self._batch) >= self._batch_size
+            if should_flush:
+                self._request_flush()
 
         except Exception:
             self.handleError(record)
-
-
-class WebSocketLogHandler(logging.Handler):
-    """
-    将日志推送到 WebSocket 客户端的处理器。
-
-    用于实时日志流功能。
-    """
-
-    def __init__(self, min_level: int = logging.INFO) -> None:
-        """
-        初始化 WebSocket 日志处理器。
-
-        Args:
-            min_level: 最低推送级别
-        """
-        super().__init__()
-        self._min_level = min_level
-        self._subscribers: set[str] = set()  # 订阅的客户端 ID
-        self._ws_manager = None
-
-    def set_ws_manager(self, manager: Any) -> None:
-        """设置 WebSocket 连接管理器。"""
-        self._ws_manager = manager
-
-    def subscribe(self, client_id: str) -> None:
-        """添加日志订阅者。"""
-        self._subscribers.add(client_id)
-
-    def unsubscribe(self, client_id: str) -> None:
-        """移除日志订阅者。"""
-        self._subscribers.discard(client_id)
-
-    def emit(self, record: logging.LogRecord) -> None:
-        """
-        处理日志记录并推送到订阅者。
-
-        Args:
-            record: 日志记录对象
-        """
-        if record.levelno < self._min_level:
-            return
-
-        if not self._subscribers or not self._ws_manager:
-            return
-
-        try:
-            message = {
-                "type": "log",
-                "data": {
-                    "timestamp": datetime.fromtimestamp(record.created).isoformat(),
-                    "level": record.levelname,
-                    "logger": record.name,
-                    "message": self.format(record),
-                },
-            }
-
-            # 异步发送到所有订阅者
-            try:
-                loop = asyncio.get_running_loop()
-                for client_id in self._subscribers.copy():
-                    loop.create_task(
-                        self._ws_manager.send_to_client(client_id, message)
-                    )
-            except RuntimeError:
-                pass
-
-        except Exception:
-            self.handleError(record)
-
-
-# 全局 WebSocket 日志处理器实例
-_ws_log_handler: WebSocketLogHandler | None = None
-
-
-def get_ws_log_handler() -> WebSocketLogHandler:
-    """获取全局 WebSocket 日志处理器。"""
-    global _ws_log_handler
-    if _ws_log_handler is None:
-        _ws_log_handler = WebSocketLogHandler()
-    return _ws_log_handler

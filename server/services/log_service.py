@@ -1,8 +1,6 @@
 """日志服务 - 管理应用日志的存储、查询和配置。"""
 
-import asyncio
 import json
-import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -12,141 +10,42 @@ from server.models.log import (
     LogConfig,
     LogConfigUpdate,
     LogEntry,
-    LogEntryCreate,
     LogLevel,
     LogQuery,
     LogStats,
 )
 
-logger = logging.getLogger(__name__)
-
-
 class LogService:
     """日志服务，提供日志存储、查询和配置管理功能。"""
-
-    def __init__(self) -> None:
-        """初始化日志服务。"""
-        self._batch: list[dict[str, Any]] = []
-        self._batch_lock = asyncio.Lock()
-        self._batch_size = 50
-        self._flush_interval = 5.0  # 秒
-        self._flush_task: asyncio.Task | None = None
-        self._running = False
-
-    async def start(self) -> None:
-        """启动日志服务（启动定时刷新任务）。"""
-        if self._running:
-            return
-        self._running = True
-        self._flush_task = asyncio.create_task(self._periodic_flush())
-        logger.debug("LogService started")
-
-    async def stop(self) -> None:
-        """停止日志服务。"""
-        self._running = False
-        if self._flush_task:
-            self._flush_task.cancel()
-            try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                pass
-        # 刷新剩余日志
-        await self._flush()
-        logger.debug("LogService stopped")
-
-    async def _periodic_flush(self) -> None:
-        """定时刷新日志到数据库。"""
-        while self._running:
-            await asyncio.sleep(self._flush_interval)
-            await self._flush()
-
-    async def _flush(self) -> None:
-        """将缓冲的日志批量写入数据库。"""
-        async with self._batch_lock:
-            if not self._batch:
-                return
-            batch = self._batch.copy()
-            self._batch.clear()
-
-        if not batch:
-            return
-
-        try:
-            manager = await get_db_manager()
-            async with manager.get_connection() as db:
-                await db.executemany(
-                    """
-                    INSERT INTO logs (timestamp, level, logger, message, extra_data, request_id, user_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            entry["timestamp"],
-                            entry["level"],
-                            entry["logger"],
-                            entry["message"],
-                            json.dumps(entry["extra_data"]) if entry["extra_data"] else None,
-                            entry["request_id"],
-                            entry["user_id"],
-                        )
-                        for entry in batch
-                    ],
-                )
-                await db.commit()
-        except Exception as e:
-            logger.error(f"Failed to flush logs to database: {e}")
-
-    async def add_log(self, entry: LogEntryCreate) -> None:
-        """添加一条日志到缓冲区。"""
-        async with self._batch_lock:
-            self._batch.append({
-                "timestamp": entry.timestamp.isoformat(),
-                "level": entry.level.value,
-                "logger": entry.logger,
-                "message": entry.message,
-                "extra_data": entry.extra_data,
-                "request_id": entry.request_id,
-                "user_id": entry.user_id,
-            })
-
-            # 达到批量大小时立即刷新
-            if len(self._batch) >= self._batch_size:
-                batch = self._batch.copy()
-                self._batch.clear()
-
-        # 在锁外执行数据库操作
-        if len(batch) >= self._batch_size if 'batch' in dir() else False:
-            await self._flush()
 
     async def batch_insert(self, entries: list[dict[str, Any]]) -> None:
         """批量插入日志条目。"""
         if not entries:
             return
 
-        try:
-            manager = await get_db_manager()
-            async with manager.get_connection() as db:
-                await db.executemany(
-                    """
-                    INSERT INTO logs (timestamp, level, logger, message, extra_data, request_id, user_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            entry["timestamp"].isoformat() if isinstance(entry["timestamp"], datetime) else entry["timestamp"],
-                            entry["level"],
-                            entry["logger"],
-                            entry["message"],
-                            json.dumps(entry["extra_data"]) if entry.get("extra_data") else None,
-                            entry.get("request_id"),
-                            entry.get("user_id"),
-                        )
-                        for entry in entries
-                    ],
-                )
-                await db.commit()
-        except Exception as e:
-            logger.error(f"Failed to batch insert logs: {e}")
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            await db.executemany(
+                """
+                INSERT INTO logs (timestamp, level, logger, message, extra_data, request_id, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        entry["timestamp"].isoformat()
+                        if isinstance(entry["timestamp"], datetime)
+                        else entry["timestamp"],
+                        entry["level"],
+                        entry["logger"],
+                        entry["message"],
+                        json.dumps(entry["extra_data"]) if entry.get("extra_data") else None,
+                        entry.get("request_id"),
+                        entry.get("user_id"),
+                    )
+                    for entry in entries
+                ],
+            )
+            await db.commit()
 
     async def get_logs(self, query: LogQuery) -> tuple[list[LogEntry], int]:
         """查询日志列表。"""
