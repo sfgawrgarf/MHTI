@@ -14,8 +14,10 @@ class FakeWebSocket {
   onclose: SocketHandler<CloseEvent> = null
   onerror: SocketHandler<Event> = null
   onmessage: SocketHandler<MessageEvent> = null
+  readonly url: string
 
-  constructor(readonly url: string) {
+  constructor(url: string) {
+    this.url = url
     FakeWebSocket.instances.push(this)
   }
 
