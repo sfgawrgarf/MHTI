@@ -53,6 +53,46 @@ async def test_failed_flush_restores_batch_before_newer_entries():
 
 
 @pytest.mark.asyncio
+async def test_failed_flush_keeps_restored_buffer_bounded():
+    log_service = Mock()
+    handler = DatabaseLogHandler(
+        log_service,
+        batch_size=3,
+        max_buffer_size=3,
+    )
+
+    async def fail_after_new_entries(_entries):
+        for index in range(3):
+            handler.emit(_record(f"new-{index}"))
+        raise RuntimeError("database unavailable")
+
+    log_service.batch_insert = AsyncMock(side_effect=fail_after_new_entries)
+    for index in range(3):
+        handler.emit(_record(f"old-{index}"))
+
+    assert await handler._flush() is False
+    assert handler.pending_count == 3
+    assert handler.dropped_count == 3
+    assert [entry["message"] for entry in handler._batch] == [
+        "new-0",
+        "new-1",
+        "new-2",
+    ]
+
+
+def test_database_handler_ignores_aiosqlite_debug_records():
+    handler = DatabaseLogHandler(Mock())
+    record = _record("executing database operation")
+    record.name = "aiosqlite"
+    record.levelno = logging.DEBUG
+    record.levelname = "DEBUG"
+
+    handler.emit(record)
+
+    assert handler.pending_count == 0
+
+
+@pytest.mark.asyncio
 async def test_shutdown_retries_and_waits_for_final_flush():
     log_service = Mock()
     log_service.batch_insert = AsyncMock(

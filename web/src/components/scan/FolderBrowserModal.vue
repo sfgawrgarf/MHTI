@@ -9,6 +9,7 @@ import {
   NIcon,
   NSpin,
   NTag,
+  NPagination,
 } from 'naive-ui'
 import {
   FolderOutline,
@@ -43,6 +44,9 @@ const currentProvider = ref<StorageProvider>('local')
 const currentFileId = ref<string | null>(null)
 // 父目录的 file_id（来自后端响应），返回上级时直接使用
 const parentFileId = ref<string | null>(null)
+const page = ref(1)
+const pageSize = 20
+const total = ref(0)
 
 // 过滤后的目录列表
 const filteredDirs = computed(() => {
@@ -76,12 +80,19 @@ const loadDirectory = async (
   path: string = '',
   provider?: StorageProvider,
   fileId?: string | null,
+  requestedPage: number = 1,
 ) => {
   loading.value = true
   const effectiveProvider = provider ?? currentProvider.value
   const effectiveFileId = fileId !== undefined ? fileId : currentFileId.value
   try {
-    const response = await filesApi.browse(path, 1, 20, effectiveProvider, effectiveFileId)
+    const response = await filesApi.browse(
+      path,
+      requestedPage,
+      pageSize,
+      effectiveProvider,
+      effectiveFileId,
+    )
     currentPath.value = response.current_path
     parentPath.value = response.parent_path
     entries.value = response.entries
@@ -90,6 +101,8 @@ const loadDirectory = async (
     // 优先用后端返回的 file_id（115 子目录必须），fallback 到请求时的值
     currentFileId.value = response.current_file_id ?? effectiveFileId ?? null
     parentFileId.value = response.parent_file_id ?? null
+    page.value = response.page
+    total.value = response.total
   } catch (error) {
     console.error('加载目录失败:', error)
   } finally {
@@ -141,6 +154,10 @@ const goToPath = (path: string) => {
   loadDirectory(path, currentProvider.value, currentFileId.value)
 }
 
+const handlePageChange = (newPage: number) => {
+  loadDirectory(currentPath.value, currentProvider.value, currentFileId.value, newPage)
+}
+
 // 关闭弹窗
 const handleClose = () => {
   emit('update:show', false)
@@ -181,6 +198,8 @@ watch(
       currentProvider.value = 'local'
       currentFileId.value = null
       parentFileId.value = null
+      page.value = 1
+      total.value = 0
       loadDirectory('', 'local', null)
     }
   }
@@ -278,6 +297,14 @@ watch(
             </div>
           </div>
         </NSpin>
+
+        <NPagination
+          v-if="total > pageSize"
+          :page="page"
+          :page-size="pageSize"
+          :item-count="total"
+          @update:page="handlePageChange"
+        />
 
         <!-- 当前选择 -->
         <div class="current-path">

@@ -35,7 +35,7 @@ async def _shutdown_step(
     return None
 
 
-async def _shutdown_application(watcher: Any) -> None:
+async def _shutdown_application(watcher: Any | None) -> None:
     """Run every cleanup stage even when an earlier stage fails."""
     logger.info("Shutting down application...")
 
@@ -43,7 +43,7 @@ async def _shutdown_application(watcher: Any) -> None:
     from server.services.manual_job_service import shutdown_workers as shutdown_manual_workers
 
     await _shutdown_step("manual workers", shutdown_manual_workers())
-    if watcher._running:
+    if watcher is not None and watcher._running:
         await _shutdown_step("watcher", watcher.stop())
     await _shutdown_step("scrape workers", shutdown_scrape_workers())
 
@@ -120,74 +120,73 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     logger.info("Starting application...")
-
-    # Initialize database with connection pool
-    await init_database()
-
-    # Learn confirmed title/episode aliases from historical manual matches.
-    # The backfill is idempotent and never replaces a conflicting alias.
-    from server.services.media_alias_service import MediaAliasService
+    watcher = None
     try:
-        learned_aliases = await MediaAliasService().backfill_confirmed_history()
-        if learned_aliases:
-            logger.info(
-                "Learned %s confirmed media aliases from history",
-                learned_aliases,
-            )
-    except Exception as exc:
-        # Alias learning is an optimization and must never prevent startup.
-        logger.warning("Unable to backfill confirmed media aliases: %s", exc)
+        # Initialize database with connection pool
+        await init_database()
 
-    # Initialize authentication configuration from database
-    from server.core.config import init_auth_config
-    await init_auth_config()
-    logger.info("Authentication configuration loaded from database")
+        # Learn confirmed title/episode aliases from historical manual matches.
+        # The backfill is idempotent and never replaces a conflicting alias.
+        from server.services.media_alias_service import MediaAliasService
+        try:
+            learned_aliases = await MediaAliasService().backfill_confirmed_history()
+            if learned_aliases:
+                logger.info(
+                    "Learned %s confirmed media aliases from history",
+                    learned_aliases,
+                )
+        except Exception as exc:
+            # Alias learning is an optimization and must never prevent startup.
+            logger.warning("Unable to backfill confirmed media aliases: %s", exc)
 
-    # Initialize service container
-    await init_services()
+        # Initialize authentication configuration from database
+        from server.core.config import init_auth_config
+        await init_auth_config()
+        logger.info("Authentication configuration loaded from database")
 
-    # Recover persisted work before the watcher performs its initial scan.
-    from server.services.scrape_job_service import (
-        recover_pending_jobs as recover_scrape_jobs,
-    )
-    from server.services.manual_job_service import (
-        recover_pending_jobs as recover_manual_jobs,
-    )
-    recovered_scrape = await recover_scrape_jobs()
-    recovered_manual = await recover_manual_jobs()
-    if recovered_scrape or recovered_manual:
-        logger.info(
-            "Recovered persisted jobs: scrape=%s, manual=%s",
-            recovered_scrape,
-            recovered_manual,
+        # Initialize service container
+        await init_services()
+
+        # Recover persisted work before the watcher performs its initial scan.
+        from server.services.scrape_job_service import (
+            recover_pending_jobs as recover_scrape_jobs,
         )
+        from server.services.manual_job_service import (
+            recover_pending_jobs as recover_manual_jobs,
+        )
+        recovered_scrape = await recover_scrape_jobs()
+        recovered_manual = await recover_manual_jobs()
+        if recovered_scrape or recovered_manual:
+            logger.info(
+                "Recovered persisted jobs: scrape=%s, manual=%s",
+                recovered_scrape,
+                recovered_manual,
+            )
 
-    # Initialize the direct database log persistence service.
-    from server.core.container import get_log_service
-    log_service = get_log_service()
+        # Initialize the direct database log persistence service.
+        from server.core.container import get_log_service
+        log_service = get_log_service()
 
-    # Apply all persisted logging settings after the database is available.
-    log_config = await log_service.get_config()
-    await logging_runtime.apply(log_config, log_service)
-    try:
-        deleted_logs = await log_service.cleanup_old_logs()
-        if deleted_logs:
-            logger.info("Cleaned up %s expired log entries", deleted_logs)
-    except Exception:
-        logger.exception("Unable to clean up expired logs during startup")
+        # Apply all persisted logging settings after the database is available.
+        log_config = await log_service.get_config()
+        await logging_runtime.apply(log_config, log_service)
+        try:
+            deleted_logs = await log_service.cleanup_old_logs()
+            if deleted_logs:
+                logger.info("Cleaned up %s expired log entries", deleted_logs)
+        except Exception:
+            logger.exception("Unable to clean up expired logs during startup")
 
-    logger.info("Log service started")
+        logger.info("Log service started")
 
-    # Auto-start watcher service if enabled folders exist
-    watcher = get_watcher_service()
-    folders, _ = await watcher.list_folders()
-    if any(f.enabled for f in folders):
-        logger.info("Detected enabled watch folders, starting watcher service")
-        await watcher.start()
+        # Auto-start watcher service if enabled folders exist
+        watcher = get_watcher_service()
+        folders, _ = await watcher.list_folders()
+        if any(f.enabled for f in folders):
+            logger.info("Detected enabled watch folders, starting watcher service")
+            await watcher.start()
 
-    logger.info("Application started successfully")
-
-    try:
+        logger.info("Application started successfully")
         yield
     finally:
         await _shutdown_application(watcher)

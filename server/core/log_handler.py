@@ -173,6 +173,7 @@ class DatabaseLogHandler(logging.Handler):
                 # periodic flush retries every record in its original order.
                 with self._batch_guard:
                     self._batch[0:0] = batch
+                    self._trim_buffer_locked()
                 sys.stderr.write(f"Failed to flush logs to database: {exc}\n")
                 return False
             return True
@@ -218,6 +219,11 @@ class DatabaseLogHandler(logging.Handler):
             record: 日志记录对象
         """
         try:
+            # aiosqlite logs every database operation at DEBUG level. Persisting
+            # those records would make this handler log its own writes forever.
+            if record.name == "aiosqlite" or record.name.startswith("aiosqlite."):
+                return
+
             # 提取日志信息
             entry = {
                 "timestamp": datetime.fromtimestamp(record.created),

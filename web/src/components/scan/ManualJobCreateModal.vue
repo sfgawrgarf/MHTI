@@ -203,17 +203,20 @@ const handleSubmit = async () => {
 watch(() => formData.value.config_reuse_id, (newVal) => {
   if (newVal !== null && globalOrganizeConfig.value) {
     const folder = watchedFolders.value.find((f) => parseInt(f.id) === newVal)
-    if (folder) {
+    if (folder && scanSources.value.length === 0) {
       // 使用监控目录路径作为扫描路径
       formData.value.scan_path = folder.path
+      scanLocator.value = null
     }
     // 使用全局配置填充整理目录和元数据目录
     const config = globalOrganizeConfig.value
     if (config.organize_dir) {
       formData.value.target_folder = config.organize_dir
+      targetLocator.value = null
     }
     if (config.metadata_dir) {
       formData.value.metadata_dir = config.metadata_dir
+      metadataLocator.value = null
     }
     // 设置整理模式
     const modeMap: Record<string, LinkMode> = {
@@ -261,6 +264,12 @@ const handleScanPathLocator = (locator: StorageLocator) => {
 // 处理整理目录选择
 const handleTargetFolderConfirm = (path: string) => {
   formData.value.target_folder = path
+  targetLocator.value = null
+}
+
+const handleTargetFolderInput = (path: string) => {
+  formData.value.target_folder = path
+  targetLocator.value = null
 }
 
 const handleTargetFolderLocator = (locator: StorageLocator) => {
@@ -270,6 +279,12 @@ const handleTargetFolderLocator = (locator: StorageLocator) => {
 // 处理元数据目录选择
 const handleMetadataDirConfirm = (path: string) => {
   formData.value.metadata_dir = path
+  metadataLocator.value = null
+}
+
+const handleMetadataDirInput = (path: string) => {
+  formData.value.metadata_dir = path
+  metadataLocator.value = null
 }
 
 const handleMetadataDirLocator = (locator: StorageLocator) => {
@@ -347,8 +362,9 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
             <NFormItem label="整理目录" required>
               <div class="path-input">
                 <NInput
-                  v-model:value="formData.target_folder"
+                  :value="formData.target_folder"
                   placeholder="请输入整理结果存放目录"
+                  @update:value="handleTargetFolderInput"
                 />
                 <NButton @click="showTargetFolderBrowser = true">
                   <template #icon>
@@ -361,8 +377,9 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
             <NFormItem label="元数据目录">
               <div class="path-input">
                 <NInput
-                  v-model:value="formData.metadata_dir"
+                  :value="formData.metadata_dir"
                   placeholder="请输入元数据存放目录（可选）"
+                  @update:value="handleMetadataDirInput"
                 />
                 <NButton @click="showMetadataDirBrowser = true">
                   <template #icon>
