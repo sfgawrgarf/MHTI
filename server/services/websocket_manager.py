@@ -1,79 +1,170 @@
 """WebSocket 连接管理器 - 实时推送刮削进度"""
 
+import asyncio
 import logging
 from datetime import datetime
-from typing import Any
-
-from fastapi import WebSocket
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
+
+
+class ManagedWebSocket(Protocol):
+    async def send_json(self, message: dict[str, Any]) -> None: ...
+
+    async def close(self, *, code: int = 1000, reason: str | None = None) -> None: ...
 
 
 class ConnectionManager:
     """WebSocket 连接管理器"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        send_timeout: float = 5.0,
+        max_subscriptions_per_client: int = 500,
+    ) -> None:
         # client_id -> WebSocket
-        self.active_connections: dict[str, WebSocket] = {}
+        self.active_connections: dict[str, ManagedWebSocket] = {}
         # client_id -> authenticated session_id
         self.client_sessions: dict[str, str] = {}
         # job_id -> set of client_ids (订阅关系)
         self.subscriptions: dict[str, set[str]] = {}
+        # Starlette WebSocket writes must be serialized per connection.
+        self._send_locks: dict[str, asyncio.Lock] = {}
+        self._send_timeout = send_timeout
+        self._max_subscriptions_per_client = max_subscriptions_per_client
 
-    def connect(self, client_id: str, websocket: WebSocket, session_id: str) -> None:
+    def connect(
+        self,
+        client_id: str,
+        websocket: ManagedWebSocket,
+        session_id: str,
+    ) -> None:
         """Register a connection only after the endpoint authenticated it."""
         self.active_connections[client_id] = websocket
         self.client_sessions[client_id] = session_id
+        self._send_locks[client_id] = asyncio.Lock()
         logger.info(f"WebSocket 连接: {client_id}")
 
     def disconnect(self, client_id: str) -> None:
         """断开连接"""
-        if client_id in self.active_connections:
-            del self.active_connections[client_id]
-            self.client_sessions.pop(client_id, None)
-            # 清理订阅关系
-            for job_id in list(self.subscriptions.keys()):
-                self.subscriptions[job_id].discard(client_id)
-                if not self.subscriptions[job_id]:
-                    del self.subscriptions[job_id]
+        was_connected = self.active_connections.pop(client_id, None) is not None
+        self.client_sessions.pop(client_id, None)
+        self._send_locks.pop(client_id, None)
+        # 清理订阅关系
+        for job_id in list(self.subscriptions.keys()):
+            self.subscriptions[job_id].discard(client_id)
+            if not self.subscriptions[job_id]:
+                del self.subscriptions[job_id]
+        if was_connected:
             logger.info(f"WebSocket 断开: {client_id}")
 
-    def subscribe(self, client_id: str, job_ids: list[str]) -> None:
+    def subscribe(self, client_id: str, job_ids: list[str]) -> list[str]:
         """订阅任务进度"""
-        for job_id in job_ids:
+        if client_id not in self.active_connections:
+            return []
+
+        subscribed_count = sum(
+            client_id in subscribers for subscribers in self.subscriptions.values()
+        )
+        accepted: list[str] = []
+        for job_id in dict.fromkeys(job_ids):
+            subscribers = self.subscriptions.get(job_id)
+            if subscribers is not None and client_id in subscribers:
+                accepted.append(job_id)
+                continue
+            if subscribed_count >= self._max_subscriptions_per_client:
+                break
             if job_id not in self.subscriptions:
                 self.subscriptions[job_id] = set()
             self.subscriptions[job_id].add(client_id)
-        logger.debug(f"客户端 {client_id} 订阅任务: {job_ids}")
+            subscribed_count += 1
+            accepted.append(job_id)
+        logger.debug(f"客户端 {client_id} 订阅任务: {accepted}")
+        return accepted
 
     def unsubscribe(self, client_id: str, job_ids: list[str]) -> None:
         """取消订阅"""
         for job_id in job_ids:
             if job_id in self.subscriptions:
                 self.subscriptions[job_id].discard(client_id)
+                if not self.subscriptions[job_id]:
+                    del self.subscriptions[job_id]
 
     async def send_to_client(self, client_id: str, message: dict[str, Any]) -> bool:
         """发送消息给指定客户端"""
-        if client_id not in self.active_connections:
+        websocket = self.active_connections.get(client_id)
+        send_lock = self._send_locks.get(client_id)
+        if websocket is None or send_lock is None:
             return False
         try:
-            await self.active_connections[client_id].send_json(message)
-            return True
+            async with send_lock:
+                # The connection may have been removed while this send waited.
+                if self.active_connections.get(client_id) is not websocket:
+                    return False
+                await asyncio.wait_for(
+                    websocket.send_json(message),
+                    timeout=self._send_timeout,
+                )
+                return True
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"发送消息失败 {client_id}: {e}")
-            self.disconnect(client_id)
+            await self.close_client(
+                client_id,
+                code=1011,
+                reason="WebSocket send failed",
+            )
             return False
+
+    async def close_client(
+        self,
+        client_id: str,
+        *,
+        code: int = 1000,
+        reason: str | None = None,
+    ) -> bool:
+        """Serialize connection close with all other writes for this client."""
+        websocket = self.active_connections.get(client_id)
+        send_lock = self._send_locks.get(client_id)
+        if websocket is None or send_lock is None:
+            return False
+
+        closed = False
+        try:
+            async with send_lock:
+                if self.active_connections.get(client_id) is not websocket:
+                    return False
+                await asyncio.wait_for(
+                    websocket.close(code=code, reason=reason),
+                    timeout=self._send_timeout,
+                )
+                closed = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("关闭 WebSocket 失败 %s: %s", client_id, exc)
+        finally:
+            if self.active_connections.get(client_id) is websocket:
+                self.disconnect(client_id)
+        return closed
 
     async def broadcast_to_job(self, job_id: str, message: dict[str, Any]) -> None:
         """向订阅了该任务的所有客户端广播消息"""
         client_ids = self.subscriptions.get(job_id, set()).copy()
-        for client_id in client_ids:
-            await self.send_to_client(client_id, message)
+        if client_ids:
+            await asyncio.gather(
+                *(self.send_to_client(client_id, message) for client_id in client_ids)
+            )
 
     async def broadcast_all(self, message: dict[str, Any]) -> None:
         """向所有连接的客户端广播消息"""
-        for client_id in list(self.active_connections.keys()):
-            await self.send_to_client(client_id, message)
+        client_ids = list(self.active_connections.keys())
+        if client_ids:
+            await asyncio.gather(
+                *(self.send_to_client(client_id, message) for client_id in client_ids)
+            )
 
 # 全局单例
 _manager: ConnectionManager | None = None

@@ -611,7 +611,13 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
             and job.scan_locator.provider == StorageProvider.P115
         )
 
-        if is_p115_source:
+        if is_p115_source and not job.scan_locator.is_dir:
+            # A selected 115 file already carries the provider identifiers needed
+            # by the scraper; treating its file_id as a directory would return an
+            # empty or invalid provider scan.
+            files = [job.scan_path]
+            scan_result = []
+        elif is_p115_source:
             scan_result = await file_service.scan_folder_async(
                 job.scan_locator.path or job.scan_path,
                 locator=job.scan_locator,
@@ -646,13 +652,16 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
             # 115 源文件需要构造 file_locator，携带 file_id 以便刮削下载
             file_locator = None
             if is_p115_source:
-                scanned = next((f for f in scan_result if f.path == file_path), None)
-                if scanned is not None:
-                    file_locator = _build_file_locator_from_scan(
-                        job.scan_locator,
-                        scanned,
-                        file_path,
-                    )
+                if not job.scan_locator.is_dir:
+                    file_locator = job.scan_locator
+                else:
+                    scanned = next((f for f in scan_result if f.path == file_path), None)
+                    if scanned is not None:
+                        file_locator = _build_file_locator_from_scan(
+                            job.scan_locator,
+                            scanned,
+                            file_path,
+                        )
             job_create = ScrapeJobCreate(
                 file_path=file_path,
                 output_dir=job.target_folder,

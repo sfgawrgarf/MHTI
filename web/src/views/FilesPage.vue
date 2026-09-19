@@ -6,6 +6,7 @@ import {
   NButton,
   NDataTable,
   NInput,
+  NCheckbox,
   NIcon,
   NPagination,
   NBreadcrumb,
@@ -26,12 +27,19 @@ import {
   CloudOutline,
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
-import type { DirectoryEntry, StorageProvider, StorageLocator } from '@/api/types'
+import type {
+  DirectoryEntry,
+  ManualJobScanSource,
+  StorageProvider,
+  StorageLocator,
+} from '@/api/types'
 import EmptyState from '@/components/common/EmptyState.vue'
 import TouchCard from '@/components/common/TouchCard.vue'
 import PageSkeleton from '@/components/common/PageSkeleton.vue'
 import ManualJobCreateModal from '@/components/scan/ManualJobCreateModal.vue'
 import { useMobileLayout } from '@/composables/useMobileLayout'
+import { updatePathSelection } from '@/utils/pathSelection'
+import { resolveBreadcrumbBrowseTarget } from '@/utils/storageNavigation'
 
 const route = useRoute()
 const router = useRouter()
@@ -57,6 +65,7 @@ const parentFileId = ref<string | null>(null)
 const showCreateModal = ref(false)
 const createTaskPath = ref('')
 const createTaskLocator = ref<StorageLocator | null>(null)
+const createTaskSources = ref<ManualJobScanSource[]>([])
 
 // 从 URL 获取初始路径
 const initPath = computed(() => (route.query.root as string) || '')
@@ -253,18 +262,8 @@ const goToPath = (path: string) => {
   page.value = 1
   search.value = ''
   checkedRowKeys.value = []
-  // "根目录"面包屑 → 回到本地根（最顶层，含盘符 + 115 入口），无论当前 provider
-  if (path === '') {
-    loadDirectory('', 1, 'local', null)
-    return
-  }
-  // 115 根层级（/115网盘）→ file_id 固定为 '0'
-  if (path === '/115网盘') {
-    loadDirectory('/115网盘', 1, '115', '0')
-    return
-  }
-  // 本地其他层级：直接按 path 加载
-  loadDirectory(path, 1, currentProvider.value, currentFileId.value)
+  const target = resolveBreadcrumbBrowseTarget(path, currentProvider.value)
+  loadDirectory(path, 1, target.provider, target.fileId)
 }
 
 // 返回根目录
@@ -284,6 +283,14 @@ const handleCheckedRowKeysChange = (keys: DataTableRowKey[]) => {
   checkedRowKeys.value = keys
 }
 
+const isEntryChecked = (entry: DirectoryEntry) => {
+  return checkedRowKeys.value.some((key) => String(key) === entry.path)
+}
+
+const handleMobileCheckedChange = (entry: DirectoryEntry, checked: boolean) => {
+  checkedRowKeys.value = updatePathSelection(checkedRowKeys.value, entry.path, checked)
+}
+
 // 构造当前 provider 的 StorageLocator
 const buildLocatorFor = (path: string, fileId: string | null | undefined): StorageLocator => {
   if (currentProvider.value === '115') {
@@ -294,15 +301,35 @@ const buildLocatorFor = (path: string, fileId: string | null | undefined): Stora
 
 // 为文件夹创建任务
 const createTaskForFolder = (entry: DirectoryEntry) => {
+  const locator = buildLocatorFor(entry.path, entry.file_id)
   createTaskPath.value = entry.path
-  createTaskLocator.value = buildLocatorFor(entry.path, entry.file_id)
+  createTaskLocator.value = locator
+  createTaskSources.value = [{
+    path: entry.path,
+    locator: { ...locator, parent_id: entry.parent_id, is_dir: true },
+  }]
   showCreateModal.value = true
 }
 
-// 批量创建任务（使用当前路径）
+// 为当前勾选的文件或目录分别创建任务
 const createTaskForSelected = () => {
-  createTaskPath.value = currentPath.value
-  createTaskLocator.value = buildLocatorFor(currentPath.value, currentFileId.value)
+  const selectedKeys = new Set(checkedRowKeys.value.map(String))
+  const selectedEntries = entries.value.filter((entry) => selectedKeys.has(entry.path))
+  if (selectedEntries.length === 0) {
+    message.warning('请先选择要创建任务的条目')
+    return
+  }
+  createTaskSources.value = selectedEntries.map((entry) => ({
+    path: entry.path,
+    locator: {
+      ...buildLocatorFor(entry.path, entry.file_id),
+      parent_id: entry.parent_id,
+      is_dir: entry.is_dir,
+    },
+  }))
+  const firstSource = createTaskSources.value[0]
+  createTaskPath.value = firstSource?.path ?? ''
+  createTaskLocator.value = firstSource?.locator ?? null
   showCreateModal.value = true
 }
 
@@ -402,7 +429,7 @@ loadDirectory(initPath.value, initPage.value, 'local', null)
           <span class="selected-count">已选中 {{ checkedRowKeys.length }} 个条目</span>
           <NButton
             type="primary"
-            :disabled="!currentPath"
+            :disabled="checkedRowKeys.length === 0"
             @click="createTaskForSelected"
           >
             <template #icon>
@@ -440,6 +467,12 @@ loadDirectory(initPath.value, initPage.value, 'local', null)
             </div>
             <template #suffix>
               <div class="file-actions">
+                <div class="mobile-selection" @click.stop>
+                  <NCheckbox
+                    :checked="isEntryChecked(entry)"
+                    @update:checked="handleMobileCheckedChange(entry, $event)"
+                  />
+                </div>
                 <NButton
                   v-if="entry.is_dir"
                   size="tiny"
@@ -498,6 +531,7 @@ loadDirectory(initPath.value, initPage.value, 'local', null)
       v-model:show="showCreateModal"
       :initial-scan-path="createTaskPath"
       :initial-scan-locator="createTaskLocator"
+      :initial-scan-sources="createTaskSources"
       @success="handleCreateSuccess"
     />
   </div>

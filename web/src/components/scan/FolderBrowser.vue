@@ -11,6 +11,7 @@ import {
   NEmpty,
   NInputGroup,
   NTag,
+  NPagination,
   useMessage,
 } from 'naive-ui'
 import {
@@ -26,10 +27,12 @@ const props = withDefaults(defineProps<{
   modelValue?: string
   show?: boolean
   title?: string
+  locator?: StorageLocator | null
 }>(), {
   modelValue: '',
   show: false,
   title: '选择文件夹',
+  locator: null,
 })
 
 const emit = defineEmits<{
@@ -50,6 +53,9 @@ const currentProvider = ref<StorageProvider>('local')
 const currentFileId = ref<string | null>(null)
 // 父目录的 file_id（来自后端响应），返回上级时直接使用，无需前端维护栈
 const parentFileId = ref<string | null>(null)
+const page = ref(1)
+const pageSize = 20
+const total = ref(0)
 
 // 双向绑定
 const selectedPath = computed({
@@ -62,12 +68,19 @@ const loadDirectory = async (
   path: string = '',
   provider?: StorageProvider,
   fileId?: string | null,
+  requestedPage: number = 1,
 ) => {
   loading.value = true
   const effectiveProvider = provider ?? currentProvider.value
   const effectiveFileId = fileId !== undefined ? fileId : currentFileId.value
   try {
-    const response = await filesApi.browse(path, 1, 20, effectiveProvider, effectiveFileId)
+    const response = await filesApi.browse(
+      path,
+      requestedPage,
+      pageSize,
+      effectiveProvider,
+      effectiveFileId,
+    )
     currentPath.value = response.current_path
     parentPath.value = response.parent_path
     entries.value = response.entries
@@ -76,6 +89,8 @@ const loadDirectory = async (
     // 优先用后端返回的 file_id（115 子目录必须），fallback 到请求时的值
     currentFileId.value = response.current_file_id ?? effectiveFileId ?? null
     parentFileId.value = response.parent_file_id ?? null
+    page.value = response.page
+    total.value = response.total
   } catch (error: any) {
     message.error(error?.response?.data?.error?.message || '加载目录失败')
     console.error(error)
@@ -115,7 +130,11 @@ const goUp = () => {
 
 // 刷新
 const refresh = () => {
-  loadDirectory(currentPath.value)
+  loadDirectory(currentPath.value, currentProvider.value, currentFileId.value, page.value)
+}
+
+const handlePageChange = (newPage: number) => {
+  loadDirectory(currentPath.value, currentProvider.value, currentFileId.value, newPage)
 }
 
 // 通过输入路径跳转（仅本地支持手动输入跳转）
@@ -175,11 +194,18 @@ watch(
   () => props.show,
   (newShow) => {
     if (newShow) {
-      // 重置为本地根开始浏览
-      currentProvider.value = 'local'
-      currentFileId.value = null
+      const selectedLocator =
+        props.locator?.path === props.modelValue ? props.locator : null
+      currentProvider.value = selectedLocator?.provider ?? 'local'
+      currentFileId.value = selectedLocator?.file_id ?? null
       parentFileId.value = null
-      loadDirectory(props.modelValue || '', 'local', null)
+      page.value = 1
+      loadDirectory(
+        props.modelValue || '',
+        currentProvider.value,
+        currentFileId.value,
+        1,
+      )
     }
   },
   { immediate: true }
@@ -259,6 +285,14 @@ watch(
             </div>
           </div>
         </NSpin>
+
+        <NPagination
+          v-if="total > pageSize"
+          :page="page"
+          :page-size="pageSize"
+          :item-count="total"
+          @update:page="handlePageChange"
+        />
 
         <!-- 选择按钮 -->
         <NButton

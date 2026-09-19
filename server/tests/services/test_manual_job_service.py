@@ -588,3 +588,57 @@ async def test_execute_job_builds_file_locator_for_p115_source(
     assert forwarded.file_locator.is_dir is False
     assert forwarded.output_locator == target_locator
     assert forwarded.metadata_locator == metadata_locator
+
+
+@pytest.mark.asyncio
+async def test_execute_job_uses_selected_p115_file_without_directory_scan(
+    temp_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A selected 115 file is dispatched directly with its locator."""
+    await _initialize_test_db(temp_db)
+    monkeypatch.setattr(manual_job_service_module, "_ensure_worker", lambda: None)
+
+    created_jobs: list[ScrapeJobCreate] = []
+
+    class FakeScrapeJobService:
+        async def create_job(self, job: ScrapeJobCreate):
+            created_jobs.append(job)
+            return None
+
+    monkeypatch.setattr(
+        scrape_job_service_module,
+        "ScrapeJobService",
+        FakeScrapeJobService,
+    )
+
+    from server.services import file_service as file_service_module
+
+    class FakeFileService:
+        async def scan_folder_async(self, folder_path, locator=None):
+            raise AssertionError("a selected provider file must not be scanned as a folder")
+
+    monkeypatch.setattr(file_service_module, "FileService", FakeFileService)
+
+    service = ManualJobService(db_path=temp_db)
+    file_locator = _build_locator(
+        path="/115网盘/待整理/S01E01.mkv",
+        file_id="300",
+        parent_id="scan-root",
+        is_dir=False,
+    )
+    created = await service.create_job(
+        ManualJobCreate(
+            scan_path=file_locator.path,
+            target_folder="/library",
+            scan_locator=file_locator,
+            allow_local_output=True,
+        )
+    )
+
+    await manual_job_service_module._execute_job(service, created.id)
+
+    assert len(created_jobs) == 1
+    forwarded = created_jobs[0]
+    assert forwarded.file_path == file_locator.path
+    assert forwarded.file_locator == file_locator

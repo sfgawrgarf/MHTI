@@ -25,6 +25,7 @@ class FakeWebSocket {
 
   close(): void {
     this.readyState = FakeWebSocket.CLOSED
+    this.onclose?.({ code: 1000 } as CloseEvent)
   }
 
   receive(message: object): void {
@@ -107,5 +108,32 @@ describe('useWebSocket message lifecycle', () => {
     client.disconnect()
     vi.advanceTimersByTime(100)
     expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not deliver buffered progress after a terminal message', async () => {
+    const { useWebSocket } = await import('./useWebSocket')
+    const client = useWebSocket()
+    const handler = vi.fn<(message: TestMessage) => void>()
+    client.registerHandler(handler)
+    client.connect()
+    const socket = FakeWebSocket.instances[0]!
+
+    socket.receive({ type: 'job_progress', job_id: 'one', payload: { progress: 90 } })
+    socket.receive({ type: 'job_completed', job_id: 'one', payload: { status: 'success' } })
+    vi.advanceTimersByTime(100)
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler.mock.calls[0]![0].type).toBe('job_completed')
+  })
+
+  it('does not reconnect after an intentional disconnect', async () => {
+    const { useWebSocket } = await import('./useWebSocket')
+    const client = useWebSocket()
+    client.connect()
+
+    client.disconnect()
+    vi.advanceTimersByTime(3000)
+
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 })

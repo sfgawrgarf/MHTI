@@ -8,6 +8,7 @@ from fastapi.responses import PlainTextResponse
 
 from server.core.auth import require_auth
 from server.core.container import get_log_service
+from server.core.logging_runtime import get_logging_runtime
 from server.models.log import (
     LogConfigUpdate,
     LogEntry,
@@ -153,6 +154,7 @@ async def update_log_config(
     支持部分更新，只需传入要修改的字段。
     """
     config = await log_service.update_config(update)
+    await get_logging_runtime().apply(config, log_service)
     return {
         "log_level": config.log_level.value,
         "console_enabled": config.console_enabled,

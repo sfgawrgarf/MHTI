@@ -9,6 +9,7 @@ import {
   NIcon,
   NSpin,
   NTag,
+  NPagination,
 } from 'naive-ui'
 import {
   FolderOutline,
@@ -20,6 +21,7 @@ import {
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
 import type { DirectoryEntry, StorageLocator, StorageProvider } from '@/api/types'
+import { resolveBreadcrumbBrowseTarget } from '@/utils/storageNavigation'
 
 const props = defineProps<{
   show: boolean
@@ -43,6 +45,9 @@ const currentProvider = ref<StorageProvider>('local')
 const currentFileId = ref<string | null>(null)
 // 父目录的 file_id（来自后端响应），返回上级时直接使用
 const parentFileId = ref<string | null>(null)
+const page = ref(1)
+const pageSize = 20
+const total = ref(0)
 
 // 过滤后的目录列表
 const filteredDirs = computed(() => {
@@ -76,12 +81,19 @@ const loadDirectory = async (
   path: string = '',
   provider?: StorageProvider,
   fileId?: string | null,
+  requestedPage: number = 1,
 ) => {
   loading.value = true
   const effectiveProvider = provider ?? currentProvider.value
   const effectiveFileId = fileId !== undefined ? fileId : currentFileId.value
   try {
-    const response = await filesApi.browse(path, 1, 20, effectiveProvider, effectiveFileId)
+    const response = await filesApi.browse(
+      path,
+      requestedPage,
+      pageSize,
+      effectiveProvider,
+      effectiveFileId,
+    )
     currentPath.value = response.current_path
     parentPath.value = response.parent_path
     entries.value = response.entries
@@ -90,6 +102,8 @@ const loadDirectory = async (
     // 优先用后端返回的 file_id（115 子目录必须），fallback 到请求时的值
     currentFileId.value = response.current_file_id ?? effectiveFileId ?? null
     parentFileId.value = response.parent_file_id ?? null
+    page.value = response.page
+    total.value = response.total
   } catch (error) {
     console.error('加载目录失败:', error)
   } finally {
@@ -127,18 +141,12 @@ const goUp = () => {
 
 // 跳转到指定路径（面包屑用）
 const goToPath = (path: string) => {
-  // "根目录"面包屑 → 回到本地根（最顶层，含盘符 + 115 入口），无论当前 provider
-  if (path === '') {
-    loadDirectory('', 'local', null)
-    return
-  }
-  // 115 根层级（/115网盘）→ file_id 固定为 '0'
-  if (path === '/115网盘') {
-    loadDirectory('/115网盘', '115', '0')
-    return
-  }
-  // 本地其他层级：直接按 path 加载
-  loadDirectory(path, currentProvider.value, currentFileId.value)
+  const target = resolveBreadcrumbBrowseTarget(path, currentProvider.value)
+  loadDirectory(path, target.provider, target.fileId)
+}
+
+const handlePageChange = (newPage: number) => {
+  loadDirectory(currentPath.value, currentProvider.value, currentFileId.value, newPage)
 }
 
 // 关闭弹窗
@@ -181,6 +189,8 @@ watch(
       currentProvider.value = 'local'
       currentFileId.value = null
       parentFileId.value = null
+      page.value = 1
+      total.value = 0
       loadDirectory('', 'local', null)
     }
   }
@@ -278,6 +288,14 @@ watch(
             </div>
           </div>
         </NSpin>
+
+        <NPagination
+          v-if="total > pageSize"
+          :page="page"
+          :page-size="pageSize"
+          :item-count="total"
+          @update:page="handlePageChange"
+        />
 
         <!-- 当前选择 -->
         <div class="current-path">

@@ -70,6 +70,14 @@ async def scan_folder(
 
     files = await file_service.scan_folder_async(request.folder_path)
 
+    if not request.exclude_scraped:
+        return ScanResponse(
+            folder_path=request.folder_path,
+            total_files=len(files),
+            files=files,
+            scraped_count=0,
+        )
+
     # 计算文件指纹并过滤已刮削的文件
     fingerprint_map = await run_file_io(_fingerprints, files)
 
@@ -78,16 +86,18 @@ async def scan_folder(
         list(fingerprint_map.values())
     )
 
-    # 过滤掉已刮削的文件
+    # 只排除能够确定指纹已存在的文件。无法计算指纹时仍返回该文件。
     filtered_files = [
         f for f in files
         if fingerprint_map.get(f.path) not in existing_fps
     ]
+    scraped_count = len(files) - len(filtered_files)
 
     return ScanResponse(
         folder_path=request.folder_path,
         total_files=len(filtered_files),
         files=filtered_files,
+        scraped_count=scraped_count,
     )
 
 
