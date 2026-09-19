@@ -3,11 +3,15 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any
-
-from fastapi import WebSocket
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
+
+
+class ManagedWebSocket(Protocol):
+    async def send_json(self, message: dict[str, Any]) -> None: ...
+
+    async def close(self, *, code: int = 1000, reason: str | None = None) -> None: ...
 
 
 class ConnectionManager:
@@ -20,7 +24,7 @@ class ConnectionManager:
         max_subscriptions_per_client: int = 500,
     ) -> None:
         # client_id -> WebSocket
-        self.active_connections: dict[str, WebSocket] = {}
+        self.active_connections: dict[str, ManagedWebSocket] = {}
         # client_id -> authenticated session_id
         self.client_sessions: dict[str, str] = {}
         # job_id -> set of client_ids (订阅关系)
@@ -30,7 +34,12 @@ class ConnectionManager:
         self._send_timeout = send_timeout
         self._max_subscriptions_per_client = max_subscriptions_per_client
 
-    def connect(self, client_id: str, websocket: WebSocket, session_id: str) -> None:
+    def connect(
+        self,
+        client_id: str,
+        websocket: ManagedWebSocket,
+        session_id: str,
+    ) -> None:
         """Register a connection only after the endpoint authenticated it."""
         self.active_connections[client_id] = websocket
         self.client_sessions[client_id] = session_id
@@ -88,10 +97,6 @@ class ConnectionManager:
         send_lock = self._send_locks.get(client_id)
         if websocket is None or send_lock is None:
             return False
-        # Keep the narrowed types explicit for incremental mypy runs where the
-        # FastAPI import is intentionally skipped and therefore becomes Any.
-        assert websocket is not None
-        assert send_lock is not None
         try:
             async with send_lock:
                 # The connection may have been removed while this send waited.
