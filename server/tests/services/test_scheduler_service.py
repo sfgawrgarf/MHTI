@@ -4,10 +4,11 @@ import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
+from pydantic import ValidationError
 import pytest
 
 from server.core.db.connection import db_connection
-from server.models.scheduler import ScheduledTaskCreate, ScheduledTaskUpdate
+from server.models.scheduler import ScheduledTask, ScheduledTaskCreate, ScheduledTaskUpdate
 from server.services.scheduler_service import SchedulerService
 
 
@@ -36,6 +37,92 @@ async def test_invalid_cron_is_rejected_on_create_and_update(temp_db) -> None:
             task.id,
             ScheduledTaskUpdate(cron_expression="still-not-a-cron"),
         )
+
+
+@pytest.mark.parametrize("field", ["name", "folder_path", "cron_expression"])
+def test_create_task_rejects_blank_required_fields(field: str) -> None:
+    values = {
+        "name": "nightly",
+        "folder_path": "/media/tv",
+        "cron_expression": "0 2 * * *",
+    }
+    values[field] = "   "
+
+    with pytest.raises(ValidationError):
+        ScheduledTaskCreate(**values)
+
+
+@pytest.mark.asyncio
+async def test_p115_folder_is_rejected_but_similar_local_prefix_is_allowed(temp_db) -> None:
+    service = SchedulerService(temp_db)
+
+    with pytest.raises(ValueError, match="115"):
+        await service.create_task(
+            ScheduledTaskCreate(
+                name="cloud",
+                folder_path="/115网盘/电视剧",
+                cron_expression="0 2 * * *",
+            )
+        )
+
+    task = await service.create_task(
+        ScheduledTaskCreate(
+            name="local backup",
+            folder_path="/115网盘备份",
+            cron_expression="0 2 * * *",
+        )
+    )
+    assert task.folder_path == "/115网盘备份"
+
+    with pytest.raises(ValueError, match="115"):
+        await service.update_task(
+            task.id,
+            ScheduledTaskUpdate(folder_path="/115网盘/电影"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_legacy_invalid_tasks_are_disabled_during_initialization(temp_db) -> None:
+    seed = SchedulerService(temp_db)
+    await seed._ensure_db()
+    now = datetime.now().isoformat()
+    async with db_connection(temp_db) as db:
+        await db.executemany(
+            """INSERT INTO scheduled_tasks
+               (id, name, folder_path, cron_expression, enabled, next_run, created_at)
+               VALUES (?, ?, ?, ?, 1, NULL, ?)""",
+            [
+                ("bad-cron", "bad cron", "/media/tv", "not-a-cron", now),
+                ("blank-path", "blank", "   ", "0 2 * * *", now),
+                ("cloud-path", "cloud", "/115网盘/电视剧", "0 2 * * *", now),
+            ],
+        )
+        await db.commit()
+
+    service = SchedulerService(temp_db)
+    tasks = await service.list_tasks()
+
+    assert {task.id for task in tasks if not task.enabled} == {
+        "bad-cron",
+        "blank-path",
+        "cloud-path",
+    }
+
+
+@pytest.mark.asyncio
+async def test_executor_defensively_rejects_blank_legacy_path(temp_db) -> None:
+    executor = AsyncMock()
+    service = SchedulerService(temp_db, executor=executor)
+    task = ScheduledTask(
+        id="legacy",
+        name="legacy",
+        folder_path=" ",
+        cron_expression="0 2 * * *",
+    )
+
+    with pytest.raises(ValueError, match="不能为空"):
+        await service._execute_task(task)
+    executor.assert_not_awaited()
 
 
 @pytest.mark.asyncio

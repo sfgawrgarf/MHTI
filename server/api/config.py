@@ -2,8 +2,8 @@
 
 import logging
 
-from pydantic import BaseModel
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from server.core.auth import require_auth
 from server.core.container import get_config_service, get_p115_service, get_tmdb_service
@@ -21,8 +21,11 @@ from server.models.config import (
     ProxyTestResponse,
     SUPPORTED_LANGUAGES,
 )
-from server.models.organize import OrganizeConfig
 from server.models.download import DownloadConfig
+from server.models.nfo import NfoConfig
+from server.models.organize import OrganizeConfig
+from server.models.storage import is_p115_virtual_path
+from server.models.system import SystemConfig
 from server.models.template import NamingTemplate
 from server.models.watcher import (
     WatcherConfig,
@@ -32,12 +35,10 @@ from server.models.watcher import (
     WatchedFolderUpdate,
     WatcherMode,
 )
-from server.models.nfo import NfoConfig
-from server.models.system import SystemConfig
 from server.services.config_service import ConfigService
 from server.services.p115_service import P115Service
-from server.services.tmdb_service import TMDBService
 from server.api.watcher import get_watcher_service
+from server.services.tmdb_service import TMDBService
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ class Cloud115LoginRequest(BaseModel):
 
 def _effective_watcher_mode(path: str, requested_mode: WatcherMode) -> WatcherMode:
     """Map a global mode to one supported by the selected storage provider."""
-    is_p115 = path.startswith("/115网盘")
+    is_p115 = is_p115_virtual_path(path)
     if is_p115 and requested_mode == WatcherMode.REALTIME:
         return WatcherMode.COMPAT
     if not is_p115 and requested_mode == WatcherMode.EVENT:
@@ -320,15 +321,17 @@ async def save_watcher_config(
     # 同步 watch_dirs 到 watched_folders 表并启动/停止服务
     watcher_service = get_watcher_service()
 
-    if request.enabled and request.watch_dirs:
-        # 获取现有的监控目录
-        existing_folders, _ = await watcher_service.list_folders()
+    # 获取现有的监控目录。关闭全局监控时也要同步 enabled 状态，否则应用
+    # 重启后会根据遗留的 enabled=1 目录自动恢复监控。
+    existing_folders, _ = await watcher_service.list_folders()
+
+    if request.enabled:
         existing_by_path = {folder.path: folder for folder in existing_folders}
         scan_interval = _watch_scan_interval(request.performance_mode)
 
         # 添加新目录，并把全局模式同步到已经存在的目录。
         for dir_path in request.watch_dirs:
-            provider = "115" if dir_path.startswith("/115网盘") else "local"
+            provider = "115" if is_p115_virtual_path(dir_path) else "local"
             effective_mode = _effective_watcher_mode(dir_path, request.mode)
             existing = existing_by_path.get(dir_path)
             if existing is not None:
@@ -384,11 +387,19 @@ async def save_watcher_config(
             if folder.path not in request.watch_dirs:
                 await watcher_service.delete_folder(folder.id)
 
-        # 启动监控服务
-        await watcher_service.start()
+        if request.watch_dirs:
+            await watcher_service.start()
+        else:
+            await watcher_service.stop()
     else:
-        # 停止监控服务
+        # 先停止运行中的策略，再持久化禁用状态，防止重启后意外恢复。
         await watcher_service.stop()
+        for folder in existing_folders:
+            if folder.enabled:
+                await watcher_service.update_folder(
+                    folder.id,
+                    WatchedFolderUpdate(enabled=False),
+                )
 
     return WatcherConfigResponse(
         enabled=config.enabled,

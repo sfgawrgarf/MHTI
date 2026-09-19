@@ -202,6 +202,16 @@ def build_fake_p115_module() -> tuple[SimpleNamespace, SimpleNamespace]:
 class TestP115Service:
     """Tests for P115Service."""
 
+    def test_virtual_path_normalization_respects_root_boundary(self, p115_service):
+        assert (
+            p115_service._normalize_virtual_path("/115网盘/电视剧")
+            == "/115网盘/电视剧"
+        )
+        assert (
+            p115_service._normalize_virtual_path("/115网盘备份")
+            == "/115网盘/115网盘备份"
+        )
+
     def test_list_login_devices_includes_standard_apps_and_aliases(
         self,
         p115_service,

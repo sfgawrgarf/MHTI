@@ -17,6 +17,7 @@ from server.models.scheduler import (
     ScheduledTaskCreate,
     ScheduledTaskUpdate,
 )
+from server.models.storage import is_p115_virtual_path
 
 logger = logging.getLogger(__name__)
 ScheduledTaskExecutor = Callable[[ScheduledTask], Awaitable[None]]
@@ -68,6 +69,30 @@ class SchedulerService:
                     """CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due
                        ON scheduled_tasks(enabled, next_run)"""
                 )
+                cursor = await db.execute(
+                    """SELECT id, folder_path, cron_expression
+                       FROM scheduled_tasks WHERE enabled = 1"""
+                )
+                legacy_rows = await cursor.fetchall()
+                invalid_ids = [
+                    row[0]
+                    for row in legacy_rows
+                    if (
+                        not str(row[1]).strip()
+                        or is_p115_virtual_path(str(row[1]))
+                        or not self._validate_cron(str(row[2]))
+                    )
+                ]
+                if invalid_ids:
+                    await db.executemany(
+                        """UPDATE scheduled_tasks
+                           SET enabled = 0, next_run = NULL WHERE id = ?""",
+                        [(task_id,) for task_id in invalid_ids],
+                    )
+                    logger.warning(
+                        "Disabled %s invalid or unsupported legacy scheduled tasks",
+                        len(invalid_ids),
+                    )
                 await db.commit()
             self._db_ready = True
 
@@ -91,11 +116,18 @@ class SchedulerService:
         except (ValueError, KeyError):
             return False
 
+    def _validate_task_fields(self, folder_path: str, cron_expression: str) -> None:
+        if not folder_path.strip():
+            raise ValueError("定时任务目录不能为空")
+        if is_p115_virtual_path(folder_path):
+            raise ValueError("定时任务暂不支持 115 网盘目录")
+        if not self._validate_cron(cron_expression):
+            raise ValueError("无效的 Cron 表达式")
+
     async def create_task(self, task: ScheduledTaskCreate) -> ScheduledTask:
         """Create a new scheduled task."""
         await self._ensure_db()
-        if not self._validate_cron(task.cron_expression):
-            raise ValueError("无效的 Cron 表达式")
+        self._validate_task_fields(task.folder_path, task.cron_expression)
 
         task_id = str(uuid.uuid4())[:8]
         now = datetime.now()
@@ -173,11 +205,11 @@ class SchedulerService:
         if update.folder_path is not None:
             task.folder_path = update.folder_path
         if update.cron_expression is not None:
-            if not self._validate_cron(update.cron_expression):
-                raise ValueError("无效的 Cron 表达式")
             task.cron_expression = update.cron_expression
         if update.enabled is not None:
             task.enabled = update.enabled
+
+        self._validate_task_fields(task.folder_path, task.cron_expression)
 
         # Recalculate next run
         next_run = self._calculate_next_run(task.cron_expression) if task.enabled else None
@@ -338,6 +370,7 @@ class SchedulerService:
         return len(claimed)
 
     async def _execute_task(self, task: ScheduledTask) -> None:
+        self._validate_task_fields(task.folder_path, task.cron_expression)
         if self._executor is not None:
             await self._executor(task)
             return
