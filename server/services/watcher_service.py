@@ -17,6 +17,7 @@ from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedE
 
 from server.core.db.connection import db_connection
 from server.core.database import DATABASE_PATH
+from server.models.storage import is_p115_virtual_path
 from server.models.watcher import (
     DetectedFile,
     WatchedFolder,
@@ -1062,7 +1063,12 @@ class WatcherService:
         # 对 115 folder 预解析 output_locator（整理目标目录的 115 file_id）
         from server.models.storage import StorageLocator, StorageProvider
         output_locator = None
-        if folder and folder.provider == "115" and organize_dir and organize_dir.startswith("/115网盘"):
+        if (
+            folder
+            and folder.provider == "115"
+            and organize_dir
+            and is_p115_virtual_path(organize_dir)
+        ):
             try:
                 from server.services.p115_service import P115Service
                 p115_svc = P115Service(config_service)

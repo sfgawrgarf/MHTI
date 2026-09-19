@@ -97,6 +97,32 @@ class ImageStream(httpx.AsyncByteStream):
 
 class TestImageServiceDownload:
     @pytest.mark.asyncio
+    async def test_zero_retries_still_makes_initial_request(
+        self, image_service, temp_dir, install_transport, mock_config_service,
+    ):
+        mock_config_service.get_system_config.return_value = SystemConfig(retry_count=0)
+        attempts = 0
+
+        def handler(request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                stream=ImageStream([b"image"]),
+            )
+
+        install_transport(handler)
+        result = await image_service.download_image(
+            "https://example.com/image.jpg",
+            temp_dir,
+            "poster.jpg",
+        )
+
+        assert result.success is True
+        assert attempts == 1
+
+    @pytest.mark.asyncio
     async def test_success_replaces_complete_file(self, image_service, temp_dir, install_transport):
         target = Path(temp_dir) / "poster.jpg"
         target.write_bytes(b"old")

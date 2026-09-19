@@ -110,7 +110,12 @@ from server.api.frontend_config import router as frontend_config_router
 from server.api.logs import router as logs_router
 
 # Core components
-from server.core.container import init_services, cleanup_services, get_watcher_service
+from server.core.container import (
+    init_services,
+    cleanup_services,
+    get_scheduler_service,
+    get_watcher_service,
+)
 from server.core.database import init_database, close_database
 from server.core.middleware import setup_exception_handlers, setup_middleware
 
@@ -121,6 +126,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting application...")
     watcher = None
+    scheduler = None
     try:
         # Initialize database with connection pool
         await init_database()
@@ -163,6 +169,10 @@ async def lifespan(app: FastAPI):
                 recovered_manual,
             )
 
+        scheduler = get_scheduler_service()
+        await scheduler.start()
+        logger.info("Scheduled task runner started")
+
         # Initialize the direct database log persistence service.
         from server.core.container import get_log_service
         log_service = get_log_service()
@@ -189,6 +199,8 @@ async def lifespan(app: FastAPI):
         logger.info("Application started successfully")
         yield
     finally:
+        if scheduler is not None:
+            await _shutdown_step("scheduler", scheduler.stop())
         await _shutdown_application(watcher)
 
 

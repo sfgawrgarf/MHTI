@@ -1,7 +1,11 @@
 """Scheduled task data models."""
 
 from datetime import datetime
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, StringConstraints
+
+NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class ScheduledTask(BaseModel):
@@ -20,18 +24,18 @@ class ScheduledTask(BaseModel):
 class ScheduledTaskCreate(BaseModel):
     """Request model for creating a scheduled task."""
 
-    name: str
-    folder_path: str
-    cron_expression: str
+    name: NonEmptyString
+    folder_path: NonEmptyString
+    cron_expression: NonEmptyString
     enabled: bool = True
 
 
 class ScheduledTaskUpdate(BaseModel):
     """Request model for updating a scheduled task."""
 
-    name: str | None = None
-    folder_path: str | None = None
-    cron_expression: str | None = None
+    name: NonEmptyString | None = None
+    folder_path: NonEmptyString | None = None
+    cron_expression: NonEmptyString | None = None
     enabled: bool | None = None
 
 

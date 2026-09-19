@@ -18,12 +18,15 @@ from server.models.cloud_115 import (
     Cloud115QrStatus,
     Cloud115Status,
 )
+from server.models.storage import (
+    P115_VIRTUAL_ROOT_PATH as VIRTUAL_115_ROOT_PATH,
+    is_p115_virtual_path,
+)
 from server.services.config_service import ConfigService
 
 DEFAULT_APP = "alipaymini"
 PROJECT_P115_HOME = Path(__file__).resolve().parents[2] / "data" / "p115-home"
 QRCODE_PAYLOAD_PREFIX = "cloud_115_qr_payload:"
-VIRTUAL_115_ROOT_PATH = "/115网盘"
 # Mirrors file_service.SUPPORTED_VIDEO_EXTENSIONS (kept local to avoid a circular import).
 SCAN_VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv", ".rmvb", ".ts",
@@ -797,7 +800,7 @@ class P115Service:
             return VIRTUAL_115_ROOT_PATH
         if value == "115网盘":
             return VIRTUAL_115_ROOT_PATH
-        if value.startswith(VIRTUAL_115_ROOT_PATH):
+        if is_p115_virtual_path(value):
             return value.rstrip("/") or VIRTUAL_115_ROOT_PATH
         return f"{VIRTUAL_115_ROOT_PATH}/{value.lstrip('/')}".rstrip("/")
 
