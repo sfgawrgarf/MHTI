@@ -15,13 +15,16 @@ class FakeWebSocket {
   onerror: SocketHandler<Event> = null
   onmessage: SocketHandler<MessageEvent> = null
   readonly url: string
+  sent: string[] = []
 
   constructor(url: string) {
     this.url = url
     FakeWebSocket.instances.push(this)
   }
 
-  send(): void {}
+  send(data: string): void {
+    this.sent.push(data)
+  }
 
   close(): void {
     this.readyState = FakeWebSocket.CLOSED
@@ -135,5 +138,25 @@ describe('useWebSocket message lifecycle', () => {
     vi.advanceTimersByTime(3000)
 
     expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('ignores a stale close event after a newer connection is established', async () => {
+    const { useWebSocket } = await import('./useWebSocket')
+    const client = useWebSocket()
+    client.connect()
+    const oldSocket = FakeWebSocket.instances[0]!
+
+    client.disconnect()
+    client.connect()
+    const newSocket = FakeWebSocket.instances[1]!
+    newSocket.readyState = FakeWebSocket.OPEN
+    newSocket.receive({ type: 'connected', payload: { client_id: 'new-client' } })
+
+    oldSocket.onclose?.({ code: 1000 } as CloseEvent)
+
+    expect(client.isConnected.value).toBe(true)
+    expect(client.clientId.value).toBe('new-client')
+    vi.advanceTimersByTime(30000)
+    expect(newSocket.sent).toContain(JSON.stringify({ type: 'ping' }))
   })
 })

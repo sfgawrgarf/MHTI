@@ -29,6 +29,8 @@ from server.models.watcher import (
     WatcherConfigRequest,
     WatcherConfigResponse,
     WatchedFolderCreate,
+    WatchedFolderUpdate,
+    WatcherMode,
 )
 from server.models.nfo import NfoConfig
 from server.models.system import SystemConfig
@@ -40,11 +42,32 @@ from server.api.watcher import get_watcher_service
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
 logger = logging.getLogger(__name__)
 
+DEFAULT_WATCH_SCAN_INTERVAL_SECONDS = 60
+PERFORMANCE_WATCH_SCAN_INTERVAL_SECONDS = 300
+
 
 class Cloud115LoginRequest(BaseModel):
     """115 QR login request payload."""
 
     app: str = "alipaymini"
+
+
+def _effective_watcher_mode(path: str, requested_mode: WatcherMode) -> WatcherMode:
+    """Map a global mode to one supported by the selected storage provider."""
+    is_p115 = path.startswith("/115网盘")
+    if is_p115 and requested_mode == WatcherMode.REALTIME:
+        return WatcherMode.COMPAT
+    if not is_p115 and requested_mode == WatcherMode.EVENT:
+        return WatcherMode.COMPAT
+    return requested_mode
+
+
+def _watch_scan_interval(performance_mode: bool) -> int:
+    return (
+        PERFORMANCE_WATCH_SCAN_INTERVAL_SECONDS
+        if performance_mode
+        else DEFAULT_WATCH_SCAN_INTERVAL_SECONDS
+    )
 
 
 # ========== Proxy Configuration ==========
@@ -300,39 +323,61 @@ async def save_watcher_config(
     if request.enabled and request.watch_dirs:
         # 获取现有的监控目录
         existing_folders, _ = await watcher_service.list_folders()
-        existing_paths = {f.path for f in existing_folders}
+        existing_by_path = {folder.path: folder for folder in existing_folders}
+        scan_interval = _watch_scan_interval(request.performance_mode)
 
-        # 添加新目录（自动识别 115 路径）
+        # 添加新目录，并把全局模式同步到已经存在的目录。
         for dir_path in request.watch_dirs:
-            if dir_path not in existing_paths:
-                create_req = WatchedFolderCreate(
-                    path=dir_path,
-                    enabled=True,
-                    mode=request.mode,
-                )
-                # 路径以 /115网盘/ 开头 → 自动设为 115 provider + 解析 file_id
-                if dir_path.startswith("/115网盘"):
-                    create_req.provider = "115"
-                    try:
-                        from server.services.p115_service import P115Service
-                        p115_svc = P115Service(config_service)
-                        cfg = await config_service.get_115_config()
-                        if cfg.is_logged_in:
-                            client = await p115_svc._load_p115_client_with_config(cfg)
-                            normalized = p115_svc._normalize_virtual_path(dir_path)
-                            dir_id = await p115_svc._resolve_directory_id(
-                                client=client, path=normalized, file_id=None,
-                            )
-                            create_req.file_id = str(dir_id)
-                    except Exception as exc:
-                        # 解析失败仍创建，后续轮询会按路径重试；保留根因便于诊断。
-                        logger.warning(
-                            "无法预解析 115 监控目录 path=%s: %s",
-                            dir_path,
-                            exc,
-                            exc_info=True,
+            provider = "115" if dir_path.startswith("/115网盘") else "local"
+            effective_mode = _effective_watcher_mode(dir_path, request.mode)
+            existing = existing_by_path.get(dir_path)
+            if existing is not None:
+                if (
+                    not existing.enabled
+                    or existing.mode != effective_mode
+                    or existing.scan_interval_seconds != scan_interval
+                    or existing.provider != provider
+                ):
+                    await watcher_service.update_folder(
+                        existing.id,
+                        WatchedFolderUpdate(
+                            enabled=True,
+                            mode=effective_mode,
+                            scan_interval_seconds=scan_interval,
+                            provider=provider,
+                        ),
+                    )
+                continue
+
+            create_req = WatchedFolderCreate(
+                path=dir_path,
+                enabled=True,
+                mode=effective_mode,
+                scan_interval_seconds=scan_interval,
+                provider=provider,
+            )
+            # 路径以 /115网盘/ 开头 → 自动解析 file_id
+            if provider == "115":
+                try:
+                    from server.services.p115_service import P115Service
+                    p115_svc = P115Service(config_service)
+                    cfg = await config_service.get_115_config()
+                    if cfg.is_logged_in:
+                        client = await p115_svc._load_p115_client_with_config(cfg)
+                        normalized = p115_svc._normalize_virtual_path(dir_path)
+                        dir_id = await p115_svc._resolve_directory_id(
+                            client=client, path=normalized, file_id=None,
                         )
-                await watcher_service.create_folder(create_req)
+                        create_req.file_id = str(dir_id)
+                except Exception as exc:
+                    # 解析失败仍创建，后续轮询会按路径重试；保留根因便于诊断。
+                    logger.warning(
+                        "无法预解析 115 监控目录 path=%s: %s",
+                        dir_path,
+                        exc,
+                        exc_info=True,
+                    )
+            await watcher_service.create_folder(create_req)
 
         # 删除不在列表中的目录
         for folder in existing_folders:

@@ -140,13 +140,19 @@ function connect(): void {
   state.reconnectEnabled = true
 
   try {
-    state.ws = new WebSocket(WS_URL)
+    const socket = new WebSocket(WS_URL)
+    state.ws = socket
 
-    state.ws.onopen = () => {
-      state.ws?.send(JSON.stringify({ type: 'auth', token }))
+    socket.onopen = () => {
+      if (state.ws !== socket) return
+      socket.send(JSON.stringify({ type: 'auth', token }))
     }
 
-    state.ws.onclose = (event) => {
+    socket.onclose = (event) => {
+      // A close event can arrive after logout/login created a newer socket.
+      // Stale callbacks must never reset the active connection or its heartbeat.
+      if (state.ws !== socket) return
+      state.ws = null
       console.log('[WS] 连接关闭')
       state.isConnected.value = false
       state.clientId = null
@@ -165,11 +171,13 @@ function connect(): void {
       scheduleReconnect()
     }
 
-    state.ws.onerror = (error) => {
+    socket.onerror = (error) => {
+      if (state.ws !== socket) return
       console.error('[WS] 连接错误:', error)
     }
 
-    state.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (state.ws !== socket) return
       try {
         const msg: WSMessage = JSON.parse(event.data)
         handleMessage(msg)
@@ -311,9 +319,10 @@ function disconnect(): void {
     handlerTimer = null
   }
   handlerBuffer = []
-  if (state.ws) {
-    state.ws.close()
-    state.ws = null
+  const socket = state.ws
+  state.ws = null
+  if (socket) {
+    socket.close()
   }
   state.isConnected.value = false
   state.clientId = null

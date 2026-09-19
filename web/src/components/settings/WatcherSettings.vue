@@ -135,7 +135,7 @@ onMounted(loadConfig)
 
       <NFormItem label="性能模式" label-placement="left">
         <NSwitch v-model:value="performanceMode" />
-        <span style="margin-left: 8px; color: #999">减少资源占用，适合大量文件监控</span>
+        <span style="margin-left: 8px; color: #999">轮询模式下每 5 分钟扫描一次，减少大量文件的监控开销</span>
       </NFormItem>
 
       <NFormItem label="监控目录">
