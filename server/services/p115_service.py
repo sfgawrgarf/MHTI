@@ -18,7 +18,10 @@ from server.models.cloud_115 import (
     Cloud115QrStatus,
     Cloud115Status,
 )
-from server.models.storage import P115_VIRTUAL_ROOT_PATH, is_p115_virtual_path
+from server.models.storage import (
+    P115_VIRTUAL_ROOT_PATH as VIRTUAL_115_ROOT_PATH,
+    is_p115_virtual_path,
+)
 from server.services.config_service import ConfigService
 
 DEFAULT_APP = "alipaymini"
