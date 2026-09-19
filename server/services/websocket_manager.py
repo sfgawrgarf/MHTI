@@ -111,15 +111,44 @@ class ConnectionManager:
             raise
         except Exception as e:
             logger.error(f"发送消息失败 {client_id}: {e}")
-            self.disconnect(client_id)
-            try:
+            await self.close_client(
+                client_id,
+                code=1011,
+                reason="WebSocket send failed",
+            )
+            return False
+
+    async def close_client(
+        self,
+        client_id: str,
+        *,
+        code: int = 1000,
+        reason: str | None = None,
+    ) -> bool:
+        """Serialize connection close with all other writes for this client."""
+        websocket = self.active_connections.get(client_id)
+        send_lock = self._send_locks.get(client_id)
+        if websocket is None or send_lock is None:
+            return False
+
+        closed = False
+        try:
+            async with send_lock:
+                if self.active_connections.get(client_id) is not websocket:
+                    return False
                 await asyncio.wait_for(
-                    websocket.close(code=1011, reason="WebSocket send failed"),
+                    websocket.close(code=code, reason=reason),
                     timeout=self._send_timeout,
                 )
-            except Exception:
-                pass
-            return False
+                closed = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("关闭 WebSocket 失败 %s: %s", client_id, exc)
+        finally:
+            if self.active_connections.get(client_id) is websocket:
+                self.disconnect(client_id)
+        return closed
 
     async def broadcast_to_job(self, job_id: str, message: dict[str, Any]) -> None:
         """向订阅了该任务的所有客户端广播消息"""

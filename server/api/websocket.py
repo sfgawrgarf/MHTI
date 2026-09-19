@@ -95,7 +95,6 @@ async def websocket_endpoint(websocket: WebSocket):
         last_activity_time = loop.time()
         timeout_task = asyncio.create_task(
             _timeout_monitor(
-                websocket,
                 client_id,
                 manager,
                 lambda: last_activity_time,
@@ -171,9 +170,8 @@ async def _heartbeat_loop(manager: ConnectionManager, client_id: str):
 
 
 async def _timeout_monitor(
-    websocket: WebSocket,
     client_id: str,
-    manager,
+    manager: ConnectionManager,
     get_last_activity_time: Callable[[], float],
 ):
     """客户端超时检测
@@ -187,11 +185,11 @@ async def _timeout_monitor(
             current_time = asyncio.get_running_loop().time()
             if current_time - get_last_activity_time() > CLIENT_TIMEOUT:
                 logger.warning(f"[{client_id}] 客户端超时（{CLIENT_TIMEOUT}s 无响应），主动断开")
-                try:
-                    await websocket.close()
-                except Exception:
-                    pass
-                manager.disconnect(client_id)
+                await manager.close_client(
+                    client_id,
+                    code=1001,
+                    reason="Client heartbeat timeout",
+                )
                 break
     except asyncio.CancelledError:
         pass

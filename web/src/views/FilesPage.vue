@@ -6,6 +6,7 @@ import {
   NButton,
   NDataTable,
   NInput,
+  NCheckbox,
   NIcon,
   NPagination,
   NBreadcrumb,
@@ -37,6 +38,8 @@ import TouchCard from '@/components/common/TouchCard.vue'
 import PageSkeleton from '@/components/common/PageSkeleton.vue'
 import ManualJobCreateModal from '@/components/scan/ManualJobCreateModal.vue'
 import { useMobileLayout } from '@/composables/useMobileLayout'
+import { updatePathSelection } from '@/utils/pathSelection'
+import { resolveBreadcrumbBrowseTarget } from '@/utils/storageNavigation'
 
 const route = useRoute()
 const router = useRouter()
@@ -259,18 +262,8 @@ const goToPath = (path: string) => {
   page.value = 1
   search.value = ''
   checkedRowKeys.value = []
-  // "根目录"面包屑 → 回到本地根（最顶层，含盘符 + 115 入口），无论当前 provider
-  if (path === '') {
-    loadDirectory('', 1, 'local', null)
-    return
-  }
-  // 115 根层级（/115网盘）→ file_id 固定为 '0'
-  if (path === '/115网盘') {
-    loadDirectory('/115网盘', 1, '115', '0')
-    return
-  }
-  // 本地其他层级：直接按 path 加载
-  loadDirectory(path, 1, currentProvider.value, currentFileId.value)
+  const target = resolveBreadcrumbBrowseTarget(path, currentProvider.value)
+  loadDirectory(path, 1, target.provider, target.fileId)
 }
 
 // 返回根目录
@@ -288,6 +281,14 @@ const handlePageChange = (p: number) => {
 // 选中行变化
 const handleCheckedRowKeysChange = (keys: DataTableRowKey[]) => {
   checkedRowKeys.value = keys
+}
+
+const isEntryChecked = (entry: DirectoryEntry) => {
+  return checkedRowKeys.value.some((key) => String(key) === entry.path)
+}
+
+const handleMobileCheckedChange = (entry: DirectoryEntry, checked: boolean) => {
+  checkedRowKeys.value = updatePathSelection(checkedRowKeys.value, entry.path, checked)
 }
 
 // 构造当前 provider 的 StorageLocator
@@ -466,6 +467,12 @@ loadDirectory(initPath.value, initPage.value, 'local', null)
             </div>
             <template #suffix>
               <div class="file-actions">
+                <div class="mobile-selection" @click.stop>
+                  <NCheckbox
+                    :checked="isEntryChecked(entry)"
+                    @update:checked="handleMobileCheckedChange(entry, $event)"
+                  />
+                </div>
                 <NButton
                   v-if="entry.is_dir"
                   size="tiny"

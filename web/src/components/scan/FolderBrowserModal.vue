@@ -21,6 +21,7 @@ import {
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
 import type { DirectoryEntry, StorageLocator, StorageProvider } from '@/api/types'
+import { resolveBreadcrumbBrowseTarget } from '@/utils/storageNavigation'
 
 const props = defineProps<{
   show: boolean
@@ -140,18 +141,8 @@ const goUp = () => {
 
 // 跳转到指定路径（面包屑用）
 const goToPath = (path: string) => {
-  // "根目录"面包屑 → 回到本地根（最顶层，含盘符 + 115 入口），无论当前 provider
-  if (path === '') {
-    loadDirectory('', 'local', null)
-    return
-  }
-  // 115 根层级（/115网盘）→ file_id 固定为 '0'
-  if (path === '/115网盘') {
-    loadDirectory('/115网盘', '115', '0')
-    return
-  }
-  // 本地其他层级：直接按 path 加载
-  loadDirectory(path, currentProvider.value, currentFileId.value)
+  const target = resolveBreadcrumbBrowseTarget(path, currentProvider.value)
+  loadDirectory(path, target.provider, target.fileId)
 }
 
 const handlePageChange = (newPage: number) => {
