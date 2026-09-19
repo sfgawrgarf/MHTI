@@ -8,7 +8,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from server.core.auth import authenticate_access_token
-from server.services.websocket_manager import get_ws_manager
+from server.services.websocket_manager import ConnectionManager, get_ws_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ws", tags=["websocket"])
@@ -17,6 +17,28 @@ router = APIRouter(prefix="/ws", tags=["websocket"])
 HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
 CLIENT_TIMEOUT = 90  # 客户端超时时间（秒）
 AUTH_TIMEOUT = 5
+MAX_JOB_IDS_PER_MESSAGE = 100
+
+
+def _parse_job_ids(message: object) -> list[str]:
+    """Return a bounded, de-duplicated list of valid subscription IDs."""
+    if not isinstance(message, dict):
+        return []
+    raw_job_ids = message.get("job_ids")
+    if not isinstance(raw_job_ids, list):
+        return []
+
+    job_ids: list[str] = []
+    for raw_job_id in raw_job_ids:
+        if not isinstance(raw_job_id, (str, int)):
+            continue
+        job_id = str(raw_job_id).strip()
+        if not job_id or len(job_id) > 128 or job_id in job_ids:
+            continue
+        job_ids.append(job_id)
+        if len(job_ids) >= MAX_JOB_IDS_PER_MESSAGE:
+            break
+    return job_ids
 
 
 @router.websocket("")
@@ -58,13 +80,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         # 发送连接成功消息
-        await websocket.send_json({
+        connected = await manager.send_to_client(client_id, {
             "type": "connected",
             "client_id": client_id,
         })
+        if not connected:
+            return
 
         # 启动心跳任务（服务端定时发送 ping）
-        heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket, client_id))
+        heartbeat_task = asyncio.create_task(_heartbeat_loop(manager, client_id))
 
         # 启动超时检测任务
         loop = asyncio.get_running_loop()
@@ -80,32 +104,29 @@ async def websocket_endpoint(websocket: WebSocket):
 
         while True:
             data = await websocket.receive_json()
+            if not isinstance(data, dict):
+                continue
             msg_type = data.get("type")
 
             if msg_type == "ping":
                 # 客户端心跳响应
                 last_activity_time = loop.time()
                 # 响应 pong
-                try:
-                    await websocket.send_json({"type": "pong"})
-                except Exception as e:
-                    logger.warning(f"[{client_id}] 发送 pong 失败: {e}")
+                if not await manager.send_to_client(client_id, {"type": "pong"}):
+                    break
 
             elif msg_type == "subscribe":
                 # 订阅任务进度
-                job_ids = data.get("job_ids", [])
-                manager.subscribe(client_id, job_ids)
-                try:
-                    await websocket.send_json({
-                        "type": "subscribed",
-                        "job_ids": job_ids,
-                    })
-                except Exception as e:
-                    logger.warning(f"[{client_id}] 发送订阅确认失败: {e}")
+                job_ids = manager.subscribe(client_id, _parse_job_ids(data))
+                if not await manager.send_to_client(
+                    client_id,
+                    {"type": "subscribed", "job_ids": job_ids},
+                ):
+                    break
 
             elif msg_type == "unsubscribe":
                 # 取消订阅
-                job_ids = data.get("job_ids", [])
+                job_ids = _parse_job_ids(data)
                 manager.unsubscribe(client_id, job_ids)
 
     except WebSocketDisconnect:
@@ -131,7 +152,7 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(client_id)
 
 
-async def _heartbeat_loop(websocket: WebSocket, client_id: str):
+async def _heartbeat_loop(manager: ConnectionManager, client_id: str):
     """服务端心跳发送循环
 
     定期向客户端发送 ping，保持连接活跃
@@ -139,12 +160,11 @@ async def _heartbeat_loop(websocket: WebSocket, client_id: str):
     try:
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
-            try:
-                await websocket.send_json(
-                    {"type": "ping", "timestamp": asyncio.get_running_loop().time()}
-                )
-            except Exception as e:
-                logger.warning(f"[{client_id}] 发送心跳失败: {e}")
+            sent = await manager.send_to_client(
+                client_id,
+                {"type": "ping", "timestamp": asyncio.get_running_loop().time()},
+            )
+            if not sent:
                 break
     except asyncio.CancelledError:
         pass

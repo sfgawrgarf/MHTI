@@ -21,6 +21,7 @@ interface WebSocketGlobalState {
   clientId: string | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
   heartbeatTimer: ReturnType<typeof setInterval> | null
+  reconnectEnabled: boolean
   isConnected: ReturnType<typeof ref<boolean>>
   handlers: Set<MessageHandler>
 }
@@ -39,6 +40,7 @@ function getGlobalState(): WebSocketGlobalState {
       clientId: null,
       reconnectTimer: null,
       heartbeatTimer: null,
+      reconnectEnabled: false,
       isConnected: ref(false),
       handlers: new Set(),
     }
@@ -113,6 +115,15 @@ function scheduleHandlerNotification(msg: WSMessage): void {
   }
 }
 
+function discardBufferedProgress(jobId?: string): void {
+  if (!jobId) return
+  handlerBuffer = handlerBuffer.filter((message) => message.job_id !== jobId)
+  if (handlerBuffer.length === 0 && handlerTimer) {
+    clearTimeout(handlerTimer)
+    handlerTimer = null
+  }
+}
+
 /**
  * 连接 WebSocket
  */
@@ -126,6 +137,7 @@ function connect(): void {
   if (!token) {
     return
   }
+  state.reconnectEnabled = true
 
   try {
     state.ws = new WebSocket(WS_URL)
@@ -140,6 +152,7 @@ function connect(): void {
       state.clientId = null
       stopHeartbeat()
       if (event.code === 4401) {
+        state.reconnectEnabled = false
         localStorage.removeItem('access_token')
         localStorage.removeItem('refresh_token')
         localStorage.removeItem('session_id')
@@ -215,6 +228,9 @@ function handleMessage(msg: WSMessage): void {
     // instead of retaining a second, unconsumed global progress cache.
     scheduleHandlerNotification(msg)
   } else {
+    if (type === 'job_completed' || type === 'job_failed' || type === 'job_cancelled') {
+      discardBufferedProgress(job_id)
+    }
     // 其他消息立即通知
     notifyHandlers(msg)
   }
@@ -270,6 +286,7 @@ function stopHeartbeat(): void {
  * 安排重连
  */
 function scheduleReconnect(): void {
+  if (!state.reconnectEnabled) return
   if (!localStorage.getItem('access_token')) return
   if (state.reconnectTimer) return
   state.reconnectTimer = setTimeout(() => {
@@ -283,6 +300,7 @@ function scheduleReconnect(): void {
  * 断开连接
  */
 function disconnect(): void {
+  state.reconnectEnabled = false
   if (state.reconnectTimer) {
     clearTimeout(state.reconnectTimer)
     state.reconnectTimer = null
