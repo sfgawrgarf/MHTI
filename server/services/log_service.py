@@ -38,7 +38,7 @@ class LogService:
                         entry["level"],
                         entry["logger"],
                         entry["message"],
-                        json.dumps(entry["extra_data"]) if entry.get("extra_data") else None,
+                        self._serialize_extra_data(entry.get("extra_data")),
                         entry.get("request_id"),
                         entry.get("user_id"),
                     )
@@ -46,6 +46,16 @@ class LogService:
                 ],
             )
             await db.commit()
+
+    @staticmethod
+    def _serialize_extra_data(extra_data: Any) -> str | None:
+        """Serialize optional logging context without poisoning an entire batch."""
+        if extra_data is None:
+            return None
+        try:
+            return json.dumps(extra_data, default=str, ensure_ascii=False)
+        except (TypeError, ValueError, RecursionError):
+            return json.dumps({"unserializable": repr(extra_data)}, ensure_ascii=False)
 
     async def get_logs(self, query: LogQuery) -> tuple[list[LogEntry], int]:
         """查询日志列表。"""

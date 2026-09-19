@@ -1,5 +1,6 @@
 """Regression tests for durable, thread-safe database log batching."""
 
+import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -85,6 +86,39 @@ async def test_concurrent_logging_threads_do_not_lose_entries():
     assert {entry["message"] for entry in written} == set(messages)
 
 
+def test_log_buffer_discards_oldest_entries_when_full():
+    log_service = Mock()
+    handler = DatabaseLogHandler(
+        log_service,
+        batch_size=10,
+        max_buffer_size=10,
+    )
+
+    for index in range(15):
+        handler.emit(_record(f"entry-{index}"))
+
+    assert handler.pending_count == 10
+    assert handler.dropped_count == 5
+    assert [entry["message"] for entry in handler._batch] == [
+        f"entry-{index}" for index in range(5, 15)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stalled_database_write_times_out_and_restores_batch():
+    log_service = Mock()
+
+    async def never_finishes(_entries):
+        await asyncio.Event().wait()
+
+    log_service.batch_insert = never_finishes
+    handler = DatabaseLogHandler(log_service, write_timeout=0.01)
+    handler.emit(_record("retry later"))
+
+    assert await handler._flush() is False
+    assert handler.pending_count == 1
+
+
 @pytest.mark.asyncio
 async def test_log_service_propagates_database_write_failure(monkeypatch):
     database = AsyncMock()
@@ -110,3 +144,16 @@ async def test_log_service_propagates_database_write_failure(monkeypatch):
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         await service.batch_insert([entry])
+
+
+def test_extra_data_serialization_handles_non_json_values_and_cycles():
+    cyclic: dict = {}
+    cyclic["self"] = cyclic
+
+    serialized_value = LogService._serialize_extra_data({"value": object()})
+    serialized_cycle = LogService._serialize_extra_data(cyclic)
+
+    assert serialized_value is not None
+    assert "value" in serialized_value
+    assert serialized_cycle is not None
+    assert "unserializable" in serialized_cycle

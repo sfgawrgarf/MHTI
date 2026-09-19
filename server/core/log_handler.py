@@ -26,6 +26,8 @@ class DatabaseLogHandler(logging.Handler):
         log_service: "LogService",
         batch_size: int = 50,
         flush_interval: float = 5.0,
+        max_buffer_size: int = 5000,
+        write_timeout: float = 5.0,
     ) -> None:
         """
         初始化数据库日志处理器。
@@ -34,12 +36,16 @@ class DatabaseLogHandler(logging.Handler):
             log_service: 日志服务实例
             batch_size: 批量写入阈值
             flush_interval: 刷新间隔（秒）
+            max_buffer_size: 数据库故障时允许缓冲的最大条数
+            write_timeout: 单次数据库写入超时（秒）
         """
         super().__init__()
         self._log_service = log_service
         self._batch: list[dict[str, Any]] = []
         self._batch_size = batch_size
         self._flush_interval = flush_interval
+        self._max_buffer_size = max(max_buffer_size, batch_size)
+        self._write_timeout = write_timeout
         self._loop: asyncio.AbstractEventLoop | None = None
         self._periodic_task: asyncio.Task[None] | None = None
         self._immediate_task: asyncio.Task[bool] | None = None
@@ -48,6 +54,7 @@ class DatabaseLogHandler(logging.Handler):
         self._flush_requested = False
         self._started = False
         self._accepting = True
+        self._dropped_count = 0
 
     def start(self) -> None:
         """启动定时刷新任务。"""
@@ -65,6 +72,24 @@ class DatabaseLogHandler(logging.Handler):
         """Return the number of entries still waiting for persistence."""
         with self._batch_guard:
             return len(self._batch)
+
+    @property
+    def dropped_count(self) -> int:
+        """Return entries discarded to keep the failure buffer bounded."""
+        with self._batch_guard:
+            return self._dropped_count
+
+    def _trim_buffer_locked(self) -> None:
+        overflow = len(self._batch) - self._max_buffer_size
+        if overflow <= 0:
+            return
+        del self._batch[:overflow]
+        self._dropped_count += overflow
+        if self._dropped_count == overflow or self._dropped_count % 100 == 0:
+            sys.stderr.write(
+                "Database log buffer full; "
+                f"discarded {self._dropped_count} oldest entries\n"
+            )
 
     async def aclose(self, retries: int = 3) -> bool:
         """Stop background work and wait for the final buffered write.
@@ -86,9 +111,14 @@ class DatabaseLogHandler(logging.Handler):
 
         if self._immediate_task is not None:
             try:
-                await self._immediate_task
+                await asyncio.wait_for(
+                    self._immediate_task,
+                    timeout=self._write_timeout,
+                )
             except asyncio.CancelledError:
                 pass
+            except TimeoutError:
+                self._immediate_task.cancel()
             self._immediate_task = None
 
         attempts = max(1, retries)
@@ -128,10 +158,14 @@ class DatabaseLogHandler(logging.Handler):
                 self._batch = []
 
             try:
-                await self._log_service.batch_insert(batch)
+                await asyncio.wait_for(
+                    self._log_service.batch_insert(batch),
+                    timeout=self._write_timeout,
+                )
             except asyncio.CancelledError:
                 with self._batch_guard:
                     self._batch[0:0] = batch
+                    self._trim_buffer_locked()
                 raise
             except Exception as exc:
                 # New entries may have arrived while the database call was in
@@ -199,6 +233,7 @@ class DatabaseLogHandler(logging.Handler):
                 if not self._accepting:
                     return
                 self._batch.append(entry)
+                self._trim_buffer_locked()
                 should_flush = len(self._batch) >= self._batch_size
             if should_flush:
                 self._request_flush()

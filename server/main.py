@@ -1,47 +1,68 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
+from typing import Any, Awaitable
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from server import __version__
-# 日志目录
-LOG_DIR = Path(__file__).parent.parent / "data" / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+from server.core.logging_runtime import get_logging_runtime
 
-# 日志格式
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-# Configure root logger
-logging.basicConfig(
-    level=logging.INFO,
-    format=LOG_FORMAT,
-)
+logging_runtime = get_logging_runtime()
+logging_runtime.bootstrap()
 logger = logging.getLogger(__name__)
 
 
-def setup_file_logging() -> RotatingFileHandler | None:
-    """设置文件日志处理器（带轮转）。"""
+async def _shutdown_step(
+    name: str,
+    operation: Awaitable[Any],
+    *,
+    timeout: float = 15.0,
+) -> Any | None:
+    """Run one shutdown step without preventing later cleanup."""
     try:
-        file_handler = RotatingFileHandler(
-            LOG_DIR / "app.log",
-            maxBytes=10 * 1024 * 1024,  # 10 MB
-            backupCount=5,
-            encoding="utf-8",
-        )
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
-        logging.getLogger().addHandler(file_handler)
-        logger.info(f"File logging enabled: {LOG_DIR / 'app.log'}")
-        return file_handler
-    except Exception as e:
-        logger.warning(f"Failed to setup file logging: {e}")
-        return None
+        return await asyncio.wait_for(operation, timeout=timeout)
+    except TimeoutError:
+        logger.error("Shutdown step timed out: %s", name)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Shutdown step failed: %s", name)
+    return None
+
+
+async def _shutdown_application(watcher: Any) -> None:
+    """Run every cleanup stage even when an earlier stage fails."""
+    logger.info("Shutting down application...")
+
+    from server.services.scrape_job_service import shutdown_workers as shutdown_scrape_workers
+    from server.services.manual_job_service import shutdown_workers as shutdown_manual_workers
+
+    await _shutdown_step("manual workers", shutdown_manual_workers())
+    if watcher._running:
+        await _shutdown_step("watcher", watcher.stop())
+    await _shutdown_step("scrape workers", shutdown_scrape_workers())
+
+    from server.services.file_io import shutdown_file_io
+
+    try:
+        shutdown_file_io()
+    except Exception:
+        logger.exception("Shutdown step failed: file I/O executor")
+
+    await _shutdown_step("service container", cleanup_services())
+
+    # Flush logging while database connections are still available.
+    logs_flushed = await _shutdown_step("logging", logging_runtime.shutdown())
+    if logs_flushed is not True:
+        logger.error("Logging shutdown did not complete cleanly")
+
+    await _shutdown_step("database", close_database())
+    logger.info("Application shutdown complete")
 
 # CORS allowed origins (Docker environment)
 CORS_ORIGINS = [
@@ -100,9 +121,6 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting application...")
 
-    # Setup file logging (with rotation)
-    file_handler = setup_file_logging()
-
     # Initialize database with connection pool
     await init_database()
 
@@ -148,13 +166,15 @@ async def lifespan(app: FastAPI):
     from server.core.container import get_log_service
     log_service = get_log_service()
 
-    # Setup database log handler (仅记录 WARNING 及以上级别，减少性能开销)
-    from server.core.log_handler import DatabaseLogHandler
-    db_log_handler = DatabaseLogHandler(log_service, batch_size=50, flush_interval=10.0)
-    db_log_handler.setLevel(logging.WARNING)  # 只记录警告和错误
-    db_log_handler.setFormatter(logging.Formatter(LOG_FORMAT))
-    logging.getLogger().addHandler(db_log_handler)
-    db_log_handler.start()
+    # Apply all persisted logging settings after the database is available.
+    log_config = await log_service.get_config()
+    await logging_runtime.apply(log_config, log_service)
+    try:
+        deleted_logs = await log_service.cleanup_old_logs()
+        if deleted_logs:
+            logger.info("Cleaned up %s expired log entries", deleted_logs)
+    except Exception:
+        logger.exception("Unable to clean up expired logs during startup")
 
     logger.info("Log service started")
 
@@ -167,44 +187,10 @@ async def lifespan(app: FastAPI):
 
     logger.info("Application started successfully")
 
-    yield
-
-    # Shutdown
-    logger.info("Shutting down application...")
-
-    # 取消后台 worker（刮削 + 手动任务），避免它们阻塞在队列上导致退出卡顿
-    from server.services.scrape_job_service import shutdown_workers as shutdown_scrape_workers
-    from server.services.manual_job_service import shutdown_workers as shutdown_manual_workers
-    await shutdown_manual_workers()
-
-    # Stop watcher service
-    if watcher._running:
-        await watcher.stop()
-
-    await shutdown_scrape_workers()
-    from server.services.file_io import shutdown_file_io
-    shutdown_file_io()
-
-    # Stop database log handler
-    logging.getLogger().removeHandler(db_log_handler)
-    logs_flushed = await db_log_handler.aclose()
-    if not logs_flushed:
-        logger.error("Database log handler stopped with unpersisted entries")
-    else:
-        logger.info("Log service stopped")
-
-    # Remove file handler
-    if file_handler:
-        logging.getLogger().removeHandler(file_handler)
-        file_handler.close()
-
-    # Cleanup services
-    await cleanup_services()
-
-    # Close database connections
-    await close_database()
-
-    logger.info("Application shutdown complete")
+    try:
+        yield
+    finally:
+        await _shutdown_application(watcher)
 
 
 # Create FastAPI application
