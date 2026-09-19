@@ -26,7 +26,12 @@ import {
   CloudOutline,
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
-import type { DirectoryEntry, StorageProvider, StorageLocator } from '@/api/types'
+import type {
+  DirectoryEntry,
+  ManualJobScanSource,
+  StorageProvider,
+  StorageLocator,
+} from '@/api/types'
 import EmptyState from '@/components/common/EmptyState.vue'
 import TouchCard from '@/components/common/TouchCard.vue'
 import PageSkeleton from '@/components/common/PageSkeleton.vue'
@@ -57,6 +62,7 @@ const parentFileId = ref<string | null>(null)
 const showCreateModal = ref(false)
 const createTaskPath = ref('')
 const createTaskLocator = ref<StorageLocator | null>(null)
+const createTaskSources = ref<ManualJobScanSource[]>([])
 
 // 从 URL 获取初始路径
 const initPath = computed(() => (route.query.root as string) || '')
@@ -294,15 +300,35 @@ const buildLocatorFor = (path: string, fileId: string | null | undefined): Stora
 
 // 为文件夹创建任务
 const createTaskForFolder = (entry: DirectoryEntry) => {
+  const locator = buildLocatorFor(entry.path, entry.file_id)
   createTaskPath.value = entry.path
-  createTaskLocator.value = buildLocatorFor(entry.path, entry.file_id)
+  createTaskLocator.value = locator
+  createTaskSources.value = [{
+    path: entry.path,
+    locator: { ...locator, parent_id: entry.parent_id, is_dir: true },
+  }]
   showCreateModal.value = true
 }
 
-// 批量创建任务（使用当前路径）
+// 为当前勾选的文件或目录分别创建任务
 const createTaskForSelected = () => {
-  createTaskPath.value = currentPath.value
-  createTaskLocator.value = buildLocatorFor(currentPath.value, currentFileId.value)
+  const selectedKeys = new Set(checkedRowKeys.value.map(String))
+  const selectedEntries = entries.value.filter((entry) => selectedKeys.has(entry.path))
+  if (selectedEntries.length === 0) {
+    message.warning('请先选择要创建任务的条目')
+    return
+  }
+  createTaskSources.value = selectedEntries.map((entry) => ({
+    path: entry.path,
+    locator: {
+      ...buildLocatorFor(entry.path, entry.file_id),
+      parent_id: entry.parent_id,
+      is_dir: entry.is_dir,
+    },
+  }))
+  const firstSource = createTaskSources.value[0]
+  createTaskPath.value = firstSource?.path ?? ''
+  createTaskLocator.value = firstSource?.locator ?? null
   showCreateModal.value = true
 }
 
@@ -402,7 +428,7 @@ loadDirectory(initPath.value, initPage.value, 'local', null)
           <span class="selected-count">已选中 {{ checkedRowKeys.length }} 个条目</span>
           <NButton
             type="primary"
-            :disabled="!currentPath"
+            :disabled="checkedRowKeys.length === 0"
             @click="createTaskForSelected"
           >
             <template #icon>
@@ -498,6 +524,7 @@ loadDirectory(initPath.value, initPage.value, 'local', null)
       v-model:show="showCreateModal"
       :initial-scan-path="createTaskPath"
       :initial-scan-locator="createTaskLocator"
+      :initial-scan-sources="createTaskSources"
       @success="handleCreateSuccess"
     />
   </div>

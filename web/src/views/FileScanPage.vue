@@ -19,7 +19,7 @@ import {
   SwapHorizontalOutline,
 } from '@vicons/ionicons5'
 import { filesApi } from '@/api/files'
-import type { ScannedFile, StorageLocator } from '@/api/types'
+import type { ManualJobScanSource, ScannedFile, StorageLocator } from '@/api/types'
 import FolderBrowser from '@/components/scan/FolderBrowser.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ManualJobCreateModal from '@/components/scan/ManualJobCreateModal.vue'
@@ -39,6 +39,7 @@ const showFolderBrowser = ref(false)
 // 创建任务弹窗
 const showCreateModal = ref(false)
 const createTaskPath = ref('')
+const createTaskSources = ref<ManualJobScanSource[]>([])
 
 // 格式化文件大小
 const formatSize = (size: number) => {
@@ -148,12 +149,23 @@ const handleScan = async () => {
 // 选择文件夹
 const handleFolderSelect = (path: string) => {
   scanPath.value = path
+  scannedFiles.value = []
+  checkedRowKeys.value = []
+  total.value = 0
   showFolderBrowser.value = false
 }
 
 // 接收文件夹选择器的 locator（115 等云端目录）
 const handleFolderLocator = (locator: StorageLocator) => {
   scanLocator.value = locator
+}
+
+const handleScanPathInput = (path: string) => {
+  scanPath.value = path
+  scanLocator.value = null
+  scannedFiles.value = []
+  checkedRowKeys.value = []
+  total.value = 0
 }
 
 // 分页变化
@@ -167,15 +179,36 @@ const handleCheckedRowKeysChange = (keys: DataTableRowKey[]) => {
   checkedRowKeys.value = keys
 }
 
-// 为单个文件创建任务（使用扫描路径）
-const createTaskForFile = (_file: ScannedFile) => {
-  createTaskPath.value = scanPath.value
+const createSourceForFile = (file: ScannedFile): ManualJobScanSource => ({
+  path: file.path,
+  locator: scanLocator.value?.provider === '115'
+    ? {
+        provider: '115',
+        path: file.path,
+        file_id: file.file_id,
+        parent_id: file.parent_id,
+        is_dir: false,
+      }
+    : { provider: 'local', path: file.path, is_dir: false },
+})
+
+// 为单个文件创建任务
+const createTaskForFile = (file: ScannedFile) => {
+  createTaskPath.value = file.path
+  createTaskSources.value = [createSourceForFile(file)]
   showCreateModal.value = true
 }
 
-// 批量创建任务（使用扫描路径）
+// 为当前勾选的文件分别创建任务
 const createTaskForSelected = () => {
-  createTaskPath.value = scanPath.value
+  const selectedKeys = new Set(checkedRowKeys.value.map(String))
+  const selectedFiles = scannedFiles.value.filter((file) => selectedKeys.has(file.path))
+  if (selectedFiles.length === 0) {
+    message.warning('请先选择要创建任务的文件')
+    return
+  }
+  createTaskPath.value = selectedFiles[0]?.path ?? ''
+  createTaskSources.value = selectedFiles.map(createSourceForFile)
   showCreateModal.value = true
 }
 
@@ -202,10 +235,11 @@ const handleCreateSuccess = () => {
         <div class="toolbar-left">
           <div class="scan-input-group">
             <NInput
-              v-model:value="scanPath"
+              :value="scanPath"
               placeholder="请输入扫描路径"
               clearable
               class="scan-input"
+              @update:value="handleScanPathInput"
               @keyup.enter="handleScan"
             >
               <template #prefix>
@@ -231,7 +265,7 @@ const handleCreateSuccess = () => {
           <span class="selected-count">已选中 {{ checkedRowKeys.length }} 个条目</span>
           <NButton
             type="primary"
-            :disabled="!scanPath"
+            :disabled="checkedRowKeys.length === 0"
             @click="createTaskForSelected"
           >
             <template #icon>
@@ -275,6 +309,7 @@ const handleCreateSuccess = () => {
     <FolderBrowser
       v-model:show="showFolderBrowser"
       v-model="scanPath"
+      :locator="scanLocator"
       title="选择文件夹"
       @select="handleFolderSelect"
       @select-locator="handleFolderLocator"
@@ -284,6 +319,7 @@ const handleCreateSuccess = () => {
     <ManualJobCreateModal
       v-model:show="showCreateModal"
       :initial-scan-path="createTaskPath"
+      :initial-scan-sources="createTaskSources"
       @success="handleCreateSuccess"
     />
   </div>

@@ -24,7 +24,13 @@ import { manualJobApi } from '@/api/manual-job'
 import { watcherApi } from '@/api/watcher'
 import { configApi } from '@/api/config'
 import { LinkMode } from '@/api/types'
-import type { WatchedFolder, ManualJobAdvancedSettings, OrganizeConfig, StorageLocator } from '@/api/types'
+import type {
+  WatchedFolder,
+  ManualJobAdvancedSettings,
+  ManualJobScanSource,
+  OrganizeConfig,
+  StorageLocator,
+} from '@/api/types'
 import FolderBrowserModal from './FolderBrowserModal.vue'
 import AdvancedSettingsModal from './AdvancedSettingsModal.vue'
 
@@ -32,6 +38,7 @@ const props = defineProps<{
   show: boolean
   initialScanPath?: string  // 初始扫描路径
   initialScanLocator?: StorageLocator | null  // 初始扫描 locator（115 等）
+  initialScanSources?: ManualJobScanSource[]
 }>()
 
 const emit = defineEmits<{
@@ -68,11 +75,14 @@ const scanLocator = ref<StorageLocator | null>(null)
 const targetLocator = ref<StorageLocator | null>(null)
 const metadataLocator = ref<StorageLocator | null>(null)
 const allowLocalOutput = ref(false)
+const scanSources = ref<ManualJobScanSource[]>([])
+const initialSourceCount = computed(() => scanSources.value.length)
 
 // 是否涉及 115（任一 locator 为 115 时显示额外选项）
 const involvesP115 = computed(
   () =>
     scanLocator.value?.provider === '115' ||
+    scanSources.value.some((source) => source.locator?.provider === '115') ||
     targetLocator.value?.provider === '115',
 )
 
@@ -127,6 +137,7 @@ const resetForm = () => {
   }
   advancedSettings.value = null
   scanLocator.value = null
+  scanSources.value = []
   targetLocator.value = null
   metadataLocator.value = null
   allowLocalOutput.value = false
@@ -150,24 +161,38 @@ const handleSubmit = async () => {
   }
 
   submitting.value = true
+  let createdCount = 0
   try {
-    await manualJobApi.create({
-      scan_path: formData.value.scan_path.trim(),
-      target_folder: formData.value.target_folder.trim(),
-      metadata_dir: formData.value.metadata_dir.trim(),
-      scan_locator: scanLocator.value,
-      target_locator: targetLocator.value,
-      metadata_locator: metadataLocator.value,
-      allow_local_output: allowLocalOutput.value,
-      link_mode: formData.value.link_mode,
-      delete_empty_parent: formData.value.delete_empty_parent,
-      config_reuse_id: formData.value.config_reuse_id,
-      advanced_settings: advancedSettings.value,
-    })
+    const sources = scanSources.value.length
+      ? scanSources.value
+      : [{ path: formData.value.scan_path.trim(), locator: scanLocator.value }]
+
+    for (const source of sources) {
+      await manualJobApi.create({
+        scan_path: source.path,
+        target_folder: formData.value.target_folder.trim(),
+        metadata_dir: formData.value.metadata_dir.trim(),
+        scan_locator: source.locator,
+        target_locator: targetLocator.value,
+        metadata_locator: metadataLocator.value,
+        allow_local_output: allowLocalOutput.value,
+        link_mode: formData.value.link_mode,
+        delete_empty_parent: formData.value.delete_empty_parent,
+        config_reuse_id: formData.value.config_reuse_id,
+        advanced_settings: advancedSettings.value,
+      })
+      createdCount += 1
+    }
     emit('success')
     handleClose()
   } catch (error) {
-    message.error('创建任务失败')
+    if (createdCount > 0) {
+      message.error(`已创建 ${createdCount} 个任务，其余任务创建失败`)
+      emit('success')
+      handleClose()
+    } else {
+      message.error('创建任务失败')
+    }
     console.error(error)
   } finally {
     submitting.value = false
@@ -210,18 +235,23 @@ onMounted(() => {
 // 监听弹窗打开，设置初始扫描路径与 locator
 watch(() => props.show, (newVal) => {
   if (newVal) {
-    if (props.initialScanPath) {
-      formData.value.scan_path = props.initialScanPath
-    }
-    if (props.initialScanLocator) {
-      scanLocator.value = props.initialScanLocator
-    }
+    const firstSource = props.initialScanSources?.[0]
+    scanSources.value = props.initialScanSources?.map((source) => ({ ...source })) ?? []
+    formData.value.scan_path = firstSource?.path ?? props.initialScanPath ?? ''
+    scanLocator.value = firstSource?.locator ?? props.initialScanLocator ?? null
   }
 })
 
 // 处理刮削路径选择
 const handleScanPathConfirm = (path: string) => {
   formData.value.scan_path = path
+  scanSources.value = []
+}
+
+const handleScanPathInput = (path: string) => {
+  formData.value.scan_path = path
+  scanLocator.value = null
+  scanSources.value = []
 }
 
 const handleScanPathLocator = (locator: StorageLocator) => {
@@ -292,17 +322,25 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
             <NFormItem label="刮削路径" required>
               <div class="path-input">
                 <NInput
-                  v-model:value="formData.scan_path"
+                  :value="formData.scan_path"
                   placeholder="请输入视频目录或文件路径"
+                  :disabled="initialSourceCount > 1"
+                  @update:value="handleScanPathInput"
                 />
-                <NButton @click="showScanPathBrowser = true">
+                <NButton
+                  :disabled="initialSourceCount > 1"
+                  @click="showScanPathBrowser = true"
+                >
                   <template #icon>
                     <NIcon :component="FolderOutline" />
                   </template>
                 </NButton>
               </div>
               <template #feedback>
-                <span class="form-hint">指定目录时会扫描目录内全部视频文件</span>
+                <span v-if="initialSourceCount > 1" class="form-hint">
+                  将为已选的 {{ initialSourceCount }} 个条目分别创建任务
+                </span>
+                <span v-else class="form-hint">指定目录时会扫描目录内全部视频文件</span>
               </template>
             </NFormItem>
 

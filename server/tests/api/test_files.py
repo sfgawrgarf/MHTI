@@ -60,6 +60,45 @@ class TestFilesAPI:
         assert data["total_files"] == 0
         assert data["files"] == []
 
+    def test_scan_folder_honors_exclude_scraped_and_reports_count(
+        self, files_client, tmp_path, monkeypatch
+    ):
+        """Previously scraped files are optional and their count is reported."""
+        first = tmp_path / "video1.mp4"
+        second = tmp_path / "video2.mkv"
+        first.touch()
+        second.touch()
+
+        monkeypatch.setattr(
+            "server.api.files.calculate_fingerprint",
+            lambda path: f"fingerprint:{path}",
+        )
+
+        class StubHistoryService:
+            async def get_existing_fingerprints(self, fingerprints):
+                return {f"fingerprint:{first}"}
+
+        app.dependency_overrides[get_history_service] = lambda: StubHistoryService()
+
+        excluded = files_client.post(
+            "/api/scan",
+            json={"folder_path": str(tmp_path), "exclude_scraped": True},
+        )
+        assert excluded.status_code == 200
+        excluded_data = excluded.json()
+        assert excluded_data["total_files"] == 1
+        assert excluded_data["scraped_count"] == 1
+        assert excluded_data["files"][0]["path"] == str(second)
+
+        included = files_client.post(
+            "/api/scan",
+            json={"folder_path": str(tmp_path), "exclude_scraped": False},
+        )
+        assert included.status_code == 200
+        included_data = included.json()
+        assert included_data["total_files"] == 2
+        assert included_data["scraped_count"] == 0
+
     def test_scan_folder_not_found(self, files_client):
         """Test 400 response for non-existent folder."""
         response = files_client.post(

@@ -60,6 +60,11 @@ export interface StorageLocator {
   is_dir?: boolean
 }
 
+export interface ManualJobScanSource {
+  path: string
+  locator: StorageLocator | null
+}
+
 // 115 网盘登录相关
 export interface Cloud115Status {
   enabled: boolean
