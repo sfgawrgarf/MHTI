@@ -88,6 +88,10 @@ class ConnectionManager:
         send_lock = self._send_locks.get(client_id)
         if websocket is None or send_lock is None:
             return False
+        # Keep the narrowed types explicit for incremental mypy runs where the
+        # FastAPI import is intentionally skipped and therefore becomes Any.
+        assert websocket is not None
+        assert send_lock is not None
         try:
             async with send_lock:
                 # The connection may have been removed while this send waited.
