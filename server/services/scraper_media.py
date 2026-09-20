@@ -37,6 +37,7 @@ class ScraperMediaMixin:
         series_folder: str,
         download_poster: bool = True,
         download_fanart: bool = True,
+        overwrite_existing: bool = False,
     ) -> None:
         """下载剧集海报和背景图。
 
@@ -53,8 +54,8 @@ class ScraperMediaMixin:
         backdrop_path = folder / "backdrop.jpg"
 
         # 根据配置和文件存在情况决定是否需要下载
-        need_poster = download_poster and not poster_path.exists()
-        need_backdrop = download_fanart and not backdrop_path.exists()
+        need_poster = download_poster and (overwrite_existing or not poster_path.exists())
+        need_backdrop = download_fanart and (overwrite_existing or not backdrop_path.exists())
 
         if not need_poster and not need_backdrop:
             logger.info("剧集图片已存在或配置禁用，跳过下载")
@@ -75,7 +76,7 @@ class ScraperMediaMixin:
         filtered_requests = []
         for req in requests:
             target_path = Path(req.save_path) / req.filename
-            if not target_path.exists():
+            if overwrite_existing or not target_path.exists():
                 filtered_requests.append(req)
 
         if not filtered_requests:
@@ -94,6 +95,7 @@ class ScraperMediaMixin:
         episode_num: int,
         season_folder: str,
         video_stem: str,
+        overwrite_existing: bool = False,
     ) -> None:
         """下载集封面图，使用与视频文件相同的文件名。
 
@@ -122,7 +124,7 @@ class ScraperMediaMixin:
         # 使用与视频文件相同的文件名
         target_filename = f"{video_stem}.jpg"
         target_path = Path(season_folder) / target_filename
-        if target_path.exists():
+        if target_path.exists() and not overwrite_existing:
             logger.info(f"集封面图已存在: {target_filename}")
             return
 

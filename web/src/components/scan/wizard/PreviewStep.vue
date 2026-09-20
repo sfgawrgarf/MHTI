@@ -19,7 +19,7 @@ import {
   FilmOutline,
 } from '@vicons/ionicons5'
 import { LinkMode } from '@/api/types'
-import type { DirectoryEntry } from '@/api/types'
+import type { ScannedFile } from '@/api/types'
 
 const props = defineProps<{
   formData: {
@@ -35,7 +35,7 @@ const props = defineProps<{
     process_subtitle: boolean
     overwrite_existing: boolean
   }
-  previewFiles: DirectoryEntry[]
+  previewFiles: ScannedFile[]
   previewTotal: number
   loading: boolean
 }>()
@@ -64,12 +64,6 @@ const configSummary = computed(() => [
   renderSwitch(props.formData.generate_nfo, 'NFO'),
   renderSwitch(props.formData.process_subtitle, '字幕'),
 ])
-
-// 文件图标
-const getFileIcon = (entry: DirectoryEntry) => {
-  if (entry.is_dir) return FolderOutline
-  return FilmOutline
-}
 
 // 格式化文件大小
 const formatSize = (bytes?: number | null) => {
@@ -160,12 +154,12 @@ const formatSize = (bytes?: number | null) => {
           <div class="file-list">
             <div
               v-for="file in previewFiles"
-              :key="file.name"
+              :key="file.path"
               class="file-item"
             >
               <div class="file-info">
-                <NIcon :component="getFileIcon(file)" class="file-icon" />
-                <span class="file-name">{{ file.name }}</span>
+                <NIcon :component="FilmOutline" class="file-icon" />
+                <span class="file-name">{{ file.filename }}</span>
               </div>
               <span class="file-size">{{ formatSize(file.size) }}</span>
             </div>

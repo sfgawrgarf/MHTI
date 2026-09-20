@@ -33,6 +33,10 @@ import type {
 } from '@/api/types'
 import FolderBrowserModal from './FolderBrowserModal.vue'
 import AdvancedSettingsModal from './AdvancedSettingsModal.vue'
+import {
+  locatorForConfiguredPath,
+  locatorForWatchedFolder,
+} from '@/utils/storageNavigation'
 
 const props = defineProps<{
   show: boolean
@@ -67,8 +71,8 @@ const formData = ref({
   metadata_dir: '',
   link_mode: LinkMode.MOVE as LinkMode,
   delete_empty_parent: true,
-  config_reuse_id: null as number | null,
 })
+const configReuseFolderId = ref<string | null>(null)
 
 // 存储定位信息（115 等云端目录）
 const scanLocator = ref<StorageLocator | null>(null)
@@ -96,9 +100,9 @@ const linkModeOptions = [
 
 // 配置复用选项
 const configReuseOptions = computed(() => {
-  const options: Array<{ label: string; value: number | null }> = [{ label: '不复用', value: null }]
+  const options: Array<{ label: string; value: string | null }> = [{ label: '不复用', value: null }]
   watchedFolders.value.forEach((folder) => {
-    options.push({ label: folder.path, value: parseInt(folder.id) })
+    options.push({ label: folder.path, value: folder.id })
   })
   return options as unknown as SelectOption[]
 })
@@ -133,8 +137,8 @@ const resetForm = () => {
     metadata_dir: '',
     link_mode: LinkMode.MOVE,
     delete_empty_parent: true,
-    config_reuse_id: null,
   }
+  configReuseFolderId.value = null
   advancedSettings.value = null
   scanLocator.value = null
   scanSources.value = []
@@ -178,7 +182,6 @@ const handleSubmit = async () => {
         allow_local_output: allowLocalOutput.value,
         link_mode: formData.value.link_mode,
         delete_empty_parent: formData.value.delete_empty_parent,
-        config_reuse_id: formData.value.config_reuse_id,
         advanced_settings: advancedSettings.value,
       })
       createdCount += 1
@@ -200,23 +203,24 @@ const handleSubmit = async () => {
 }
 
 // 配置复用变化时自动填充全局配置
-watch(() => formData.value.config_reuse_id, (newVal) => {
-  if (newVal !== null && globalOrganizeConfig.value) {
-    const folder = watchedFolders.value.find((f) => parseInt(f.id) === newVal)
+watch(configReuseFolderId, (newVal) => {
+  if (newVal !== null) {
+    const folder = watchedFolders.value.find((item) => item.id === newVal)
     if (folder && scanSources.value.length === 0) {
       // 使用监控目录路径作为扫描路径
       formData.value.scan_path = folder.path
-      scanLocator.value = null
+      scanLocator.value = locatorForWatchedFolder(folder)
     }
-    // 使用全局配置填充整理目录和元数据目录
+    // 文件夹独立输出目录优先，其他设置继续复用全局配置。
     const config = globalOrganizeConfig.value
-    if (config.organize_dir) {
-      formData.value.target_folder = config.organize_dir
-      targetLocator.value = null
+    const targetFolder = folder?.output_dir || config?.organize_dir
+    if (targetFolder) {
+      formData.value.target_folder = targetFolder
+      targetLocator.value = locatorForConfiguredPath(targetFolder)
     }
-    if (config.metadata_dir) {
+    if (config?.metadata_dir) {
       formData.value.metadata_dir = config.metadata_dir
-      metadataLocator.value = null
+      metadataLocator.value = locatorForConfiguredPath(config.metadata_dir)
     }
     // 设置整理模式
     const modeMap: Record<string, LinkMode> = {
@@ -225,8 +229,10 @@ watch(() => formData.value.config_reuse_id, (newVal) => {
       hardlink: LinkMode.HARDLINK,
       symlink: LinkMode.SYMLINK,
     }
-    formData.value.link_mode = modeMap[config.organize_mode] || LinkMode.MOVE
-    formData.value.delete_empty_parent = config.auto_clean_source
+    if (config) {
+      formData.value.link_mode = modeMap[config.organize_mode] || LinkMode.MOVE
+      formData.value.delete_empty_parent = config.auto_clean_source
+    }
   }
 })
 
@@ -418,7 +424,7 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
 
             <NFormItem label="配置复用">
               <NSelect
-                v-model:value="formData.config_reuse_id"
+                v-model:value="configReuseFolderId"
                 :options="configReuseOptions"
                 placeholder="从监控目录复制配置"
               />

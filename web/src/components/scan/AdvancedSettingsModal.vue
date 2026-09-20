@@ -61,6 +61,7 @@ const formData = ref<Omit<ManualJobAdvancedSettings, 'use_global_organize' | 'us
   scrape_title: true,
   scrape_plot: true,
   nfo_enabled: true,
+  process_subtitle: true,
 })
 
 // 各标签页的全局配置开关
@@ -240,6 +241,9 @@ watch(() => props.show, (show) => {
               </NFormItem>
               <NFormItem label="生成NFO文件">
                 <NSwitch v-model:value="formData.nfo_enabled" />
+              </NFormItem>
+              <NFormItem label="处理字幕文件">
+                <NSwitch v-model:value="formData.process_subtitle" />
               </NFormItem>
             </NForm>
           </template>

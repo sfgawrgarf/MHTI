@@ -1,4 +1,4 @@
-import type { StorageProvider } from '@/api/types'
+import type { StorageLocator, StorageProvider, WatchedFolder } from '@/api/types'
 
 export interface BreadcrumbBrowseTarget {
   provider: StorageProvider
@@ -17,4 +17,26 @@ export function resolveBreadcrumbBrowseTarget(
     return { provider: '115', fileId: '0' }
   }
   return { provider: currentProvider, fileId: null }
+}
+
+/** Preserve provider identity when a watched folder is used as a task source. */
+export function locatorForWatchedFolder(folder: WatchedFolder): StorageLocator {
+  const provider: StorageProvider =
+    folder.provider === '115' || folder.path.startsWith('/115网盘') ? '115' : 'local'
+  return {
+    provider,
+    path: folder.path,
+    file_id: provider === '115' ? folder.file_id ?? null : undefined,
+    is_dir: true,
+  }
+}
+
+/** Infer the provider for a configured directory that has no persisted file ID. */
+export function locatorForConfiguredPath(path: string): StorageLocator {
+  return {
+    provider: path.startsWith('/115网盘') ? '115' : 'local',
+    path,
+    file_id: path.startsWith('/115网盘') ? null : undefined,
+    is_dir: true,
+  }
 }

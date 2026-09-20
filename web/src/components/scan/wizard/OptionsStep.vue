@@ -32,6 +32,8 @@ const props = defineProps<{
   generateNfo: boolean
   processSubtitle: boolean
   overwriteExisting: boolean
+  overwriteSupported: boolean
+  subtitleSupported: boolean
   advancedSettings: ManualJobAdvancedSettings | null
 }>()
 
@@ -161,9 +163,11 @@ const currentModeInfo = computed(() => {
           <div class="switch-label">
             <NIcon :component="TextOutline" class="item-icon" />
             <span>处理字幕文件</span>
+            <span v-if="!subtitleSupported" class="switch-desc">115 源暂不支持</span>
           </div>
           <NSwitch
             :value="processSubtitle"
+            :disabled="!subtitleSupported"
             @update:value="emit('update:processSubtitle', $event)"
           />
         </div>
@@ -180,10 +184,11 @@ const currentModeInfo = computed(() => {
         <div class="switch-item warning">
           <div class="switch-label">
             <span>覆盖已存在文件</span>
-            <span class="switch-desc">谨慎开启</span>
+            <span class="switch-desc">{{ overwriteSupported ? '谨慎开启' : '115 目标暂不支持' }}</span>
           </div>
           <NSwitch
             :value="overwriteExisting"
+            :disabled="!overwriteSupported"
             @update:value="emit('update:overwriteExisting', $event)"
           />
         </div>

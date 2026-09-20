@@ -16,10 +16,57 @@ from server.models.history import TaskStatus
 from server.models.storage import StorageLocator, StorageProvider
 from server.services import file_operations
 from server.services.rename_service import RenameService
-from server.services.scraper_service import ScraperService
+from server.services.scraper_service import (
+    ScraperService,
+    _resolve_task_output_preferences,
+)
 from server.services.scraper_media import ScraperMediaMixin
 from server.services.subtitle_service import SubtitleService
 from server.services.template_service import TemplateService
+
+
+def test_task_output_preferences_apply_overwrite_and_subtitle_switches():
+    settings = ManualJobAdvancedSettings(
+        use_global_organize=False,
+        overwrite_video=True,
+        process_subtitle=False,
+    )
+
+    assert _resolve_task_output_preferences(settings, None) == ("overwrite", False)
+    assert _resolve_task_output_preferences(settings, "rename") == ("rename", False)
+
+
+def test_global_organize_mode_does_not_enable_task_video_overwrite():
+    settings = ManualJobAdvancedSettings(
+        use_global_organize=True,
+        overwrite_video=True,
+    )
+
+    assert _resolve_task_output_preferences(settings, None) == (None, True)
+
+
+@pytest.mark.asyncio
+async def test_task_image_overwrite_replaces_existing_skip_guard(tmp_path):
+    poster = tmp_path / "poster.jpg"
+    poster.write_bytes(b"old")
+    request = SimpleNamespace(save_path=str(tmp_path), filename="poster.jpg")
+    image_service = SimpleNamespace(
+        generate_series_image_requests=Mock(return_value=[request]),
+        download_batch=AsyncMock(return_value=SimpleNamespace(success=1, failed=0)),
+    )
+    service = ScraperMediaMixin()
+    service.image_service = image_service
+    series = SimpleNamespace(poster_path="/poster.jpg", backdrop_path=None)
+
+    await service._download_series_images(
+        series,
+        str(tmp_path),
+        download_poster=True,
+        download_fanart=False,
+        overwrite_existing=True,
+    )
+
+    image_service.download_batch.assert_awaited_once_with([request])
 
 
 @pytest.mark.parametrize("mode", list(OrganizeMode))

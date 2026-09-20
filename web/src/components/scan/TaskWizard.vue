@@ -23,10 +23,11 @@ import { watcherApi } from '@/api/watcher'
 import { configApi } from '@/api/config'
 import { filesApi } from '@/api/files'
 import { LinkMode } from '@/api/types'
-import type { WatchedFolder, ManualJobAdvancedSettings, OrganizeConfig, DirectoryEntry, StorageLocator } from '@/api/types'
+import type { WatchedFolder, ManualJobAdvancedSettings, OrganizeConfig, ScannedFile, StorageLocator } from '@/api/types'
 import PathSelectStep from './wizard/PathSelectStep.vue'
 import OptionsStep from './wizard/OptionsStep.vue'
 import PreviewStep from './wizard/PreviewStep.vue'
+import { buildWizardAdvancedSettings } from '@/utils/manualJobOptions'
 
 const props = defineProps<{
   show: boolean
@@ -46,7 +47,7 @@ const submitting = ref(false)
 const previewLoading = ref(false)
 
 // 预览数据
-const previewFiles = ref<DirectoryEntry[]>([])
+const previewFiles = ref<ScannedFile[]>([])
 const previewTotal = ref(0)
 
 // 配置数据
@@ -61,6 +62,8 @@ const scanLocator = ref<StorageLocator | null>(null)
 const targetLocator = ref<StorageLocator | null>(null)
 const metadataLocator = ref<StorageLocator | null>(null)
 const allowLocalOutput = ref(false)
+const overwriteSupported = computed(() => targetLocator.value?.provider !== '115')
+const subtitleSupported = computed(() => scanLocator.value?.provider !== '115')
 
 // 表单数据
 const formData = ref({
@@ -69,7 +72,6 @@ const formData = ref({
   metadata_dir: '',
   link_mode: LinkMode.HARDLINK as LinkMode,
   delete_empty_parent: true,
-  config_reuse_id: null as number | null,
   // 下载选项
   download_poster: true,
   download_backdrop: true,
@@ -77,6 +79,18 @@ const formData = ref({
   generate_nfo: true,
   process_subtitle: true,
   overwrite_existing: false,
+})
+
+watch(scanLocator, (locator) => {
+  if (locator?.provider === '115') {
+    formData.value.process_subtitle = false
+  }
+})
+
+watch(targetLocator, (locator) => {
+  if (locator?.provider === '115') {
+    formData.value.overwrite_existing = false
+  }
 })
 
 // 步骤配置
@@ -119,16 +133,13 @@ const loadPreviewFiles = async () => {
 
   previewLoading.value = true
   try {
-    const provider = scanLocator.value?.provider
-    const fileId = scanLocator.value?.file_id
-    const response = await filesApi.browse(formData.value.scan_path, 1, 10, provider, fileId)
-    // 过滤出视频文件
-    previewFiles.value = response.entries.filter(entry => {
-      if (entry.is_dir) return true
-      const ext = entry.name.split('.').pop()?.toLowerCase() || ''
-      return ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'rmvb', 'm4v'].includes(ext)
-    })
-    previewTotal.value = response.total
+    const response = await filesApi.scan(
+      formData.value.scan_path,
+      false,
+      scanLocator.value,
+    )
+    previewFiles.value = response.files.slice(0, 10)
+    previewTotal.value = response.total_files
   } catch (error) {
     console.error('加载预览失败:', error)
     previewFiles.value = []
@@ -147,7 +158,6 @@ const resetForm = () => {
     metadata_dir: '',
     link_mode: LinkMode.HARDLINK,
     delete_empty_parent: true,
-    config_reuse_id: null,
     download_poster: true,
     download_backdrop: true,
     download_thumbnail: true,
@@ -201,6 +211,14 @@ const handleSubmit = async () => {
 
   submitting.value = true
   try {
+    const taskSettings = buildWizardAdvancedSettings({
+      downloadPoster: formData.value.download_poster,
+      downloadBackdrop: formData.value.download_backdrop,
+      downloadThumbnail: formData.value.download_thumbnail,
+      generateNfo: formData.value.generate_nfo,
+      processSubtitle: subtitleSupported.value && formData.value.process_subtitle,
+      overwriteExisting: overwriteSupported.value && formData.value.overwrite_existing,
+    }, advancedSettings.value)
     await manualJobApi.create({
       scan_path: formData.value.scan_path.trim(),
       target_folder: formData.value.target_folder.trim(),
@@ -211,8 +229,7 @@ const handleSubmit = async () => {
       allow_local_output: allowLocalOutput.value,
       link_mode: formData.value.link_mode,
       delete_empty_parent: formData.value.delete_empty_parent,
-      config_reuse_id: formData.value.config_reuse_id,
-      advanced_settings: advancedSettings.value,
+      advanced_settings: taskSettings,
     })
     message.success('任务创建成功')
     emit('success')
@@ -310,6 +327,8 @@ onMounted(() => {
           v-model:generate-nfo="formData.generate_nfo"
           v-model:process-subtitle="formData.process_subtitle"
           v-model:overwrite-existing="formData.overwrite_existing"
+          :overwrite-supported="overwriteSupported"
+          :subtitle-supported="subtitleSupported"
           :advanced-settings="advancedSettings"
           @update:advanced-settings="updateAdvancedSettings"
         />
