@@ -406,6 +406,10 @@ class P115EventStrategy(WatchStrategy):
         events = self._extract_events(resp)
         if events:
             self._last_update_time = max(e["update_time"] for e in events)
+        else:
+            # An empty baseline still represents "now". Keeping zero here
+            # would allow retained historical events to be replayed later.
+            self._last_update_time = int(time.time())
 
     async def _collect_dir_ids(self) -> None:
         """递归收集监控目录及其所有子目录的 id。"""

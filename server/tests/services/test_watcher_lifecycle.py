@@ -111,6 +111,30 @@ def test_p115_event_deduplication_cache_is_bounded() -> None:
     assert strategy._processed_file_ids == {"two", "three"}
 
 
+@pytest.mark.asyncio
+async def test_p115_event_empty_baseline_starts_from_current_time(
+    monkeypatch,
+) -> None:
+    strategy = P115EventStrategy(
+        _p115_folder(mode=WatcherMode.EVENT),
+        lambda _path, _folder: None,
+    )
+
+    async def collect_scope() -> None:
+        strategy._watched_dir_ids = {"folder-1"}
+
+    client = SimpleNamespace(
+        life_list=AsyncMock(return_value={"state": True, "data": {"list": []}}),
+    )
+    monkeypatch.setattr(strategy, "_collect_dir_ids", collect_scope)
+    monkeypatch.setattr(strategy, "_get_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(watcher_module.time, "time", lambda: 1234.9)
+
+    await strategy._init()
+
+    assert strategy._last_update_time == 1234
+
+
 @pytest.mark.parametrize(
     "kwargs, message",
     [
