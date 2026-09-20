@@ -284,8 +284,8 @@ async def health_check() -> dict:
         async with manager.get_connection() as db:
             await db.execute("SELECT 1")
         health_status["checks"]["database"] = "healthy"
-    except Exception as e:
-        health_status["checks"]["database"] = f"unhealthy: {str(e)}"
+    except Exception:
+        health_status["checks"]["database"] = "unhealthy"
         health_status["status"] = "degraded"
 
     # Check TMDB configuration (non-blocking)
@@ -338,11 +338,11 @@ async def readiness_check() -> dict:
         async with manager.get_connection() as db:
             await db.execute("SELECT 1")
         return {"status": "ready"}
-    except Exception as e:
+    except Exception:
         from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=503,
-            content={"status": "not_ready", "reason": str(e)}
+            content={"status": "not_ready", "reason": "database_unavailable"},
         )
 
 

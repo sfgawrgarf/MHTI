@@ -6,6 +6,7 @@ import pytest
 
 from server.core.exceptions import TMDBError, TMDBRateLimitError, TMDBTimeoutError
 from server.models.ai import AIConfig, AIRecognitionResult
+from server.models.emby import ConflictCheckResult, ConflictType
 from server.models.scraper import ScrapeByIdRequest, ScrapeRequest, ScrapeResult, ScrapeStatus
 from server.models.tmdb import (
     TMDBEpisode,
@@ -139,6 +140,38 @@ async def test_manual_scrape_honors_skip_emby_check(scraper, temp_dir):
     assert result is expected
     scraper._check_emby_conflict.assert_not_awaited()
     scraper._execute_scrape_output.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_emby_check_failure_blocks_output(scraper, temp_dir):
+    source = temp_dir / "Known Title S01E01.strm"
+    source.touch()
+    result = ScrapeResult(file_path=str(source), status=ScrapeStatus.SUCCESS)
+    logs = []
+    notify = AsyncMock()
+    scraper._check_emby_conflict = AsyncMock(
+        return_value=ConflictCheckResult(
+            conflict_type=ConflictType.CHECK_FAILED,
+            message="Emby unavailable",
+        )
+    )
+
+    allowed = await scraper._check_emby_before_output(
+        result=result,
+        series=TMDBSeries(id=123, name="Known Title"),
+        tmdb_id=123,
+        season=1,
+        episode=1,
+        scrape_logs=logs,
+        notify_log_update=notify,
+    )
+
+    assert allowed is False
+    assert result.status == ScrapeStatus.API_FAILED
+    assert result.message == "Emby unavailable"
+    assert logs[-1].completed is False
+    assert logs[-1].logs[-1].level.value == "error"
+    notify.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

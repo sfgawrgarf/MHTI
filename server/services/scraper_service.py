@@ -1127,7 +1127,25 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             logger.warning("Emby 冲突检查异常: %s", exc)
             from server.models.emby import ConflictCheckResult
 
-            conflict_result = ConflictCheckResult(conflict_type=ConflictType.NO_CONFLICT)
+            conflict_result = ConflictCheckResult(
+                conflict_type=ConflictType.CHECK_FAILED,
+                message=f"Emby 冲突检查失败: {exc}",
+            )
+
+        if conflict_result.conflict_type == ConflictType.CHECK_FAILED:
+            emby_step.logs.append(
+                ScrapeLogEntry(
+                    message=conflict_result.message or "Emby 冲突检查失败",
+                    level=LogLevel.ERROR,
+                )
+            )
+            emby_step.completed = False
+            result.status = ScrapeStatus.API_FAILED
+            result.message = conflict_result.message or "Emby 冲突检查失败"
+            result.emby_conflict = conflict_result
+            result.scrape_logs = scrape_logs
+            await notify_log_update()
+            return False
 
         if conflict_result.conflict_type == ConflictType.EPISODE_EXISTS:
             emby_step.logs.append(

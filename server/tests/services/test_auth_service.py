@@ -6,11 +6,16 @@
 - 刷新 token 过期时间计算
 """
 
+import asyncio
+from contextlib import asynccontextmanager
+
+import aiosqlite
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from server.services.auth_service import AuthService
 from server.models.auth import AuthConfig
+from server.core.db import configure_connection, create_all_tables
 
 
 @pytest.fixture
@@ -281,3 +286,37 @@ class TestAuthServiceAsync:
             result = await auth_service.verify_credentials("nonexistent", "password")
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_concurrent_registration_creates_only_one_admin(
+        self, auth_service, temp_db, monkeypatch
+    ):
+        async with aiosqlite.connect(temp_db) as db:
+            await configure_connection(db)
+            await create_all_tables(db)
+            await db.commit()
+
+        class IsolatedManager:
+            @asynccontextmanager
+            async def get_connection(self):
+                async with aiosqlite.connect(temp_db) as db:
+                    await configure_connection(db)
+                    yield db
+
+        async def get_manager():
+            return IsolatedManager()
+
+        monkeypatch.setattr(
+            "server.services.auth_service.get_db_manager", get_manager
+        )
+
+        results = await asyncio.gather(
+            auth_service.register_admin("first", "password-one"),
+            auth_service.register_admin("second", "password-two"),
+        )
+
+        async with aiosqlite.connect(temp_db) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM admin")
+            count = (await cursor.fetchone())[0]
+        assert sorted(results) == [False, True]
+        assert count == 1

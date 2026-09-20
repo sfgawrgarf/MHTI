@@ -1,5 +1,6 @@
 """Session management service - database-backed."""
 
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -218,11 +219,32 @@ class SessionService:
             deleted = cursor.rowcount > 0
             if deleted:
                 logger.info(f"Session revoked: {session_id[:8]}...")
-            return deleted
+        if deleted:
+            from server.services.websocket_manager import get_ws_manager
+
+            try:
+                await get_ws_manager().close_session(session_id)
+            except Exception:
+                logger.exception(
+                    "Session %s was revoked but its WebSocket could not be closed",
+                    session_id[:8],
+                )
+        return deleted
 
     async def revoke_all_sessions(self, user_id: int, except_session_id: str | None = None) -> int:
         """Revoke all sessions for a user, optionally except one."""
         async with db_context() as db:
+            if except_session_id:
+                cursor = await db.execute(
+                    "SELECT id FROM sessions WHERE user_id = ? AND id != ?",
+                    (user_id, except_session_id),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT id FROM sessions WHERE user_id = ?",
+                    (user_id,),
+                )
+            revoked_ids = [row[0] for row in await cursor.fetchall()]
             if except_session_id:
                 cursor = await db.execute(
                     "DELETE FROM sessions WHERE user_id = ? AND id != ?",
@@ -235,7 +257,17 @@ class SessionService:
             await db.commit()
             count = cursor.rowcount
             logger.info(f"Revoked {count} sessions for user {user_id}")
-            return count
+        if revoked_ids:
+            from server.services.websocket_manager import get_ws_manager
+
+            manager = get_ws_manager()
+            results = await asyncio.gather(
+                *(manager.close_session(session_id) for session_id in revoked_ids),
+                return_exceptions=True,
+            )
+            if any(isinstance(result, BaseException) for result in results):
+                logger.error("Some revoked-session WebSockets could not be closed")
+        return count
 
     async def get_sessions(self, user_id: int, current_session_id: str | None = None) -> list[SessionInfo]:
         """Get all active sessions for a user."""

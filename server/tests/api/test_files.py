@@ -256,6 +256,28 @@ class TestHealthCheck:
         if "checks" in data:
             assert "database" in data["checks"]
 
+    def test_health_endpoints_do_not_expose_database_errors(self, monkeypatch):
+        from server.core import database
+
+        async def fail_database():
+            raise RuntimeError("secret database path and credentials")
+
+        monkeypatch.setattr(database, "get_db_manager", fail_database)
+        client = TestClient(app)
+
+        health = client.get("/health")
+        readiness = client.get("/health/ready")
+
+        assert health.status_code == 200
+        assert health.json()["checks"]["database"] == "unhealthy"
+        assert "secret" not in health.text
+        assert readiness.status_code == 503
+        assert readiness.json() == {
+            "status": "not_ready",
+            "reason": "database_unavailable",
+        }
+        assert "secret" not in readiness.text
+
 
 class TestFileBrowseAPI:
     """Tests for /api/files/browse endpoint."""

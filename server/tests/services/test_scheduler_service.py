@@ -199,3 +199,98 @@ async def test_scheduler_worker_recovers_after_polling_failure(
     await service.stop()
 
     assert attempts >= 2
+
+
+@pytest.mark.asyncio
+async def test_failed_execution_retries_then_clears_error_on_success(temp_db) -> None:
+    executor = AsyncMock(side_effect=[RuntimeError("temporary"), None])
+    service = SchedulerService(temp_db, executor=executor, retry_delays=(0,))
+    task = await service.create_task(
+        ScheduledTaskCreate(
+            name="retry",
+            folder_path="/media/tv",
+            cron_expression="* * * * *",
+        )
+    )
+    due = datetime.now() - timedelta(minutes=1)
+    async with db_connection(temp_db) as db:
+        await db.execute(
+            "UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+            (due.isoformat(), task.id),
+        )
+        await db.commit()
+
+    await service.run_due_tasks(datetime.now())
+    retrying = await service.get_task(task.id)
+    assert retrying is not None
+    assert retrying.last_status == "retrying"
+    assert retrying.last_error == "temporary"
+    assert retrying.retry_count == 1
+
+    await service.run_due_tasks(datetime.now() + timedelta(seconds=1))
+    succeeded = await service.get_task(task.id)
+    assert succeeded is not None
+    assert succeeded.last_status == "success"
+    assert succeeded.last_error is None
+    assert succeeded.retry_count == 0
+    assert succeeded.last_attempt is not None
+    assert executor.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_policy_is_bounded_and_returns_to_cron_schedule(temp_db) -> None:
+    executor = AsyncMock(side_effect=RuntimeError("persistent"))
+    service = SchedulerService(temp_db, executor=executor, retry_delays=(0, 0))
+    task = await service.create_task(
+        ScheduledTaskCreate(
+            name="bounded",
+            folder_path="/media/tv",
+            cron_expression="* * * * *",
+        )
+    )
+    async with db_connection(temp_db) as db:
+        await db.execute(
+            "UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+            ((datetime.now() - timedelta(minutes=1)).isoformat(), task.id),
+        )
+        await db.commit()
+
+    for _ in range(3):
+        await service.run_due_tasks(datetime.now() + timedelta(seconds=1))
+
+    failed = await service.get_task(task.id)
+    assert failed is not None
+    assert failed.last_status == "failed"
+    assert failed.retry_count == 3
+    assert failed.last_error == "persistent"
+    assert failed.next_run is not None
+    assert executor.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_running_task_is_recovered_after_restart(temp_db) -> None:
+    seed = SchedulerService(temp_db)
+    task = await seed.create_task(
+        ScheduledTaskCreate(
+            name="interrupted",
+            folder_path="/media/tv",
+            cron_expression="* * * * *",
+        )
+    )
+    async with db_connection(temp_db) as db:
+        await db.execute(
+            """UPDATE scheduled_tasks
+               SET last_status = 'running', next_run = NULL, retry_count = 0
+               WHERE id = ?""",
+            (task.id,),
+        )
+        await db.commit()
+
+    restarted = SchedulerService(temp_db, retry_delays=(30,))
+    recovered = await restarted.get_task(task.id)
+
+    assert recovered is not None
+    assert recovered.last_status == "retrying"
+    assert recovered.retry_count == 1
+    assert recovered.last_error == "上次执行因服务重启而中断"
+    assert recovered.next_run is not None

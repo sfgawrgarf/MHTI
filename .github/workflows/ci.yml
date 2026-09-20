@@ -158,7 +158,7 @@ jobs:
         run: |
           docker run -d --name mhti-smoke -p 127.0.0.1:18000:8000 mhti:test
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:18000/health; then
+            if curl --fail --silent http://127.0.0.1:18000/health/ready; then
               curl --fail --silent http://127.0.0.1:18000/ | grep -qi '<!doctype html'
               exit 0
             fi
@@ -174,7 +174,7 @@ jobs:
           docker compose -p mhti-smoke up -d --pull never
           for attempt in $(seq 1 45); do
             if [ "$(docker inspect --format '{{.State.Health.Status}}' mhti)" = healthy ]; then
-              curl --fail --silent http://127.0.0.1:8000/health
+              curl --fail --silent http://127.0.0.1:8000/health/ready
               exit 0
             fi
             sleep 2

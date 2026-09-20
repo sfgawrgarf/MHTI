@@ -265,6 +265,13 @@ async def change_password(
     if not success:
         return ChangePasswordResponse(success=False, message="当前密码错误")
 
+    user_id = await auth_service.get_user_id(auth.username)
+    if user_id:
+        await session_service.revoke_all_sessions(
+            user_id,
+            except_session_id=auth.session_id,
+        )
+
     return ChangePasswordResponse(success=True, message="密码修改成功")
 
 

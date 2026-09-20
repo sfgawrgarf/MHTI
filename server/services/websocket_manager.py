@@ -150,6 +150,29 @@ class ConnectionManager:
                 self.disconnect(client_id)
         return closed
 
+    async def close_session(
+        self,
+        session_id: str,
+        *,
+        code: int = 4401,
+        reason: str = "Session revoked",
+    ) -> int:
+        """Immediately close every connection authenticated by a session."""
+        client_ids = [
+            client_id
+            for client_id, active_session in self.client_sessions.items()
+            if active_session == session_id
+        ]
+        if not client_ids:
+            return 0
+        results = await asyncio.gather(
+            *(
+                self.close_client(client_id, code=code, reason=reason)
+                for client_id in client_ids
+            )
+        )
+        return sum(bool(result) for result in results)
+
     async def broadcast_to_job(self, job_id: str, message: dict[str, Any]) -> None:
         """向订阅了该任务的所有客户端广播消息"""
         client_ids = self.subscriptions.get(job_id, set()).copy()
