@@ -1,7 +1,9 @@
 """Organize configuration data models."""
 
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from server.models.storage import is_p115_virtual_path
 
 
 class OrganizeMode(str, Enum):
@@ -24,3 +26,11 @@ class OrganizeConfig(BaseModel):
     filename_blacklist: list[str] = ["sample", "trailer"]  # 文件名黑名单
     junk_pattern_filter: list[str] = []  # 垃圾信息过滤正则
     auto_clean_source: bool = False  # 自动清理源目录
+
+    @field_validator("metadata_dir")
+    @classmethod
+    def validate_metadata_dir(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized and is_p115_virtual_path(normalized):
+            raise ValueError("元数据目录仅支持本地媒体目录")
+        return normalized

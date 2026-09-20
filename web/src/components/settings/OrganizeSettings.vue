@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import {
   NCard,
   NSpace,
@@ -17,6 +17,7 @@ import { FolderOutline } from '@vicons/ionicons5'
 import { configApi } from '@/api/config'
 import type { OrganizeMode } from '@/api/types'
 import FolderBrowserModal from '@/components/scan/FolderBrowserModal.vue'
+import { isP115VirtualPath } from '@/utils/storageNavigation'
 
 const message = useMessage()
 const loading = ref(false)
@@ -30,6 +31,11 @@ const fileTypeWhitelist = ref<string[]>(['mkv', 'mp4', 'avi', 'wmv', 'ts', 'rmvb
 const filenameBlacklist = ref<string[]>(['sample', 'trailer'])
 const junkPatternFilter = ref<string[]>([])
 const autoCleanSource = ref(false)
+const metadataDirError = computed(() =>
+  metadataDir.value.trim() && isP115VirtualPath(metadataDir.value)
+    ? '元数据目录仅支持本地媒体目录'
+    : null,
+)
 
 // 文件夹浏览器状态
 const showOrganizeDirBrowser = ref(false)
@@ -62,6 +68,10 @@ const loadConfig = async () => {
 }
 
 const saveConfig = async () => {
+  if (metadataDirError.value) {
+    message.warning(metadataDirError.value)
+    return
+  }
   saving.value = true
   try {
     await configApi.saveOrganizeConfig({
@@ -109,7 +119,11 @@ onMounted(loadConfig)
         </div>
       </NFormItem>
 
-      <NFormItem label="元数据目录">
+      <NFormItem
+        label="元数据目录"
+        :validation-status="metadataDirError ? 'error' : undefined"
+        :feedback="metadataDirError || undefined"
+      >
         <div class="path-input">
           <NInput v-model:value="metadataDir" placeholder="NFO和图片存放目录（留空则与视频同目录）" />
           <NButton @click="showMetadataDirBrowser = true">
@@ -148,7 +162,12 @@ onMounted(loadConfig)
       </NFormItem>
 
       <NSpace>
-        <NButton type="primary" :loading="saving" @click="saveConfig">
+        <NButton
+          type="primary"
+          :loading="saving"
+          :disabled="metadataDirError !== null"
+          @click="saveConfig"
+        >
           保存配置
         </NButton>
       </NSpace>
@@ -166,6 +185,7 @@ onMounted(loadConfig)
   <FolderBrowserModal
     v-model:show="showMetadataDirBrowser"
     title="选择元数据目录"
+    :allow-p115="false"
     @confirm="handleMetadataDirConfirm"
   />
 </template>

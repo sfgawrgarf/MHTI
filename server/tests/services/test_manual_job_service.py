@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import aiosqlite
 import pytest
@@ -41,6 +42,17 @@ def _build_locator(
         parent_id=parent_id,
         is_dir=is_dir,
     )
+
+
+def test_p115_scan_result_requires_its_own_file_id() -> None:
+    scan_locator = _build_locator(path="/115网盘/待整理", file_id="scan-root")
+
+    with pytest.raises(ValueError, match="缺少文件 ID"):
+        manual_job_service_module._build_file_locator_from_scan(
+            scan_locator,
+            SimpleNamespace(file_id="0", parent_id="scan-root"),
+            "/115网盘/待整理/S01E01.mkv",
+        )
 
 
 @pytest.mark.asyncio

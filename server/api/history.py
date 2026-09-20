@@ -20,6 +20,8 @@ from server.models.history import (
     HistoryRecordDetail,
     TaskStatus,
 )
+from server.models.scrape_job import ScrapeJobSource
+from server.models.storage import is_p115_to_local
 from server.services.history_service import HistoryService
 
 router = APIRouter(prefix="/api/history", tags=["history"], dependencies=[Depends(require_auth)])
@@ -39,11 +41,20 @@ async def _restore_locators_from_scrape_job(record: HistoryRecord) -> dict:
         job = await service.get_job(record.scrape_job_id)
         if job is None:
             raise HTTPException(status_code=409, detail="原始任务不存在，无法安全恢复整理参数")
+        allow_local_output = job.allow_local_output or (
+            job.source == ScrapeJobSource.WATCHER
+            and is_p115_to_local(
+                source_path=job.file_path,
+                source_locator=job.file_locator,
+                target_path=job.output_dir,
+                target_locator=job.output_locator,
+            )
+        )
         result = {
             "file_locator": job.file_locator,
             "output_locator": job.output_locator,
             "metadata_locator": job.metadata_locator,
-            "allow_local_output": job.allow_local_output,
+            "allow_local_output": allow_local_output,
             "output_dir": job.output_dir,
             "metadata_dir": job.metadata_dir,
             "link_mode": job.link_mode,

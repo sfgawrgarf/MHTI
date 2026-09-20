@@ -7,6 +7,8 @@ from pydantic import BaseModel, model_validator
 from server.models.storage import (
     StorageLocator,
     infer_directory_locator,
+    is_p115_to_local,
+    normalize_file_locator,
     validate_storage_capabilities,
 )
 
@@ -127,13 +129,29 @@ class ManualJobCreate(BaseModel):
     @model_validator(mode="after")
     def validate_storage_selection(self) -> "ManualJobCreate":
         """Normalize plain paths and reject unsupported provider combinations."""
-        self.scan_locator = infer_directory_locator(self.scan_path, self.scan_locator)
+        self.scan_locator = infer_directory_locator(
+            self.scan_path, self.scan_locator, allow_file=True
+        )
+        if self.scan_locator is not None and not self.scan_locator.is_dir:
+            self.scan_locator = normalize_file_locator(
+                self.scan_path, self.scan_locator
+            )
         self.target_locator = infer_directory_locator(
             self.target_folder, self.target_locator
         )
         self.metadata_locator = infer_directory_locator(
             self.metadata_dir or None, self.metadata_locator
         )
+        if (
+            is_p115_to_local(
+                source_path=self.scan_path,
+                source_locator=self.scan_locator,
+                target_path=self.target_folder,
+                target_locator=self.target_locator,
+            )
+            and self.link_mode == LinkMode.MOVE
+        ):
+            self.link_mode = LinkMode.COPY
         validate_storage_capabilities(
             source_path=self.scan_path,
             source_locator=self.scan_locator,

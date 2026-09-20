@@ -1,6 +1,7 @@
 """Configuration storage service."""
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -13,11 +14,14 @@ from server.models.config import LanguageConfig, ProxyConfig, ProxyType, ApiToke
 from server.models.cloud_115 import Cloud115Config
 from server.models.emby import EmbyConfig
 from server.models.organize import OrganizeConfig, OrganizeMode
+from server.models.storage import is_p115_virtual_path
 from server.models.download import DownloadConfig
 from server.models.template import NamingTemplate
 from server.models.watcher import WatcherConfig, WatcherMode
 from server.models.nfo import NfoConfig
 from server.models.system import SystemConfig
+
+logger = logging.getLogger(__name__)
 
 # Config keys
 COOKIE_KEY = "tmdb_cookie"
@@ -297,9 +301,13 @@ class ConfigService:
             return OrganizeConfig()
         try:
             data = json.loads(value)
+            metadata_dir = data.get("metadata_dir", "")
+            if metadata_dir and is_p115_virtual_path(metadata_dir.strip()):
+                logger.warning("已忽略不再支持的 115 元数据目录配置")
+                metadata_dir = ""
             return OrganizeConfig(
                 organize_dir=data.get("organize_dir", ""),
-                metadata_dir=data.get("metadata_dir", ""),
+                metadata_dir=metadata_dir,
                 organize_mode=OrganizeMode(data.get("organize_mode", "copy")),
                 min_file_size_mb=data.get("min_file_size_mb", 100),
                 file_type_whitelist=data.get(

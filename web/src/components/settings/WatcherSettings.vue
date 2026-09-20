@@ -19,6 +19,7 @@ import { FolderOutline, AddOutline, TrashOutline } from '@vicons/ionicons5'
 import { configApi } from '@/api/config'
 import type { WatcherMode } from '@/api/types'
 import FolderBrowserModal from '@/components/scan/FolderBrowserModal.vue'
+import { isP115VirtualPath } from '@/utils/storageNavigation'
 
 const message = useMessage()
 const loading = ref(false)
@@ -31,7 +32,7 @@ const watchDirs = ref<string[]>([])
 
 // 是否含 115 网盘目录（决定是否显示事件模式选项）
 const hasP115Dir = computed(() =>
-  watchDirs.value.some((d) => d.startsWith('/115网盘'))
+  watchDirs.value.some(isP115VirtualPath)
 )
 
 // 115 目录变化时自动调整模式

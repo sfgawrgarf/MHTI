@@ -364,6 +364,12 @@ class P115Service:
                 entry = self._normalize_browse_entry(row, current_path_resolved)
                 if entry["is_dir"]:
                     child_id = entry.get("file_id") or "0"
+                    if child_id == "0":
+                        logger.warning(
+                            "115 扫描忽略缺少有效 ID 的目录: %s",
+                            entry.get("path"),
+                        )
+                        continue
                     await self._scan_recursive(
                         client=client,
                         directory_id=child_id,

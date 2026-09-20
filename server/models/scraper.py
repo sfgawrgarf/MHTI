@@ -12,6 +12,7 @@ from server.models.organize import OrganizeMode
 from server.models.storage import (
     StorageLocator,
     infer_directory_locator,
+    is_p115_to_local,
     normalize_file_locator,
     validate_storage_capabilities,
 )
@@ -32,6 +33,16 @@ class _StorageValidatedScrapeRequest(BaseModel):
         self.metadata_locator = infer_directory_locator(  # type: ignore[attr-defined]
             self.metadata_dir, self.metadata_locator  # type: ignore[attr-defined]
         )
+        if (
+            is_p115_to_local(
+                source_path=self.file_path,  # type: ignore[attr-defined]
+                source_locator=self.file_locator,  # type: ignore[attr-defined]
+                target_path=self.output_dir,  # type: ignore[attr-defined]
+                target_locator=self.output_locator,  # type: ignore[attr-defined]
+            )
+            and self.link_mode in (None, OrganizeMode.MOVE)  # type: ignore[attr-defined]
+        ):
+            self.link_mode = OrganizeMode.COPY  # type: ignore[attr-defined]
         validate_storage_capabilities(
             source_path=self.file_path,  # type: ignore[attr-defined]
             source_locator=self.file_locator,  # type: ignore[attr-defined]

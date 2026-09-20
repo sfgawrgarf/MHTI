@@ -35,6 +35,8 @@ class StorageLocator(BaseModel):
 def infer_directory_locator(
     path: str | None,
     locator: StorageLocator | None,
+    *,
+    allow_file: bool = False,
 ) -> StorageLocator | None:
     """Return a provider-aware directory locator for a configured path.
 
@@ -43,8 +45,12 @@ def infer_directory_locator(
     as a local filesystem destination later in the worker.
     """
     if locator is not None:
+        if not locator.path.strip():
+            raise ValueError("存储定位路径不能为空")
         if path and locator.path.rstrip("/") != path.rstrip("/"):
             raise ValueError("存储定位信息与所选路径不一致")
+        if not allow_file and not locator.is_dir:
+            raise ValueError("输出和元数据存储定位必须是目录")
         return locator
     if not path:
         return None
@@ -63,11 +69,38 @@ def normalize_file_locator(
     """Validate a source-file locator and drop redundant local locators."""
     if locator is None:
         return None
+    if not locator.path.strip():
+        raise ValueError("源文件存储定位路径不能为空")
     if locator.path.rstrip("/") != path.rstrip("/"):
         raise ValueError("存储定位信息与源文件路径不一致")
     if locator.provider == StorageProvider.LOCAL:
         return None
+    if locator.is_dir:
+        raise ValueError("115 源存储定位必须是文件")
+    if not locator.file_id or locator.file_id == "0":
+        raise ValueError("115 源文件缺少有效的 file_id")
     return locator
+
+
+def is_p115_to_local(
+    *,
+    source_path: str,
+    source_locator: StorageLocator | None,
+    target_path: str | None,
+    target_locator: StorageLocator | None,
+) -> bool:
+    """Return whether a selection downloads a 115 source to local storage."""
+    source_is_p115 = (
+        source_locator.provider == StorageProvider.P115
+        if source_locator is not None
+        else is_p115_virtual_path(source_path)
+    )
+    target_is_p115 = (
+        target_locator.provider == StorageProvider.P115
+        if target_locator is not None
+        else bool(target_path and is_p115_virtual_path(target_path))
+    )
+    return source_is_p115 and not target_is_p115
 
 
 def validate_storage_capabilities(
@@ -105,6 +138,13 @@ def validate_storage_capabilities(
 
     if source_provider == StorageProvider.P115 and source_locator is None:
         raise ValueError("115 源文件缺少存储定位信息，请重新选择来源")
+
+    if (
+        source_provider == StorageProvider.P115
+        and not target_path
+        and target_locator is None
+    ):
+        raise ValueError("115 源文件必须指定输出目录")
 
     if source_provider == StorageProvider.LOCAL and target_provider == StorageProvider.P115:
         raise ValueError("暂不支持将本地文件输出到 115 网盘")

@@ -10,6 +10,7 @@ from server.models.organize import OrganizeMode
 from server.models.storage import (
     StorageLocator,
     infer_directory_locator,
+    is_p115_to_local,
     normalize_file_locator,
     validate_storage_capabilities,
 )
@@ -104,6 +105,16 @@ class ScrapeJobCreate(BaseModel):
         self.metadata_locator = infer_directory_locator(
             self.metadata_dir, self.metadata_locator
         )
+        if (
+            is_p115_to_local(
+                source_path=self.file_path,
+                source_locator=self.file_locator,
+                target_path=self.output_dir,
+                target_locator=self.output_locator,
+            )
+            and self.link_mode in (None, OrganizeMode.MOVE)
+        ):
+            self.link_mode = OrganizeMode.COPY
         validate_storage_capabilities(
             source_path=self.file_path,
             source_locator=self.file_locator,

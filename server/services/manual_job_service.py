@@ -43,10 +43,12 @@ def _build_file_locator_from_scan(
     file_path: str,
 ) -> StorageLocator:
     """根据扫描结果构造单文件的 115 StorageLocator。"""
+    if not scanned_file.file_id or scanned_file.file_id == "0":
+        raise ValueError(f"115 扫描结果缺少文件 ID: {file_path}")
     return StorageLocator(
         provider=StorageProvider.P115,
         path=file_path,
-        file_id=scanned_file.file_id or scan_locator.file_id,
+        file_id=scanned_file.file_id,
         parent_id=scanned_file.parent_id or scan_locator.parent_id,
         is_dir=False,
     )
