@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import threading
 from contextlib import contextmanager
@@ -23,6 +24,8 @@ from server.models.storage import (
     is_p115_virtual_path,
 )
 from server.services.config_service import ConfigService
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_APP = "alipaymini"
 PROJECT_P115_HOME = Path(__file__).resolve().parents[2] / "data" / "p115-home"
