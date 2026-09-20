@@ -613,6 +613,7 @@ async def test_execute_job_uses_selected_p115_file_without_directory_scan(
             target_folder="/library",
             scan_locator=file_locator,
             allow_local_output=True,
+            link_mode=LinkMode.COPY,
         )
     )
 

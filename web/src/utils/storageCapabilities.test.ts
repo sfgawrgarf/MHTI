@@ -36,6 +36,18 @@ describe('getStorageSelectionError', () => {
     })).toBeNull()
   })
 
+  it('rejects move when a 115 file is downloaded to local storage', () => {
+    expect(getStorageSelectionError({
+      ...baseSelection,
+      sources: [{
+        path: '/115网盘/待整理',
+        locator: { provider: '115', path: '/115网盘/待整理', is_dir: true },
+      }],
+      allowLocalOutput: true,
+      linkMode: LinkMode.MOVE,
+    })).toContain('下载到本地仅支持复制')
+  })
+
   it('rejects link modes that depend on a local 115 source file', () => {
     expect(getStorageSelectionError({
       ...baseSelection,

@@ -33,11 +33,22 @@ def test_manual_job_normalizes_and_allows_approved_p115_to_local() -> None:
         target_folder="/library",
         scan_locator=_p115_locator("/115网盘/待整理"),
         allow_local_output=True,
-        link_mode=LinkMode.MOVE,
+        link_mode=LinkMode.COPY,
     )
 
     assert request.target_locator is not None
     assert request.target_locator.provider == StorageProvider.LOCAL
+
+
+def test_manual_job_rejects_move_when_downloading_p115_to_local() -> None:
+    with pytest.raises(ValueError, match="下载到本地仅支持复制"):
+        ManualJobCreate(
+            scan_path="/115网盘/待整理",
+            target_folder="/library",
+            scan_locator=_p115_locator("/115网盘/待整理"),
+            allow_local_output=True,
+            link_mode=LinkMode.MOVE,
+        )
 
 
 @pytest.mark.parametrize("mode", [LinkMode.HARDLINK, LinkMode.SYMLINK])
@@ -81,4 +92,39 @@ def test_direct_scrape_request_enforces_the_same_permission() -> None:
             output_dir="/library",
             file_locator=file_locator,
             link_mode=OrganizeMode.COPY,
+        )
+
+
+def test_direct_scrape_drops_redundant_local_file_locator() -> None:
+    request = ScrapeByIdRequest(
+        file_path="/incoming/S01E01.mkv",
+        tmdb_id=1,
+        season=1,
+        episode=1,
+        output_dir="/library",
+        file_locator=StorageLocator(
+            provider=StorageProvider.LOCAL,
+            path="/incoming/S01E01.mkv",
+            is_dir=False,
+        ),
+        link_mode=OrganizeMode.MOVE,
+    )
+
+    assert request.file_locator is None
+
+
+def test_direct_scrape_rejects_mismatched_file_locator_path() -> None:
+    with pytest.raises(ValueError, match="源文件路径不一致"):
+        ScrapeByIdRequest(
+            file_path="/incoming/S01E01.mkv",
+            tmdb_id=1,
+            season=1,
+            episode=1,
+            output_dir="/library",
+            file_locator=StorageLocator(
+                provider=StorageProvider.LOCAL,
+                path="/incoming/other.mkv",
+                is_dir=False,
+            ),
+            link_mode=OrganizeMode.MOVE,
         )

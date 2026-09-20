@@ -94,6 +94,11 @@ const effectiveSources = computed(() => scanSources.value.length
 const hasP115Source = computed(() => effectiveSources.value.some(source =>
   isP115Selection(source.path, source.locator),
 ))
+const requiresP115LocalCopy = computed(() =>
+  hasP115Source.value &&
+  formData.value.target_folder.trim() !== '' &&
+  !isP115Selection(formData.value.target_folder, targetLocator.value),
+)
 const storageSelectionError = computed(() => getStorageSelectionError({
   sources: effectiveSources.value,
   targetPath: formData.value.target_folder,
@@ -115,7 +120,7 @@ const involvesP115 = computed(
 // 整理模式选项
 const linkModeOptions = computed(() => [
   { label: '硬链接', value: LinkMode.HARDLINK, disabled: hasP115Source.value },
-  { label: '移动', value: LinkMode.MOVE, disabled: false },
+  { label: '移动', value: LinkMode.MOVE, disabled: requiresP115LocalCopy.value },
   { label: '复制', value: LinkMode.COPY, disabled: false },
   { label: '软链接', value: LinkMode.SYMLINK, disabled: hasP115Source.value },
 ])
@@ -268,6 +273,12 @@ watch(hasP115Source, (isP115) => {
     !isP115OrganizeMode(formData.value.link_mode)
   ) {
     formData.value.link_mode = LinkMode.MOVE
+  }
+})
+
+watch([requiresP115LocalCopy, () => formData.value.link_mode], ([copyOnly, mode]) => {
+  if (copyOnly && mode !== LinkMode.COPY) {
+    formData.value.link_mode = LinkMode.COPY
   }
 })
 

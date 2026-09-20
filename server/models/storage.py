@@ -56,6 +56,20 @@ def infer_directory_locator(
     return StorageLocator(provider=provider, path=path, is_dir=True)
 
 
+def normalize_file_locator(
+    path: str,
+    locator: StorageLocator | None,
+) -> StorageLocator | None:
+    """Validate a source-file locator and drop redundant local locators."""
+    if locator is None:
+        return None
+    if locator.path.rstrip("/") != path.rstrip("/"):
+        raise ValueError("存储定位信息与源文件路径不一致")
+    if locator.provider == StorageProvider.LOCAL:
+        return None
+    return locator
+
+
 def validate_storage_capabilities(
     *,
     source_path: str,
@@ -113,3 +127,10 @@ def validate_storage_capabilities(
         and not allow_local_output
     ):
         raise ValueError("115 文件输出到本地前必须开启“允许下载到本地”")
+
+    if (
+        source_provider == StorageProvider.P115
+        and target_provider == StorageProvider.LOCAL
+        and mode_value not in {"copy", 3}
+    ):
+        raise ValueError("115 文件下载到本地仅支持复制模式")

@@ -10,6 +10,7 @@ from server.models.organize import OrganizeMode
 from server.models.storage import (
     StorageLocator,
     infer_directory_locator,
+    normalize_file_locator,
     validate_storage_capabilities,
 )
 
@@ -96,6 +97,7 @@ class ScrapeJobCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_storage_selection(self) -> "ScrapeJobCreate":
+        self.file_locator = normalize_file_locator(self.file_path, self.file_locator)
         self.output_locator = infer_directory_locator(
             self.output_dir, self.output_locator
         )

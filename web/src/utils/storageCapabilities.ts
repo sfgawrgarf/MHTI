@@ -1,5 +1,6 @@
 import { LinkMode } from '@/api/types'
 import type { StorageLocator } from '@/api/types'
+import { isP115VirtualPath } from './storageNavigation'
 
 export interface StorageSourceSelection {
   path: string
@@ -16,13 +17,8 @@ export interface StorageSelection {
   linkMode: LinkMode
 }
 
-const isP115Path = (path: string) => {
-  const normalized = path.replace(/\/+$/, '')
-  return normalized === '/115网盘' || normalized.startsWith('/115网盘/')
-}
-
 export const isP115Selection = (path: string, locator: StorageLocator | null) =>
-  locator?.provider === '115' || (!locator && isP115Path(path))
+  locator?.provider === '115' || (!locator && isP115VirtualPath(path))
 
 export const isP115OrganizeMode = (mode: LinkMode) =>
   mode === LinkMode.COPY || mode === LinkMode.MOVE
@@ -59,6 +55,13 @@ export function getStorageSelectionError(selection: StorageSelection): string | 
   }
   if (hasP115Source && !targetIsP115 && !selection.allowLocalOutput) {
     return '115 文件输出到本地前必须开启“允许下载到本地”'
+  }
+  if (
+    hasP115Source &&
+    !targetIsP115 &&
+    selection.linkMode !== LinkMode.COPY
+  ) {
+    return '115 文件下载到本地仅支持复制模式'
   }
   return null
 }

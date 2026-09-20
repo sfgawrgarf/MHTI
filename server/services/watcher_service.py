@@ -1121,14 +1121,24 @@ class WatcherService:
             if (
                 file_locator
                 and file_locator.provider == StorageProvider.P115
-                and link_mode not in (OrganizeMode.COPY, OrganizeMode.MOVE)
+                and (
+                    allow_local_output
+                    or link_mode not in (OrganizeMode.COPY, OrganizeMode.MOVE)
+                )
+                and link_mode != OrganizeMode.COPY
             ):
                 effective_link_mode = OrganizeMode.COPY
-                logger.warning(
-                    "115 监控源不支持 %s，任务将改用复制模式: %s",
-                    link_mode.value,
-                    file.path,
-                )
+                if allow_local_output:
+                    logger.warning(
+                        "115 监控源下载到本地仅支持复制，任务将改用复制模式: %s",
+                        file.path,
+                    )
+                else:
+                    logger.warning(
+                        "115 监控源不支持 %s，任务将改用复制模式: %s",
+                        link_mode.value,
+                        file.path,
+                    )
 
             job_create = ScrapeJobCreate(
                 file_path=file.path,

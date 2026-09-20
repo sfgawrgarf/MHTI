@@ -35,6 +35,7 @@ const props = defineProps<{
   overwriteSupported: boolean
   subtitleSupported: boolean
   restrictProviderModes: boolean
+  copyOnlyProviderMode: boolean
   advancedSettings: ManualJobAdvancedSettings | null
 }>()
 
@@ -54,7 +55,7 @@ const emit = defineEmits<{
 const linkModeOptions = computed(() => [
   { label: '硬链接', value: LinkMode.HARDLINK, icon: LinkOutline, tip: '推荐，节省空间且保留原文件', disabled: props.restrictProviderModes },
   { label: '复制', value: LinkMode.COPY, icon: CopyOutline, tip: '复制文件，占用双倍空间', disabled: false },
-  { label: '移动', value: LinkMode.MOVE, icon: SwapHorizontalOutline, tip: '移动文件，原位置不保留', disabled: false },
+  { label: '移动', value: LinkMode.MOVE, icon: SwapHorizontalOutline, tip: '移动文件，原位置不保留', disabled: props.copyOnlyProviderMode },
   { label: '软链接', value: LinkMode.SYMLINK, icon: DocumentOutline, tip: '符号链接，需原文件存在', disabled: props.restrictProviderModes },
 ])
 

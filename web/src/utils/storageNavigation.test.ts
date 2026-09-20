@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  isP115VirtualPath,
   locatorForConfiguredPath,
   locatorForWatchedFolder,
   resolveBreadcrumbBrowseTarget,
@@ -55,6 +56,25 @@ describe('resolveBreadcrumbBrowseTarget', () => {
       provider: '115',
       path: '/115网盘/媒体',
       file_id: null,
+      is_dir: true,
+    })
+  })
+
+  it('does not confuse a similarly prefixed local folder with the 115 root', () => {
+    expect(isP115VirtualPath('/115网盘备份')).toBe(false)
+    expect(locatorForConfiguredPath('/115网盘备份')).toEqual({
+      provider: 'local',
+      path: '/115网盘备份',
+      file_id: undefined,
+      is_dir: true,
+    })
+  })
+
+  it('normalizes surrounding whitespace before building a locator', () => {
+    expect(locatorForConfiguredPath('  /library  ')).toEqual({
+      provider: 'local',
+      path: '/library',
+      file_id: undefined,
       is_dir: true,
     })
   })

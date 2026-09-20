@@ -12,6 +12,7 @@ from server.models.organize import OrganizeMode
 from server.models.storage import (
     StorageLocator,
     infer_directory_locator,
+    normalize_file_locator,
     validate_storage_capabilities,
 )
 from server.models.tmdb import TMDBSearchResult, TMDBSeries, TMDBEpisode
@@ -22,6 +23,9 @@ class _StorageValidatedScrapeRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_storage_selection(self) -> "_StorageValidatedScrapeRequest":
+        self.file_locator = normalize_file_locator(  # type: ignore[attr-defined]
+            self.file_path, self.file_locator  # type: ignore[attr-defined]
+        )
         self.output_locator = infer_directory_locator(  # type: ignore[attr-defined]
             self.output_dir, self.output_locator  # type: ignore[attr-defined]
         )

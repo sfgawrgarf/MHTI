@@ -89,6 +89,11 @@ const formData = ref({
 const hasP115Source = computed(() =>
   isP115Selection(formData.value.scan_path, scanLocator.value),
 )
+const requiresP115LocalCopy = computed(() =>
+  hasP115Source.value &&
+  formData.value.target_folder.trim() !== '' &&
+  !isP115Selection(formData.value.target_folder, targetLocator.value),
+)
 const storageSelectionError = computed(() => getStorageSelectionError({
   sources: [{ path: formData.value.scan_path, locator: scanLocator.value }],
   targetPath: formData.value.target_folder,
@@ -117,6 +122,12 @@ watch(hasP115Source, (isP115) => {
     !isP115OrganizeMode(formData.value.link_mode)
   ) {
     formData.value.link_mode = LinkMode.MOVE
+  }
+})
+
+watch([requiresP115LocalCopy, () => formData.value.link_mode], ([copyOnly, mode]) => {
+  if (copyOnly && mode !== LinkMode.COPY) {
+    formData.value.link_mode = LinkMode.COPY
   }
 })
 
@@ -364,6 +375,7 @@ onMounted(() => {
           :overwrite-supported="overwriteSupported"
           :subtitle-supported="subtitleSupported"
           :restrict-provider-modes="hasP115Source"
+          :copy-only-provider-mode="requiresP115LocalCopy"
           :advanced-settings="advancedSettings"
           @update:advanced-settings="updateAdvancedSettings"
         />
