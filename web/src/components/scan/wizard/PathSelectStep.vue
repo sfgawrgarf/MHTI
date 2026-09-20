@@ -33,6 +33,7 @@ const props = defineProps<{
   watchedFolders: WatchedFolder[]
   globalConfig: OrganizeConfig | null
   allowLocalOutput: boolean
+  storageError: string | null
 }>()
 
 const emit = defineEmits<{
@@ -114,17 +115,17 @@ const useGlobalTargetFolder = () => {
 
 const handleScanPathInput = (path: string) => {
   emit('update:scanPath', path)
-  emit('update:scanLocator', null)
+  emit('update:scanLocator', path.trim() ? locatorForConfiguredPath(path) : null)
 }
 
 const handleTargetFolderInput = (path: string) => {
   emit('update:targetFolder', path)
-  emit('update:targetLocator', null)
+  emit('update:targetLocator', path.trim() ? locatorForConfiguredPath(path) : null)
 }
 
 const handleMetadataDirInput = (path: string) => {
   emit('update:metadataDir', path)
-  emit('update:metadataLocator', null)
+  emit('update:metadataLocator', path.trim() ? locatorForConfiguredPath(path) : null)
 }
 </script>
 
@@ -163,6 +164,10 @@ const handleMetadataDirInput = (path: string) => {
         />
       </div>
     </NFormItem>
+
+    <NAlert v-if="storageError" type="error" :bordered="false">
+      {{ storageError }}
+    </NAlert>
 
     <!-- 整理目录 -->
     <NFormItem label="整理目录" required>
@@ -234,6 +239,7 @@ const handleMetadataDirInput = (path: string) => {
       :model-value="browserMode === 'scan' ? scanPath : browserMode === 'target' ? targetFolder : metadataDir"
       :locator="browserMode === 'scan' ? scanLocator : browserMode === 'target' ? targetLocator : metadataLocator"
       :title="browserMode === 'scan' ? '选择刮削路径' : browserMode === 'target' ? '选择整理目录' : '选择元数据目录'"
+      :allow-p115="browserMode !== 'metadata'"
       @select="handleFolderSelect"
       @select-locator="handleFolderLocator"
     />

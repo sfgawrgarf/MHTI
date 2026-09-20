@@ -22,7 +22,7 @@ from server.models.scrape_job import (
     ScrapeJobStatus,
 )
 from server.models.organize import OrganizeMode
-from server.models.storage import StorageLocator
+from server.models.storage import StorageLocator, is_p115_to_local
 from server.services.websocket_manager import get_notifier
 from server.services.fingerprint_service import calculate_fingerprint
 from server.services.media_identity_service import MediaIdentityService
@@ -92,6 +92,19 @@ def _deserialize_locator(payload: str | None) -> StorageLocator | None:
         return StorageLocator(**json.loads(payload))
     except (json.JSONDecodeError, ValueError, TypeError):
         return None
+
+
+def _effective_allow_local_output(job: ScrapeJob) -> bool:
+    """Preserve authorization implied by legacy 115 watcher jobs."""
+    return job.allow_local_output or (
+        job.source == ScrapeJobSource.WATCHER
+        and is_p115_to_local(
+            source_path=job.file_path,
+            source_locator=job.file_locator,
+            target_path=job.output_dir,
+            target_locator=job.output_locator,
+        )
+    )
 
 
 class ScrapeJobService:
@@ -715,7 +728,7 @@ class ScrapeJobService:
                 file_locator=job.file_locator,
                 output_locator=job.output_locator,
                 metadata_locator=job.metadata_locator,
-                allow_local_output=job.allow_local_output,
+                allow_local_output=_effective_allow_local_output(job),
                 link_mode=job.link_mode,
                 source=job.source,
                 source_id=job.source_id,
@@ -999,6 +1012,11 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
 
     started_at = datetime.now()
 
+    # A configured watcher was already treated as authorization to process
+    # provider files before the consent flag was persisted. Preserve pending
+    # watcher jobs created by older versions while keeping manual jobs strict.
+    allow_local_output = _effective_allow_local_output(job)
+
     # 发送开始执行通知
     await notifier.notify_progress(job_id, "starting", 0, f"开始处理: {Path(job.file_path).name}")
 
@@ -1095,7 +1113,7 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 file_locator=job.file_locator,
                 output_locator=job.output_locator,
                 metadata_locator=job.metadata_locator,
-                allow_local_output=job.allow_local_output,
+                allow_local_output=allow_local_output,
                 link_mode=job.link_mode,
                 advanced_settings=job.advanced_settings,
                 file_action=job.file_action,
@@ -1110,7 +1128,7 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 file_locator=job.file_locator,
                 output_locator=job.output_locator,
                 metadata_locator=job.metadata_locator,
-                allow_local_output=job.allow_local_output,
+                allow_local_output=allow_local_output,
                 link_mode=job.link_mode,
                 auto_select=True,
                 advanced_settings=job.advanced_settings,

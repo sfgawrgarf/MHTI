@@ -11,7 +11,35 @@ import pytest
 from server.models.history import ConflictType, TaskStatus
 from server.models.scrape_job import ScrapeJob, ScrapeJobSource, ScrapeJobStatus
 from server.models.scraper import ScrapeResult, ScrapeStatus
-from server.services.scrape_job_service import _execute_scrape_job
+from server.models.storage import StorageLocator, StorageProvider
+from server.services.scrape_job_service import (
+    _effective_allow_local_output,
+    _execute_scrape_job,
+)
+
+
+def test_legacy_watcher_job_preserves_local_output_authorization():
+    job = ScrapeJob(
+        id="legacy-watcher",
+        file_path="/115网盘/待整理/S01E01.mkv",
+        output_dir="/library",
+        file_locator=StorageLocator(
+            provider=StorageProvider.P115,
+            path="/115网盘/待整理/S01E01.mkv",
+            file_id="file-1",
+            is_dir=False,
+        ),
+        output_locator=StorageLocator(
+            provider=StorageProvider.LOCAL,
+            path="/library",
+            is_dir=True,
+        ),
+        allow_local_output=False,
+        source=ScrapeJobSource.WATCHER,
+        created_at=datetime.now(),
+    )
+
+    assert _effective_allow_local_output(job) is True
 
 
 @pytest.fixture

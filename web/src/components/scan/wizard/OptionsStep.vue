@@ -34,6 +34,8 @@ const props = defineProps<{
   overwriteExisting: boolean
   overwriteSupported: boolean
   subtitleSupported: boolean
+  restrictProviderModes: boolean
+  copyOnlyProviderMode: boolean
   advancedSettings: ManualJobAdvancedSettings | null
 }>()
 
@@ -50,16 +52,16 @@ const emit = defineEmits<{
 }>()
 
 // 链接模式选项
-const linkModeOptions = [
-  { label: '硬链接', value: LinkMode.HARDLINK, icon: LinkOutline, tip: '推荐，节省空间且保留原文件' },
-  { label: '复制', value: LinkMode.COPY, icon: CopyOutline, tip: '复制文件，占用双倍空间' },
-  { label: '移动', value: LinkMode.MOVE, icon: SwapHorizontalOutline, tip: '移动文件，原位置不保留' },
-  { label: '软链接', value: LinkMode.SYMLINK, icon: DocumentOutline, tip: '符号链接，需原文件存在' },
-]
+const linkModeOptions = computed(() => [
+  { label: '硬链接', value: LinkMode.HARDLINK, icon: LinkOutline, tip: '推荐，节省空间且保留原文件', disabled: props.restrictProviderModes },
+  { label: '复制', value: LinkMode.COPY, icon: CopyOutline, tip: '复制文件，占用双倍空间', disabled: false },
+  { label: '移动', value: LinkMode.MOVE, icon: SwapHorizontalOutline, tip: '移动文件，原位置不保留', disabled: props.copyOnlyProviderMode },
+  { label: '软链接', value: LinkMode.SYMLINK, icon: DocumentOutline, tip: '符号链接，需原文件存在', disabled: props.restrictProviderModes },
+])
 
 // 当前选中的链接模式信息
 const currentModeInfo = computed(() => {
-  return linkModeOptions.find(opt => opt.value === props.linkMode)
+  return linkModeOptions.value.find(opt => opt.value === props.linkMode)
 })
 </script>
 
@@ -87,6 +89,7 @@ const currentModeInfo = computed(() => {
             v-for="option in linkModeOptions"
             :key="option.value"
             :value="option.value"
+            :disabled="option.disabled"
             class="link-mode-button"
           >
             <div class="mode-content">

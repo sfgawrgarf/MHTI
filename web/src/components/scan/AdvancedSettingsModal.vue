@@ -263,6 +263,7 @@ watch(() => props.show, (show) => {
   <FolderBrowserModal
     v-model:show="showMetadataFolderBrowser"
     title="选择元数据目录"
+    :allow-p115="false"
     @confirm="handleMetadataFolderConfirm"
   />
 </template>

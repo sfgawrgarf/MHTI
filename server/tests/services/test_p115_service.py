@@ -970,10 +970,12 @@ class TestP115Service:
                 {"cid": "0", "pid": "0", "name": ""},
                 {"cid": "100", "pid": "0", "name": "剧集"},
             ],
-            "count": 2,
+            "count": 4,
             "data": [
                 {"fid": "300", "cid": "100", "n": "S01E01.mkv", "s": "12345", "te": "1710000001"},
                 {"fid": "301", "cid": "100", "n": "S01E02.mp4", "s": "12346", "te": "1710000002"},
+                {"fid": None, "cid": "100", "n": "missing-id.mkv", "s": "12347"},
+                {"cid": "100", "pid": "100", "n": "self-referencing-directory"},
             ],
         }
 

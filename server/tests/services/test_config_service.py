@@ -1,5 +1,6 @@
 """Unit tests for ConfigService."""
 
+import json
 import aiosqlite
 import pytest
 from pathlib import Path
@@ -140,6 +141,24 @@ class TestConfigService:
         result = await config_service.get_naming_config()
 
         assert result == config
+
+    @pytest.mark.asyncio
+    async def test_legacy_cloud_metadata_directory_is_ignored(self, config_service):
+        await config_service.set(
+            "organize_config",
+            json.dumps({
+                "organize_dir": "/library",
+                "metadata_dir": "/115网盘/元数据",
+                "organize_mode": "copy",
+                "min_file_size_mb": 256,
+            }),
+        )
+
+        result = await config_service.get_organize_config()
+
+        assert result.organize_dir == "/library"
+        assert result.metadata_dir == ""
+        assert result.min_file_size_mb == 256
 
 
 class TestConfigService115:

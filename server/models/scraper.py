@@ -3,14 +3,56 @@
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from server.models.emby import ConflictCheckResult
 from server.models.history import ScrapeLogStep
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
-from server.models.storage import StorageLocator
+from server.models.storage import (
+    StorageLocator,
+    infer_directory_locator,
+    is_p115_to_local,
+    normalize_file_locator,
+    validate_storage_capabilities,
+)
 from server.models.tmdb import TMDBSearchResult, TMDBSeries, TMDBEpisode
+
+
+class _StorageValidatedScrapeRequest(BaseModel):
+    """Shared provider validation for direct and queued scrape requests."""
+
+    @model_validator(mode="after")
+    def validate_storage_selection(self) -> "_StorageValidatedScrapeRequest":
+        self.file_locator = normalize_file_locator(  # type: ignore[attr-defined]
+            self.file_path, self.file_locator  # type: ignore[attr-defined]
+        )
+        self.output_locator = infer_directory_locator(  # type: ignore[attr-defined]
+            self.output_dir, self.output_locator  # type: ignore[attr-defined]
+        )
+        self.metadata_locator = infer_directory_locator(  # type: ignore[attr-defined]
+            self.metadata_dir, self.metadata_locator  # type: ignore[attr-defined]
+        )
+        if (
+            is_p115_to_local(
+                source_path=self.file_path,  # type: ignore[attr-defined]
+                source_locator=self.file_locator,  # type: ignore[attr-defined]
+                target_path=self.output_dir,  # type: ignore[attr-defined]
+                target_locator=self.output_locator,  # type: ignore[attr-defined]
+            )
+            and self.link_mode in (None, OrganizeMode.MOVE)  # type: ignore[attr-defined]
+        ):
+            self.link_mode = OrganizeMode.COPY  # type: ignore[attr-defined]
+        validate_storage_capabilities(
+            source_path=self.file_path,  # type: ignore[attr-defined]
+            source_locator=self.file_locator,  # type: ignore[attr-defined]
+            target_path=self.output_dir,  # type: ignore[attr-defined]
+            target_locator=self.output_locator,  # type: ignore[attr-defined]
+            metadata_locator=self.metadata_locator,  # type: ignore[attr-defined]
+            allow_local_output=self.allow_local_output,  # type: ignore[attr-defined]
+            organize_mode=self.link_mode,  # type: ignore[attr-defined]
+        )
+        return self
 
 
 class ScrapeStatus(str, Enum):
@@ -28,7 +70,7 @@ class ScrapeStatus(str, Enum):
     EMBY_CONFLICT = "emby_conflict"  # Emby 媒体库冲突
 
 
-class ScrapeRequest(BaseModel):
+class ScrapeRequest(_StorageValidatedScrapeRequest):
     """Request for scraping a single file."""
 
     file_path: str
@@ -43,7 +85,7 @@ class ScrapeRequest(BaseModel):
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
 
 
-class ScrapeByIdRequest(BaseModel):
+class ScrapeByIdRequest(_StorageValidatedScrapeRequest):
     """Request for scraping with manual TMDB ID."""
 
     file_path: str

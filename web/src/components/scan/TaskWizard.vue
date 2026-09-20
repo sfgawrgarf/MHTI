@@ -28,6 +28,11 @@ import PathSelectStep from './wizard/PathSelectStep.vue'
 import OptionsStep from './wizard/OptionsStep.vue'
 import PreviewStep from './wizard/PreviewStep.vue'
 import { buildWizardAdvancedSettings } from '@/utils/manualJobOptions'
+import {
+  getStorageSelectionError,
+  isP115OrganizeMode,
+  isP115Selection,
+} from '@/utils/storageCapabilities'
 
 const props = defineProps<{
   show: boolean
@@ -81,6 +86,24 @@ const formData = ref({
   overwrite_existing: false,
 })
 
+const hasP115Source = computed(() =>
+  isP115Selection(formData.value.scan_path, scanLocator.value),
+)
+const requiresP115LocalCopy = computed(() =>
+  hasP115Source.value &&
+  formData.value.target_folder.trim() !== '' &&
+  !isP115Selection(formData.value.target_folder, targetLocator.value),
+)
+const storageSelectionError = computed(() => getStorageSelectionError({
+  sources: [{ path: formData.value.scan_path, locator: scanLocator.value }],
+  targetPath: formData.value.target_folder,
+  targetLocator: targetLocator.value,
+  metadataPath: formData.value.metadata_dir,
+  metadataLocator: metadataLocator.value,
+  allowLocalOutput: allowLocalOutput.value,
+  linkMode: formData.value.link_mode,
+}))
+
 watch(scanLocator, (locator) => {
   if (locator?.provider === '115') {
     formData.value.process_subtitle = false
@@ -90,6 +113,21 @@ watch(scanLocator, (locator) => {
 watch(targetLocator, (locator) => {
   if (locator?.provider === '115') {
     formData.value.overwrite_existing = false
+  }
+})
+
+watch(hasP115Source, (isP115) => {
+  if (
+    isP115 &&
+    !isP115OrganizeMode(formData.value.link_mode)
+  ) {
+    formData.value.link_mode = LinkMode.MOVE
+  }
+})
+
+watch([requiresP115LocalCopy, () => formData.value.link_mode], ([copyOnly, mode]) => {
+  if (copyOnly && mode !== LinkMode.COPY) {
+    formData.value.link_mode = LinkMode.COPY
   }
 })
 
@@ -103,7 +141,9 @@ const steps = [
 // 是否可以进入下一步
 const canProceed = computed(() => {
   if (currentStep.value === 1) {
-    return formData.value.scan_path.trim() !== '' && formData.value.target_folder.trim() !== ''
+    return formData.value.scan_path.trim() !== '' &&
+      formData.value.target_folder.trim() !== '' &&
+      storageSelectionError.value === null
   }
   return true
 })
@@ -206,6 +246,10 @@ const handleSubmit = async () => {
   }
   if (!formData.value.target_folder.trim()) {
     message.warning('请输入整理目录')
+    return
+  }
+  if (storageSelectionError.value) {
+    message.warning(storageSelectionError.value)
     return
   }
 
@@ -311,6 +355,7 @@ onMounted(() => {
           v-model:target-locator="targetLocator"
           v-model:metadata-locator="metadataLocator"
           :allow-local-output="allowLocalOutput"
+          :storage-error="storageSelectionError"
           @update:allow-local-output="allowLocalOutput = $event"
           :watched-folders="watchedFolders"
           :global-config="globalOrganizeConfig"
@@ -329,6 +374,8 @@ onMounted(() => {
           v-model:overwrite-existing="formData.overwrite_existing"
           :overwrite-supported="overwriteSupported"
           :subtitle-supported="subtitleSupported"
+          :restrict-provider-modes="hasP115Source"
+          :copy-only-provider-mode="requiresP115LocalCopy"
           :advanced-settings="advancedSettings"
           @update:advanced-settings="updateAdvancedSettings"
         />

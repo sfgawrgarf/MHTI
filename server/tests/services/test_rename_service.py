@@ -653,6 +653,7 @@ class Test115OutputBranches:
                 episode=1,
                 file_locator=file_locator,
                 output_locator=output_locator,
+                allow_local_output=True,
                 link_mode=OrganizeMode.COPY,
             )
         )

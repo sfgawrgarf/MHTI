@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import aiosqlite
 import pytest
@@ -43,6 +44,17 @@ def _build_locator(
     )
 
 
+def test_p115_scan_result_requires_its_own_file_id() -> None:
+    scan_locator = _build_locator(path="/115网盘/待整理", file_id="scan-root")
+
+    with pytest.raises(ValueError, match="缺少文件 ID"):
+        manual_job_service_module._build_file_locator_from_scan(
+            scan_locator,
+            SimpleNamespace(file_id="0", parent_id="scan-root"),
+            "/115网盘/待整理/S01E01.mkv",
+        )
+
+
 @pytest.mark.asyncio
 async def test_create_manual_job_persists_locators(
     temp_db: Path,
@@ -55,13 +67,17 @@ async def test_create_manual_job_persists_locators(
     service = ManualJobService(db_path=temp_db)
     scan_locator = _build_locator(path="/115网盘/待整理", file_id="scan-root")
     target_locator = _build_locator(path="/115网盘/已整理", file_id="target-root")
-    metadata_locator = _build_locator(path="/115网盘/元数据", file_id="meta-root")
+    metadata_locator = StorageLocator(
+        provider=StorageProvider.LOCAL,
+        path="/library/nfo",
+        is_dir=True,
+    )
 
     created = await service.create_job(
         ManualJobCreate(
             scan_path="/115网盘/待整理",
             target_folder="/115网盘/已整理",
-            metadata_dir="/115网盘/元数据",
+            metadata_dir="/library/nfo",
             link_mode=LinkMode.COPY,
             source=JobSource.MANUAL,
             scan_locator=scan_locator,
@@ -94,7 +110,11 @@ async def test_manual_job_get_job_restores_locators_from_db(temp_db: Path) -> No
 
     scan_locator = _build_locator(path="/115网盘/待整理", file_id="scan-root")
     target_locator = _build_locator(path="/115网盘/已整理", file_id="target-root")
-    metadata_locator = _build_locator(path="/115网盘/元数据", file_id="meta-root")
+    metadata_locator = StorageLocator(
+        provider=StorageProvider.LOCAL,
+        path="/library/nfo",
+        is_dir=True,
+    )
 
     async with aiosqlite.connect(temp_db) as db:
         cursor = await db.execute(
@@ -108,7 +128,7 @@ async def test_manual_job_get_job_restores_locators_from_db(temp_db: Path) -> No
             (
                 "/115网盘/待整理",
                 "/115网盘/已整理",
-                "/115网盘/元数据",
+                "/library/nfo",
                 LinkMode.MOVE.value,
                 1,
                 None,
@@ -156,13 +176,17 @@ async def test_scrape_job_create_and_get_persist_locator_fields(
         is_dir=False,
     )
     output_locator = _build_locator(path="/115网盘/已整理", file_id="target-root")
-    metadata_locator = _build_locator(path="/115网盘/元数据", file_id="meta-root")
+    metadata_locator = StorageLocator(
+        provider=StorageProvider.LOCAL,
+        path="/library/nfo",
+        is_dir=True,
+    )
 
     created = await service.create_job(
         ScrapeJobCreate(
             file_path="/115网盘/待整理/episode.mp4",
             output_dir="/115网盘/已整理",
-            metadata_dir="/115网盘/元数据",
+            metadata_dir="/library/nfo",
             source=ScrapeJobSource.MANUAL,
             source_id=7,
             file_locator=file_locator,
@@ -323,62 +347,26 @@ async def test_manual_job_can_explicitly_reprocess_user_suppressed_history_recor
     assert created is not None
 
 
-@pytest.mark.asyncio
-async def test_execute_job_forwards_locators_to_scrape_job_create(
-    temp_db: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Executing a manual job should forward locator payloads into scrape job creation."""
-    await _initialize_test_db(temp_db)
-    monkeypatch.setattr(manual_job_service_module, "_ensure_worker", lambda: None)
-
-    created_jobs: list[ScrapeJobCreate] = []
-
-    class FakeScrapeJobService:
-        async def create_job(self, job: ScrapeJobCreate):
-            created_jobs.append(job)
-            return None
-
-    monkeypatch.setattr(
-        scrape_job_service_module,
-        "ScrapeJobService",
-        FakeScrapeJobService,
-    )
-
+def test_manual_job_rejects_local_to_p115_output(tmp_path: Path) -> None:
+    """Local files cannot be queued for an unsupported 115 upload."""
     video_path = tmp_path / "episode.mp4"
     video_path.write_bytes(b"video")
 
-    service = ManualJobService(db_path=temp_db)
     scan_locator = StorageLocator(
         provider=StorageProvider.LOCAL,
         path=str(video_path),
         is_dir=False,
     )
     target_locator = _build_locator(path="/115网盘/已整理", file_id="target-root")
-    metadata_locator = _build_locator(path="/115网盘/元数据", file_id="meta-root")
-    created = await service.create_job(
+    with pytest.raises(ValueError, match="本地文件输出到 115"):
         ManualJobCreate(
             scan_path=str(video_path),
             target_folder="/115网盘/已整理",
-            metadata_dir="/115网盘/元数据",
             link_mode=LinkMode.COPY,
             scan_locator=scan_locator,
             target_locator=target_locator,
-            metadata_locator=metadata_locator,
             allow_local_output=True,
         )
-    )
-
-    await manual_job_service_module._execute_job(service, created.id)
-
-    assert len(created_jobs) == 1
-    forwarded = created_jobs[0]
-    assert forwarded.file_path == str(video_path)
-    assert forwarded.file_locator is None
-    assert forwarded.output_locator == target_locator
-    assert forwarded.metadata_locator == metadata_locator
-    assert forwarded.allow_local_output is True
 
 
 @pytest.mark.asyncio
@@ -562,12 +550,16 @@ async def test_execute_job_builds_file_locator_for_p115_source(
     service = ManualJobService(db_path=temp_db)
     scan_locator = _build_locator(path="/115网盘/待整理", file_id="scan-root")
     target_locator = _build_locator(path="/115网盘/已整理", file_id="target-root")
-    metadata_locator = _build_locator(path="/115网盘/元数据", file_id="meta-root")
+    metadata_locator = StorageLocator(
+        provider=StorageProvider.LOCAL,
+        path="/library/nfo",
+        is_dir=True,
+    )
     created = await service.create_job(
         ManualJobCreate(
             scan_path="/115网盘/待整理",
             target_folder="/115网盘/已整理",
-            metadata_dir="/115网盘/元数据",
+            metadata_dir="/library/nfo",
             link_mode=LinkMode.COPY,
             scan_locator=scan_locator,
             target_locator=target_locator,
@@ -633,6 +625,7 @@ async def test_execute_job_uses_selected_p115_file_without_directory_scan(
             target_folder="/library",
             scan_locator=file_locator,
             allow_local_output=True,
+            link_mode=LinkMode.COPY,
         )
     )
 

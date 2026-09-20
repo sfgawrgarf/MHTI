@@ -10,8 +10,56 @@ from fastapi import HTTPException
 from server.api import history as history_api
 from server.core.db import configure_connection, create_all_tables
 from server.models.history import ConflictType, HistoryRecordCreate, TaskStatus
+from server.models.organize import OrganizeMode
+from server.models.scrape_job import ScrapeJobSource
 from server.models.scraper import ScrapeByIdRequest, ScrapeResult, ScrapeStatus
+from server.models.storage import StorageLocator, StorageProvider
+from server.services import scrape_job_service as scrape_job_service_module
 from server.services.history_service import HistoryService
+
+
+@pytest.mark.asyncio
+async def test_restore_legacy_watcher_authorizes_p115_local_output(monkeypatch):
+    file_locator = StorageLocator(
+        provider=StorageProvider.P115,
+        path="/115网盘/待整理/S01E01.mkv",
+        file_id="file-1",
+        is_dir=False,
+    )
+    output_locator = StorageLocator(
+        provider=StorageProvider.LOCAL,
+        path="/library",
+        is_dir=True,
+    )
+    job = SimpleNamespace(
+        file_path=file_locator.path,
+        output_dir=output_locator.path,
+        metadata_dir=None,
+        file_locator=file_locator,
+        output_locator=output_locator,
+        metadata_locator=None,
+        allow_local_output=False,
+        link_mode=OrganizeMode.MOVE,
+        advanced_settings=None,
+        source=ScrapeJobSource.WATCHER,
+    )
+
+    class FakeScrapeJobService:
+        async def get_job(self, job_id):
+            assert job_id == "job-1"
+            return job
+
+    monkeypatch.setattr(
+        scrape_job_service_module,
+        "ScrapeJobService",
+        FakeScrapeJobService,
+    )
+
+    restored = await history_api._restore_locators_from_scrape_job(
+        SimpleNamespace(scrape_job_id="job-1")
+    )
+
+    assert restored["allow_local_output"] is True
 
 
 @pytest.mark.asyncio
@@ -83,7 +131,7 @@ async def test_resolve_conflict_allows_reprocessing_skipped_or_deleted_record(mo
             "metadata_dir": "/metadata",
             "link_mode": "copy",
         },
-        folder_path="/incoming/example.mkv",
+        folder_path="/115网盘/incoming/example.mkv",
     )
     history_service = AsyncMock()
     history_service.get_record.return_value = record
@@ -96,10 +144,11 @@ async def test_resolve_conflict_allows_reprocessing_skipped_or_deleted_record(mo
             return_value={
                 "file_locator": {
                     "provider": "115",
-                    "path": "/incoming/example.mkv",
+                    "path": "/115网盘/incoming/example.mkv",
                     "file_id": "abc",
                     "is_dir": False,
-                }
+                },
+                "allow_local_output": True,
             }
         ),
     )
@@ -117,7 +166,7 @@ async def test_resolve_conflict_allows_reprocessing_skipped_or_deleted_record(mo
     assert result == {"success": True}
     assert execute_scrape.await_count == 1
     scrape_request = execute_scrape.await_args.args[2]
-    assert scrape_request.file_path == "/incoming/example.mkv"
+    assert scrape_request.file_path == "/115网盘/incoming/example.mkv"
     assert scrape_request.tmdb_id == 123
     assert scrape_request.season == 1
     assert scrape_request.episode == 2
@@ -177,7 +226,7 @@ async def test_resolve_conflict_rematches_any_selectable_conflict(
             "metadata_dir": "/metadata",
             "link_mode": "copy",
         },
-        folder_path="/incoming/example.mkv",
+        folder_path="/115网盘/incoming/example.mkv",
     )
     history_service = AsyncMock()
     history_service.get_record.return_value = record
@@ -190,10 +239,11 @@ async def test_resolve_conflict_rematches_any_selectable_conflict(
             return_value={
                 "file_locator": {
                     "provider": "115",
-                    "path": "/incoming/example.mkv",
+                    "path": "/115网盘/incoming/example.mkv",
                     "file_id": "abc",
                     "is_dir": False,
-                }
+                },
+                "allow_local_output": True,
             }
         ),
     )

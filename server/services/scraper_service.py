@@ -1054,7 +1054,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     metadata_locator=request.metadata_locator,
                 )
             )
-            if request.file_locator and request.output_locator:
+            if self._is_provider_source(request.file_locator) and request.output_locator:
                 move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
                 move_step.logs.append(
                     ScrapeLogEntry(message=f"目标目录: {request.output_locator.path}")
@@ -1148,7 +1148,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 local_source_path = source_display_path
 
             is_provider_to_local = bool(
-                request.file_locator
+                self._is_provider_source(request.file_locator)
                 and request.output_locator
                 and request.output_locator.provider == StorageProvider.LOCAL
             )

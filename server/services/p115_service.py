@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import threading
 from contextlib import contextmanager
@@ -23,6 +24,8 @@ from server.models.storage import (
     is_p115_virtual_path,
 )
 from server.services.config_service import ConfigService
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_APP = "alipaymini"
 PROJECT_P115_HOME = Path(__file__).resolve().parents[2] / "data" / "p115-home"
@@ -364,6 +367,12 @@ class P115Service:
                 entry = self._normalize_browse_entry(row, current_path_resolved)
                 if entry["is_dir"]:
                     child_id = entry.get("file_id") or "0"
+                    if child_id in {"0", directory_id}:
+                        logger.warning(
+                            "115 扫描忽略缺少有效独立 ID 的目录: %s",
+                            entry.get("path"),
+                        )
+                        continue
                     await self._scan_recursive(
                         client=client,
                         directory_id=child_id,
@@ -371,7 +380,13 @@ class P115Service:
                         collected=collected,
                     )
                 else:
-                    if self._is_video_filename(entry.get("name") or ""):
+                    file_id = entry.get("file_id") or "0"
+                    if file_id == "0":
+                        logger.warning(
+                            "115 扫描忽略缺少有效 ID 的文件: %s",
+                            entry.get("path"),
+                        )
+                    elif self._is_video_filename(entry.get("name") or ""):
                         collected.append(entry)
 
             # Stop when the page is not full (last page) or total is exhausted.
