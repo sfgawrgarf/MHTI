@@ -86,6 +86,65 @@ async def test_concurrent_submissions_enqueue_only_once(temp_db, tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_concurrent_ai_retries_atomically_replace_history_once(
+    temp_db, tmp_path, monkeypatch
+):
+    import server.services.scrape_job_service as jobs
+
+    async with aiosqlite.connect(temp_db) as db:
+        await create_all_tables(db)
+        await db.commit()
+    monkeypatch.setattr(jobs, "_ensure_worker", lambda: None)
+    monkeypatch.setattr(jobs, "_scrape_queue", asyncio.Queue())
+    service = ScrapeJobService(db_path=temp_db)
+    old = await service.create_job(
+        ScrapeJobCreate(
+            file_path=str(tmp_path / "episode.mkv"),
+            output_dir=str(tmp_path / "library"),
+            link_mode=OrganizeMode.COPY,
+        )
+    )
+    assert old is not None
+    queued_old = await jobs._scrape_queue.get()
+    assert queued_old == old.id
+    jobs._scrape_queue.task_done()
+    await service.update_job(old.id, status=ScrapeJobStatus.PENDING_ACTION)
+    history = HistoryService(db_path=temp_db)
+    record = await history.create_record(
+        HistoryRecordCreate(
+            task_name="AI retry",
+            folder_path=old.file_path,
+            status=TaskStatus.PENDING_ACTION,
+            total_files=1,
+            success_count=0,
+            failed_count=0,
+            duration_seconds=0,
+            scrape_job_id=old.id,
+            conflict_type=ConflictType.NO_MATCH,
+            conflict_data={"reason": "no result"},
+        )
+    )
+
+    replacements = await asyncio.gather(
+        service.create_replacement_job(
+            old, replacement_history_id=record.id
+        ),
+        service.create_replacement_job(
+            old, replacement_history_id=record.id
+        ),
+    )
+
+    created = [job for job in replacements if job is not None]
+    assert len(created) == 1
+    replacement = created[0]
+    assert jobs._scrape_queue.qsize() == 1
+    assert (await service.get_job(old.id)).status == ScrapeJobStatus.REPLACED
+    updated = await history.get_record(record.id)
+    assert updated.status == TaskStatus.REPLACED
+    assert updated.conflict_data["replaced_by_job_id"] == replacement.id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("running", [False, True])
 async def test_restart_recovers_manual_choice_without_creating_history(temp_db, tmp_path, monkeypatch, running):
     service, history, record, request, _ = await setup_queue(temp_db, tmp_path, monkeypatch)

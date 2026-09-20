@@ -6,6 +6,7 @@
 - ScraperMediaMixin: 媒体文件处理（图片、字幕、Emby）
 """
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -160,6 +161,22 @@ class _P115StorageProvider:
             "parent_id": None if parent_id in (None, "") else str(parent_id),
         }
 
+    @staticmethod
+    def _ensure_operation_succeeded(response: Any, operation: str) -> None:
+        """Reject provider responses that report failure without raising."""
+        if isinstance(response, dict) and response.get("state") is False:
+            message = response.get("error") or response.get("message") or response
+            raise ValueError(f"115 {operation}失败: {message}")
+
+    @staticmethod
+    def _extract_file_id(response: Any) -> str | None:
+        """Extract a copied file id from either a flat or nested response."""
+        payload = response.get("data", response) if isinstance(response, dict) else response
+        if not isinstance(payload, dict):
+            return None
+        value = payload.get("file_id") or payload.get("fid") or payload.get("id")
+        return None if value in (None, "", "0") else str(value)
+
     async def ensure_directory(
         self,
         locator: StorageLocator,
@@ -208,29 +225,40 @@ class _P115StorageProvider:
         name: str,
     ) -> str | None:
         """在父目录下按名字查找子目录的 cid（fs_mkdir 命中已存在目录时用）。"""
-        try:
-            response = await client.fs_files(
-                {"cid": parent_pid, "offset": 0, "limit": 100, "show_dir": 1},
-                async_=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "115 子目录查询失败 parent_id=%s name=%s: %s",
-                parent_pid,
-                name,
-                exc,
-                exc_info=True,
-            )
-            return None
-        rows = response.get("data", []) if isinstance(response, dict) else []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            row_name = row.get("n") or row.get("name") or ""
-            # 目录条目用 cid，文件用 fid
-            cid = row.get("cid") or row.get("id")
-            if row_name == name and cid and "fid" not in row:
-                return str(cid)
+        offset = 0
+        page_size = 100
+        while True:
+            try:
+                response = await client.fs_files(
+                    {
+                        "cid": parent_pid,
+                        "offset": offset,
+                        "limit": page_size,
+                        "show_dir": 1,
+                    },
+                    async_=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "115 子目录查询失败 parent_id=%s name=%s: %s",
+                    parent_pid,
+                    name,
+                    exc,
+                    exc_info=True,
+                )
+                return None
+            rows = response.get("data", []) if isinstance(response, dict) else []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_name = row.get("n") or row.get("name") or ""
+                # 目录条目用 cid，文件用 fid
+                cid = row.get("cid") or row.get("id")
+                if row_name == name and cid and "fid" not in row:
+                    return str(cid)
+            if len(rows) < page_size:
+                break
+            offset += page_size
         return None
 
     async def rename(
@@ -250,20 +278,47 @@ class _P115StorageProvider:
         client, _ = await self._get_client()
         file_id = locator.file_id
 
-        # 1. 先改名（用源 file_id，原地改名）
-        if target_name:
-            try:
-                await client.fs_rename((file_id, target_name), async_=True)
-            except Exception as exc:
-                raise ValueError(f"115 文件改名失败: {target_name}") from exc
+        original_parent_id = locator.parent_id
+        original_name = Path(locator.path).name
 
-        # 2. 再移动到目标目录
+        # 先移动，避免目标目录不可用时把源目录中的文件提前改名。
         try:
             resp = await client.fs_move(file_id, pid=target_parent_id, async_=True)
+            self._ensure_operation_succeeded(resp, "文件移动")
         except Exception as exc:
             raise ValueError(f"115 文件移动失败: {file_id} -> {target_parent_id}") from exc
 
-        return resp
+        # 再改名。失败时尽最大努力移回原目录，避免留下不明位置的半成品。
+        if target_name and target_name != original_name:
+            try:
+                rename_response = await client.fs_rename((file_id, target_name), async_=True)
+                self._ensure_operation_succeeded(rename_response, "文件改名")
+            except Exception as exc:
+                rollback_error: Exception | None = None
+                if original_parent_id:
+                    try:
+                        rollback = await client.fs_move(
+                            file_id,
+                            pid=original_parent_id,
+                            async_=True,
+                        )
+                        self._ensure_operation_succeeded(rollback, "移动回滚")
+                    except Exception as rollback_exc:  # pragma: no cover - provider edge
+                        rollback_error = rollback_exc
+                if rollback_error is not None:
+                    raise ValueError(
+                        "115 文件已移动到目标目录，但改名和回滚均失败；"
+                        f"file_id={file_id}, target_parent_id={target_parent_id}: "
+                        f"{rollback_error}"
+                    ) from exc
+                if not original_parent_id:
+                    raise ValueError(
+                        "115 文件已移动到目标目录但改名失败，且缺少原父目录 ID，"
+                        f"无法自动回滚: file_id={file_id}"
+                    ) from exc
+                raise ValueError(f"115 文件改名失败，已移回原目录: {target_name}") from exc
+
+        return {"response": resp, "file_id": file_id}
 
     async def copy(
         self,
@@ -286,63 +341,94 @@ class _P115StorageProvider:
         file_id = locator.file_id
         source_name = Path(locator.path).name
 
+        # 复制前先记录目标目录内的同名文件 ID。复制后只能用新增 ID 定位副本，
+        # 不能把一个更早存在的同名文件误认为本次副本。
+        before_ids = await self._find_file_ids_in_dir(client, target_parent_id, source_name)
+
         # 1. 复制到目标目录（保持原名）
         try:
             resp = await client.fs_copy(file_id, pid=target_parent_id, async_=True)
+            self._ensure_operation_succeeded(resp, "文件复制")
         except Exception as exc:
             raise ValueError(f"115 文件复制失败: {file_id} -> {target_parent_id}") from exc
 
-        # 2. fs_copy 不返回新文件 id，按源文件名在目标目录查找新副本的 id
-        new_id = None
-        if isinstance(resp, dict) and resp.get("file_id"):
-            new_id = resp.get("file_id")
+        # 2. 优先使用响应 ID；否则通过复制前后的 ID 差集定位，并为服务端的
+        # 短暂最终一致性留出有限重试窗口。
+        new_id = self._extract_file_id(resp)
         if not new_id:
-            new_id = await self._find_file_id_in_dir(client, target_parent_id, source_name)
+            for attempt in range(3):
+                after_ids = await self._find_file_ids_in_dir(
+                    client,
+                    target_parent_id,
+                    source_name,
+                )
+                candidates = after_ids - before_ids
+                if len(candidates) == 1:
+                    new_id = next(iter(candidates))
+                    break
+                if len(candidates) > 1:
+                    raise ValueError(
+                        "115 复制后出现多个同名新文件，无法安全确认新副本 ID: "
+                        f"{sorted(candidates)}"
+                    )
+                if attempt < 2:
+                    await asyncio.sleep(0.2 * (attempt + 1))
+
+        if not new_id:
+            raise ValueError(
+                "115 文件已复制，但无法确认新副本 ID；为避免改错同名文件，已停止后续改名"
+            )
 
         # 3. 改名为目标名
-        if target_name and new_id:
+        if target_name and target_name != source_name:
             try:
-                await client.fs_rename((new_id, target_name), async_=True)
+                rename_response = await client.fs_rename((new_id, target_name), async_=True)
+                self._ensure_operation_succeeded(rename_response, "复制后改名")
             except Exception as exc:
-                # 改名失败不影响复制结果，但记录警告
-                import logging
-                logging.getLogger(__name__).warning(
-                    f"115 复制后改名失败 (new_id={new_id}, target={target_name}): {exc}"
-                )
+                raise ValueError(
+                    "115 文件已复制但改名失败；"
+                    f"new_file_id={new_id}, target={target_name}"
+                ) from exc
 
-        return resp
+        return {"response": resp, "file_id": str(new_id)}
 
-    async def _find_file_id_in_dir(
+    async def _find_file_ids_in_dir(
         self,
         client: Any,
         parent_pid: str,
         name: str,
-    ) -> str | None:
-        """在父目录下按名字查找文件的 fid（fs_copy 后定位新副本用）。"""
-        try:
-            response = await client.fs_files(
-                {"cid": parent_pid, "offset": 0, "limit": 100, "show_dir": 1},
-                async_=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "115 文件查询失败 parent_id=%s name=%s: %s",
-                parent_pid,
-                name,
-                exc,
-                exc_info=True,
-            )
-            return None
-        rows = response.get("data", []) if isinstance(response, dict) else []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            row_name = row.get("n") or row.get("name") or ""
-            # 文件条目用 fid
-            fid = row.get("fid")
-            if row_name == name and fid and "fid" in row:
-                return str(fid)
-        return None
+    ) -> set[str]:
+        """分页返回父目录下所有同名文件 ID。"""
+        matches: set[str] = set()
+        offset = 0
+        page_size = 100
+        while True:
+            try:
+                response = await client.fs_files(
+                    {
+                        "cid": parent_pid,
+                        "offset": offset,
+                        "limit": page_size,
+                        "show_dir": 1,
+                    },
+                    async_=True,
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"115 文件查询失败 parent_id={parent_pid} name={name}"
+                ) from exc
+            rows = response.get("data", []) if isinstance(response, dict) else []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_name = row.get("n") or row.get("name") or ""
+                fid = row.get("fid")
+                if row_name == name and fid:
+                    matches.add(str(fid))
+            if len(rows) < page_size:
+                break
+            offset += page_size
+        return matches
 
     async def download(self, locator: StorageLocator, destination_dir: Path) -> Path:
         """下载 115 文件到本地临时目录。"""
@@ -634,16 +720,32 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 raise ValueError("115 输出目录创建失败")
 
             if mode == OrganizeMode.COPY:
-                await provider.copy(file_locator, dest_path.name, target_parent_id)
+                operation_result = await provider.copy(
+                    file_locator,
+                    dest_path.name,
+                    target_parent_id,
+                )
             elif mode == OrganizeMode.MOVE:
-                await provider.rename(file_locator, dest_path.name, target_parent_id)
+                operation_result = await provider.rename(
+                    file_locator,
+                    dest_path.name,
+                    target_parent_id,
+                )
             else:
                 raise ValueError(f"115 网盘暂不支持 {_get_mode_name(mode)} 输出")
+
+            target_file_id = (
+                operation_result.get("file_id")
+                if isinstance(operation_result, dict)
+                else None
+            )
+            if not target_file_id:
+                raise ValueError("115 输出完成但缺少目标文件 ID")
 
             return StorageLocator(
                 provider=StorageProvider.P115,
                 path=str(dest_path).replace("\\", "/"),
-                file_id=file_locator.file_id,
+                file_id=str(target_file_id),
                 parent_id=str(target_parent_id),
                 is_dir=False,
             )
@@ -658,7 +760,9 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     season=season,
                     episode=episode,
                     output_dir=output_locator.path,
-                    link_mode=mode,
+                    # The downloaded source lives in a temporary directory;
+                    # links would become invalid when that directory is removed.
+                    link_mode=OrganizeMode.MOVE,
                     year=year,
                 )
                 rename_result = await run_file_io(self.rename_service.execute_rename, local_request)
@@ -680,7 +784,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         episode: int,
         year: int | None,
         metadata_dir: str | None,
-        output_dir_for_preview: str,
+        output_dir_for_preview: str | None,
         nfo_content: str,
         series,
         season_info,
@@ -688,13 +792,15 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         notify_log_update,
         link_mode: OrganizeMode | None,
         advanced_settings: ManualJobAdvancedSettings | None,
+        dest_path_override: Path | None = None,
+        require_metadata_dir: bool = True,
     ) -> tuple[str, Path, Path]:
         """在本地元数据目录写入 NFO/图片（视频已在 115，不落本地）。
 
         返回 (nfo_path, metadata_series_folder, metadata_season_folder)。
         仅在 metadata_dir 指向本地路径时执行；否则记录告警并返回空值。
         """
-        if not metadata_dir:
+        if not metadata_dir and require_metadata_dir:
             move_step.logs.append(ScrapeLogEntry(
                 message="未配置本地元数据目录，跳过 NFO/图片生成",
                 level=LogLevel.WARNING,
@@ -702,26 +808,38 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             await notify_log_update()
             return "", Path(), Path()
 
-        # 通过预览得到剧集/季文件夹结构（不实际移动文件）
-        preview_request = self._build_rename_request(
-            source_path=f"{title} S{season:02d}E{episode:02d}",
-            title=title,
-            season=season,
-            episode=episode,
-            year=year,
-            output_dir=output_dir_for_preview,
-            link_mode=link_mode,
-        )
-        preview = self.rename_service.preview_rename(preview_request)
-        dest_path = Path(preview.dest_path)
-        series_folder = Path(preview.dest_folder).parent
-        season_folder = Path(preview.dest_folder)
+        if dest_path_override is not None:
+            dest_path = dest_path_override
+            season_folder = dest_path.parent
+            series_folder = season_folder.parent
+        else:
+            # 通过预览得到剧集/季文件夹结构（不实际移动文件）
+            preview_request = self._build_rename_request(
+                source_path=f"{title} S{season:02d}E{episode:02d}",
+                title=title,
+                season=season,
+                episode=episode,
+                year=year,
+                output_dir=output_dir_for_preview,
+                link_mode=link_mode,
+            )
+            preview = self.rename_service.preview_rename(preview_request)
+            dest_path = Path(preview.dest_path)
+            series_folder = Path(preview.dest_folder).parent
+            season_folder = Path(preview.dest_folder)
 
         metadata_series_folder, metadata_season_folder = await self._resolve_metadata_folders(
             dest_file=dest_path,
             season_folder=season_folder,
             series_folder=series_folder,
             metadata_dir=metadata_dir,
+        )
+        # Local metadata is now prepared before the media operation, so a new
+        # series/season directory may not exist yet.
+        await run_file_io(
+            metadata_season_folder.mkdir,
+            parents=True,
+            exist_ok=True,
         )
 
         # NFO
@@ -777,6 +895,81 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
         return nfo_path_str, metadata_series_folder, metadata_season_folder
 
+    async def _prepare_and_organize_local_output(
+        self,
+        *,
+        rename_request: RenameRequest,
+        source_display_path: str,
+        output_dir_display: str | None,
+        title: str,
+        season: int,
+        episode: int,
+        year: int | None,
+        metadata_dir: str | None,
+        nfo_content: str,
+        series: TMDBSeries,
+        season_info: TMDBSeason | None,
+        mode_name: str,
+        move_step: ScrapeLogStep,
+        notify_log_update: Callable[[], Awaitable[None]],
+        result: ScrapeResult,
+        advanced_settings: ManualJobAdvancedSettings | None,
+    ) -> tuple[Path, Path, Path]:
+        """Write all required metadata before publishing a local media file."""
+        resolved_dest_path = await run_file_io(
+            self.rename_service.resolve_destination_path,
+            rename_request,
+        )
+        source_path = Path(rename_request.source_path)
+        target_exists = resolved_dest_path.exists() or resolved_dest_path.is_symlink()
+        if (
+            target_exists
+            and resolved_dest_path != source_path
+            and rename_request.conflict_action != "overwrite"
+        ):
+            move_step.logs.append(
+                ScrapeLogEntry(
+                    message=f"目标文件已存在: {resolved_dest_path}",
+                    level=LogLevel.WARNING,
+                )
+            )
+            move_step.completed = False
+            await notify_log_update()
+            result.status = ScrapeStatus.FILE_CONFLICT
+            result.message = f"目标文件已存在: {resolved_dest_path}"
+            result.dest_path = str(resolved_dest_path)
+            raise FileExistsError(resolved_dest_path)
+
+        nfo_path, _, _ = await self._write_local_metadata_only(
+            title=title,
+            season=season,
+            episode=episode,
+            year=year,
+            metadata_dir=metadata_dir,
+            output_dir_for_preview=output_dir_display,
+            nfo_content=nfo_content,
+            series=series,
+            season_info=season_info,
+            move_step=move_step,
+            notify_log_update=notify_log_update,
+            link_mode=rename_request.link_mode,
+            advanced_settings=advanced_settings,
+            dest_path_override=resolved_dest_path,
+            require_metadata_dir=False,
+        )
+        result.nfo_path = nfo_path or None
+
+        return await self._organize_local_output(
+            rename_request=rename_request,
+            source_display_path=source_display_path,
+            output_dir_display=output_dir_display,
+            mode_name=mode_name,
+            move_step=move_step,
+            notify_log_update=notify_log_update,
+            result=result,
+            resolved_dest_path=resolved_dest_path,
+        )
+
     def _resolve_move_input(
         self,
         *,
@@ -812,6 +1005,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         move_step: ScrapeLogStep,
         notify_log_update: Callable[[], Awaitable[None]],
         result: ScrapeResult,
+        resolved_dest_path: Path | None = None,
     ) -> tuple[Path, Path, Path]:
         """沿用原本地整理链路。"""
         move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
@@ -819,7 +1013,12 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
         await notify_log_update()
 
-        rename_result = await run_file_io(self.rename_service.execute_rename, rename_request)
+        rename_result = await run_file_io(
+            self.rename_service.execute_rename,
+            rename_request,
+            False,
+            resolved_dest_path,
+        )
         if not rename_result.success:
             if rename_result.error and "already exists" in rename_result.error:
                 move_step.logs.append(ScrapeLogEntry(message=f"目标文件已存在: {rename_result.dest_path}", level=LogLevel.WARNING))
@@ -833,12 +1032,23 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
 
         result.dest_path = rename_result.dest_path
         move_step.logs.append(ScrapeLogEntry(message=f"文件{mode_name}成功: {rename_result.dest_path}"))
-        await notify_log_update()
+        await self._safe_notify_log_update(notify_log_update, "文件输出成功日志")
 
         dest_file = Path(rename_result.dest_path)
         season_folder = dest_file.parent
         series_folder = season_folder.parent
         return dest_file, season_folder, series_folder
+
+    @staticmethod
+    async def _safe_notify_log_update(
+        notify_log_update: Callable[[], Awaitable[None]],
+        stage: str,
+    ) -> None:
+        """A log persistence outage after media publication must not trigger a retry."""
+        try:
+            await notify_log_update()
+        except Exception:
+            logger.exception("%s写入失败；媒体输出状态保持成功", stage)
 
     async def _resolve_metadata_folders(
         self,
@@ -968,29 +1178,46 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 None,
             )
 
-        await self._record_media_version(
-            file_path=file_path,
-            target_path=result.dest_path,
-            tmdb_id=tmdb_id,
-            season=season,
-            episode=episode,
-            title=series.name,
-        )
-        if remember_manual_alias:
-            await self._remember_confirmed_aliases(
+        finalization_warnings: list[str] = []
+        try:
+            await self._record_media_version(
                 file_path=file_path,
-                parsed_title=parsed_title,
+                target_path=result.dest_path,
                 tmdb_id=tmdb_id,
                 season=season,
                 episode=episode,
-                series=series,
-                source="manual",
+                title=series.name,
+            )
+        except Exception:
+            logger.exception("媒体已输出，但媒体版本记录写入失败: %s", result.dest_path)
+            finalization_warnings.append("媒体版本记录写入失败")
+        if remember_manual_alias:
+            try:
+                await self._remember_confirmed_aliases(
+                    file_path=file_path,
+                    parsed_title=parsed_title,
+                    tmdb_id=tmdb_id,
+                    season=season,
+                    episode=episode,
+                    series=series,
+                    source="manual",
+                )
+            except Exception:
+                logger.exception("媒体已输出，但手动别名记录写入失败: %s", file_path)
+                finalization_warnings.append("手动别名记录写入失败")
+
+        if finalization_warnings:
+            scrape_logs[-1].logs.append(
+                ScrapeLogEntry(
+                    message="；".join(finalization_warnings),
+                    level=LogLevel.WARNING,
+                )
             )
 
         result.status = ScrapeStatus.SUCCESS
         result.message = "刮削完成"
         result.scrape_logs = scrape_logs
-        await notify_log_update()
+        await self._safe_notify_log_update(notify_log_update, "任务完成日志")
         return result
 
     async def _execute_scrape_output(
@@ -1063,24 +1290,8 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 await notify_log_update()
 
                 if request.output_locator.provider == StorageProvider.P115:
-                    dest_locator = await self._finalize_storage_output(
-                        file_locator=request.file_locator,
-                        output_locator=request.output_locator,
-                        metadata_locator=request.metadata_locator,
-                        link_mode=request.link_mode,
-                        title=series.name,
-                        season=season,
-                        episode=episode,
-                        source_path=source_display_path,
-                        year=year,
-                    )
-                    result.dest_path = dest_locator.path
                     move_step.logs.append(
-                        ScrapeLogEntry(message=f"文件{mode_name}成功: {dest_locator.path}")
-                    )
-                    await notify_log_update()
-                    move_step.logs.append(
-                        ScrapeLogEntry(message="115 网盘视频已输出，开始生成本地元数据")
+                        ScrapeLogEntry(message="先生成本地元数据，再输出 115 网盘视频")
                     )
                     await notify_log_update()
                     nfo_path_str, _, _ = await self._write_local_metadata_only(
@@ -1099,6 +1310,25 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                         advanced_settings=task_settings,
                     )
                     result.nfo_path = nfo_path_str or None
+                    dest_locator = await self._finalize_storage_output(
+                        file_locator=request.file_locator,
+                        output_locator=request.output_locator,
+                        metadata_locator=request.metadata_locator,
+                        link_mode=request.link_mode,
+                        title=series.name,
+                        season=season,
+                        episode=episode,
+                        source_path=source_display_path,
+                        year=year,
+                    )
+                    result.dest_path = dest_locator.path
+                    move_step.logs.append(
+                        ScrapeLogEntry(message=f"文件{mode_name}成功: {dest_locator.path}")
+                    )
+                    await self._safe_notify_log_update(
+                        notify_log_update,
+                        "115 文件输出成功日志",
+                    )
                     return await self._complete_scrape_output(
                         result=result,
                         file_path=file_path,
@@ -1128,31 +1358,37 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                             episode=episode,
                             year=year,
                             output_dir=effective_output_dir,
-                            link_mode=request.link_mode,
+                            # Provider downloads are temporary. Publishing by
+                            # move keeps the final file valid after cleanup.
+                            link_mode=OrganizeMode.MOVE,
                         )
                         rename_request.conflict_action = effective_file_action
-                        dest_file, season_folder, series_folder = (
-                            await self._organize_local_output(
+                        dest_file, _, _ = (
+                            await self._prepare_and_organize_local_output(
                                 rename_request=rename_request,
                                 source_display_path=source_display_path,
                                 output_dir_display=effective_output_dir,
+                                title=series.name,
+                                season=season,
+                                episode=episode,
+                                year=year,
+                                metadata_dir=effective_metadata_dir,
+                                nfo_content=nfo_content,
+                                series=series,
+                                season_info=season_info,
                                 mode_name=mode_name,
                                 move_step=move_step,
                                 notify_log_update=notify_log_update,
                                 result=result,
+                                advanced_settings=task_settings,
                             )
                         )
                 else:
-                    local_source_path = source_display_path
+                    raise ValueError(
+                        f"不支持的输出提供方: {request.output_locator.provider}"
+                    )
             else:
                 local_source_path = source_display_path
-
-            is_provider_to_local = bool(
-                self._is_provider_source(request.file_locator)
-                and request.output_locator
-                and request.output_locator.provider == StorageProvider.LOCAL
-            )
-            if not is_provider_to_local:
                 rename_request = self._build_rename_request(
                     source_path=local_source_path,
                     title=series.name,
@@ -1163,94 +1399,43 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     link_mode=request.link_mode,
                 )
                 rename_request.conflict_action = effective_file_action
-                dest_file, season_folder, series_folder = await self._organize_local_output(
-                    rename_request=rename_request,
-                    source_display_path=source_display_path,
-                    output_dir_display=effective_output_dir,
-                    mode_name=mode_name,
-                    move_step=move_step,
-                    notify_log_update=notify_log_update,
-                    result=result,
+                dest_file, _, _ = (
+                    await self._prepare_and_organize_local_output(
+                        rename_request=rename_request,
+                        source_display_path=source_display_path,
+                        output_dir_display=effective_output_dir,
+                        title=series.name,
+                        season=season,
+                        episode=episode,
+                        year=year,
+                        metadata_dir=effective_metadata_dir,
+                        nfo_content=nfo_content,
+                        series=series,
+                        season_info=season_info,
+                        mode_name=mode_name,
+                        move_step=move_step,
+                        notify_log_update=notify_log_update,
+                        result=result,
+                        advanced_settings=task_settings,
+                    )
                 )
-
-            metadata_series_folder, metadata_season_folder = (
-                await self._resolve_metadata_folders(
-                    dest_file=dest_file,
-                    season_folder=season_folder,
-                    series_folder=series_folder,
-                    metadata_dir=effective_metadata_dir,
-                )
-            )
-            nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
-            if nfo_config["nfo_enabled"]:
-                nfo_path = metadata_season_folder / f"{dest_file.stem}.nfo"
-                await run_file_io(write_metadata_text, nfo_path, nfo_content)
-                result.nfo_path = str(nfo_path)
-                move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
-
-                tvshow_nfo_path = metadata_series_folder / "tvshow.nfo"
-                if not tvshow_nfo_path.exists():
-                    metadata_series_folder.mkdir(parents=True, exist_ok=True)
-                    tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
-                    tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
-                    await run_file_io(write_metadata_text, tvshow_nfo_path, tvshow_nfo_content)
-                    move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
-
-                season_nfo_path = metadata_season_folder / "season.nfo"
-                if not season_nfo_path.exists():
-                    season_nfo_data = self._get_season_nfo_data(series, season)
-                    season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
-                    await run_file_io(write_metadata_text, season_nfo_path, season_nfo_content)
-                    move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
-            else:
-                move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
-            await notify_log_update()
-
-            image_step = ScrapeLogStep(name="下载图片", logs=[])
-            scrape_logs.append(image_step)
-            await notify_log_update()
-            download_config = await self._get_effective_download_config(
-                request.advanced_settings
-            )
-            overwrite_images = bool(download_config.get("overwrite_existing", False))
-            if download_config["download_poster"] or download_config["download_fanart"]:
-                await self._download_series_images(
-                    series,
-                    str(metadata_series_folder),
-                    download_poster=download_config["download_poster"],
-                    download_fanart=download_config["download_fanart"],
-                    overwrite_existing=overwrite_images,
-                )
-                image_step.logs.append(ScrapeLogEntry(message="剧集图片处理完成"))
-            else:
-                image_step.logs.append(
-                    ScrapeLogEntry(message="剧集图片下载已跳过（配置禁用）")
-                )
-            await notify_log_update()
-
-            if download_config["download_thumb"]:
-                await self._download_episode_image(
-                    season_info,
-                    season,
-                    episode,
-                    str(metadata_season_folder),
-                    dest_file.stem,
-                    overwrite_existing=overwrite_images,
-                )
-                image_step.logs.append(ScrapeLogEntry(message="集封面图处理完成"))
-            else:
-                image_step.logs.append(
-                    ScrapeLogEntry(message="集封面图下载已跳过（配置禁用）")
-                )
-            await notify_log_update()
 
             if should_process_subtitles:
-                await run_file_io(
-                    self._process_subtitles,
-                    local_source_path,
-                    str(dest_file),
-                    request.link_mode,
-                )
+                try:
+                    await run_file_io(
+                        self._process_subtitles,
+                        local_source_path,
+                        str(dest_file),
+                        request.link_mode,
+                    )
+                except Exception as exc:
+                    logger.exception("媒体已输出，但字幕处理失败: %s", dest_file)
+                    move_step.logs.append(
+                        ScrapeLogEntry(
+                            message=f"字幕处理失败，视频仍保持成功: {exc}",
+                            level=LogLevel.WARNING,
+                        )
+                    )
         except FileExistsError:
             result.scrape_logs = scrape_logs
             return result

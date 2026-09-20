@@ -4,7 +4,8 @@ import pytest
 import tempfile
 from datetime import date
 from pathlib import Path
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from server.models.template import NamingTemplate
 from server.services.config_service import ConfigService
@@ -12,7 +13,8 @@ from server.services.rename_service import RenameService
 from server.services.template_service import TemplateService
 from server.models.organize import OrganizeMode
 from server.models.rename import RenameRequest, BatchRenameRequest
-from server.models.scraper import ScrapeByIdRequest, ScrapeStatus
+from server.models.history import ScrapeLogStep
+from server.models.scraper import ScrapeByIdRequest, ScrapeResult, ScrapeStatus
 from server.models.storage import StorageLocator, StorageProvider
 from server.models.tmdb import TMDBEpisode, TMDBSeason, TMDBSeries
 
@@ -446,11 +448,11 @@ class Test115OutputBranches:
 
             async def rename(self, locator, target_name, target_parent_id):
                 self.rename_calls.append((locator, target_name, target_parent_id))
-                return {"state": True}
+                return {"state": True, "file_id": locator.file_id}
 
             async def copy(self, locator, target_name, target_parent_id):
                 self.copy_calls.append((locator, target_name, target_parent_id))
-                return {"state": True}
+                return {"state": True, "file_id": "copied-file-001"}
 
         provider = FakeProvider()
 
@@ -665,3 +667,226 @@ class Test115OutputBranches:
         assert result.dest_path is not None
         assert Path(result.dest_path).parent == expected_folder
         assert Path(result.dest_path).exists()
+
+
+class TestProviderPublicationSafety:
+    @pytest.mark.asyncio
+    async def test_metadata_preparation_creates_new_destination_directories(
+        self, tmp_path: Path
+    ):
+        from server.services.scraper_service import ScraperService
+
+        nfo_service = Mock()
+        nfo_service.tvshow_from_tmdb.return_value = Mock()
+        nfo_service.generate_tvshow_nfo.return_value = "<tvshow />"
+        nfo_service.generate_season_nfo.return_value = "<season />"
+        service = ScraperService(
+            config_service=Mock(),
+            tmdb_service=None,
+            parser_service=None,
+            nfo_service=nfo_service,
+            rename_service=Mock(),
+            image_service=None,
+            subtitle_service=None,
+            emby_service=None,
+        )
+        service._get_effective_nfo_config = AsyncMock(
+            return_value={"nfo_enabled": True}
+        )
+        service._get_effective_download_config = AsyncMock(
+            return_value={
+                "download_poster": False,
+                "download_fanart": False,
+                "download_thumb": False,
+                "overwrite_existing": False,
+            }
+        )
+        service._get_season_nfo_data = Mock(return_value=Mock())
+        destination = (
+            tmp_path / "library" / "Show" / "Season 1" / "Show S01E01.mkv"
+        )
+
+        nfo_path, _, season_folder = await service._write_local_metadata_only(
+            title="Show",
+            season=1,
+            episode=1,
+            year=None,
+            metadata_dir=None,
+            output_dir_for_preview=str(tmp_path / "library"),
+            nfo_content="<episode />",
+            series=SimpleNamespace(name="Show"),
+            season_info=None,
+            move_step=ScrapeLogStep(name="移动文件"),
+            notify_log_update=AsyncMock(),
+            link_mode=OrganizeMode.MOVE,
+            advanced_settings=None,
+            dest_path_override=destination,
+            require_metadata_dir=False,
+        )
+
+        assert Path(nfo_path).read_text(encoding="utf-8") == "<episode />"
+        assert (season_folder / "season.nfo").exists()
+        assert (season_folder.parent / "tvshow.nfo").exists()
+
+    @pytest.mark.asyncio
+    async def test_copy_renames_only_the_new_115_file(self):
+        from server.services.scraper_service import _P115StorageProvider
+
+        client = Mock()
+        client.fs_files = AsyncMock(
+            side_effect=[
+                {"data": [{"n": "episode.mkv", "fid": "existing"}]},
+                {
+                    "data": [
+                        {"n": "episode.mkv", "fid": "existing"},
+                        {"n": "episode.mkv", "fid": "new-copy"},
+                    ]
+                },
+            ]
+        )
+        client.fs_copy = AsyncMock(return_value={"state": True})
+        client.fs_rename = AsyncMock(return_value={"state": True})
+        provider = _P115StorageProvider(Mock())
+        provider._get_client = AsyncMock(return_value=(client, "web"))
+        locator = StorageLocator(
+            provider=StorageProvider.P115,
+            path="/115网盘/incoming/episode.mkv",
+            file_id="source-file",
+            parent_id="incoming",
+            is_dir=False,
+        )
+
+        result = await provider.copy(locator, "S01E01.mkv", "target")
+
+        assert result["file_id"] == "new-copy"
+        client.fs_rename.assert_awaited_once_with(
+            ("new-copy", "S01E01.mkv"), async_=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_move_rename_failure_rolls_back_to_original_directory(self):
+        from server.services.scraper_service import _P115StorageProvider
+
+        client = Mock()
+        client.fs_move = AsyncMock(
+            side_effect=[{"state": True}, {"state": True}]
+        )
+        client.fs_rename = AsyncMock(
+            return_value={"state": False, "message": "rename rejected"}
+        )
+        provider = _P115StorageProvider(Mock())
+        provider._get_client = AsyncMock(return_value=(client, "web"))
+        locator = StorageLocator(
+            provider=StorageProvider.P115,
+            path="/115网盘/incoming/episode.mkv",
+            file_id="source-file",
+            parent_id="incoming",
+            is_dir=False,
+        )
+
+        with pytest.raises(ValueError, match="已移回原目录"):
+            await provider.rename(locator, "S01E01.mkv", "target")
+
+        assert client.fs_move.await_args_list[0].args == ("source-file",)
+        assert client.fs_move.await_args_list[0].kwargs["pid"] == "target"
+        assert client.fs_move.await_args_list[1].kwargs["pid"] == "incoming"
+
+    @pytest.mark.asyncio
+    async def test_metadata_failure_happens_before_local_media_publication(
+        self, tmp_path: Path
+    ):
+        from server.services.scraper_service import ScraperService
+
+        source = tmp_path / "source.mkv"
+        source.write_bytes(b"video")
+        destination = tmp_path / "library" / "Show" / "Season 1" / "S01E01.mkv"
+        rename_service = Mock()
+        rename_service.resolve_destination_path = Mock(return_value=destination)
+        rename_service.execute_rename = Mock()
+        service = ScraperService(
+            config_service=Mock(),
+            tmdb_service=None,
+            parser_service=None,
+            nfo_service=None,
+            rename_service=rename_service,
+            image_service=None,
+            subtitle_service=None,
+            emby_service=None,
+        )
+        service._write_local_metadata_only = AsyncMock(
+            side_effect=OSError("metadata disk full")
+        )
+        request = RenameRequest(
+            source_path=str(source),
+            title="Show",
+            season=1,
+            episode=1,
+            output_dir=str(tmp_path / "library"),
+        )
+
+        with pytest.raises(OSError, match="metadata disk full"):
+            await service._prepare_and_organize_local_output(
+                rename_request=request,
+                source_display_path=str(source),
+                output_dir_display=request.output_dir,
+                title="Show",
+                season=1,
+                episode=1,
+                year=None,
+                metadata_dir=None,
+                nfo_content="<episode />",
+                series=Mock(),
+                season_info=None,
+                mode_name="移动",
+                move_step=ScrapeLogStep(name="移动文件"),
+                notify_log_update=AsyncMock(),
+                result=ScrapeResult(
+                    file_path=str(source),
+                    status=ScrapeStatus.MOVE_FAILED,
+                ),
+                advanced_settings=None,
+            )
+
+        rename_service.execute_rename.assert_not_called()
+        assert source.exists()
+
+    @pytest.mark.asyncio
+    async def test_post_publication_audit_failure_does_not_retry_media(self):
+        from server.services.scraper_service import ScraperService
+
+        service = ScraperService(
+            config_service=Mock(),
+            tmdb_service=None,
+            parser_service=None,
+            nfo_service=None,
+            rename_service=Mock(),
+            image_service=None,
+            subtitle_service=None,
+            emby_service=None,
+        )
+        service._record_media_version = AsyncMock(
+            side_effect=OSError("database unavailable")
+        )
+        result = ScrapeResult(
+            file_path="/media/source.mkv",
+            dest_path="/library/S01E01.mkv",
+            status=ScrapeStatus.MOVE_FAILED,
+        )
+        logs = [ScrapeLogStep(name="移动文件")]
+
+        completed = await service._complete_scrape_output(
+            result=result,
+            file_path=result.file_path,
+            tmdb_id=123,
+            series=SimpleNamespace(name="Show"),
+            season_info=None,
+            season=1,
+            episode=1,
+            scrape_logs=logs,
+            notify_log_update=AsyncMock(),
+            remember_manual_alias=False,
+            parsed_title=None,
+        )
+
+        assert completed.status == ScrapeStatus.SUCCESS
+        assert "媒体版本记录写入失败" in logs[-1].logs[-1].message

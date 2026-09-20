@@ -7,6 +7,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -60,6 +61,18 @@ def _create_background_task(coro, label: str) -> asyncio.Task:
     task = asyncio.create_task(coro, name=label)
     task.add_done_callback(lambda completed: _report_background_failure(completed, label))
     return task
+
+
+@dataclass(slots=True)
+class PendingFile:
+    """A detected file plus provider identity that survives strategy restarts."""
+
+    path: str
+    detected_at: float
+    folder: WatchedFolder
+    file_id: str | None = None
+    parent_id: str | None = None
+    file_size: int = 0
 
 
 class VideoFileHandler(FileSystemEventHandler):
@@ -342,6 +355,7 @@ class P115EventStrategy(WatchStrategy):
         "offline_download",
     }
     PROCESSED_FILE_LIMIT = 10_000
+    MAX_WATCHED_DIRECTORIES = 50_000
 
     def __init__(self, folder: WatchedFolder, on_file_detected: Callable[[str, WatchedFolder], None]):
         super().__init__(folder, on_file_detected)
@@ -351,6 +365,7 @@ class P115EventStrategy(WatchStrategy):
         self.detected_meta: dict[str, dict] = {}
         # 监控目录及其所有子目录的 id 集合（用于 parent_id 匹配）
         self._watched_dir_ids: set[str] = set()
+        self._watched_dir_paths: dict[str, str] = {}
         # 已处理过的 file_id 集合（防止刮削产生的整理事件导致循环）
         self._processed_file_ids: set[str] = set()
         self._processed_file_order: deque[str] = deque()
@@ -394,6 +409,7 @@ class P115EventStrategy(WatchStrategy):
         self._initialized = False
         self._processed_file_ids.clear()
         self._processed_file_order.clear()
+        self._watched_dir_paths.clear()
 
     async def _init(self) -> None:
         """首次初始化：收集子目录 id + 记录当前最大事件时间（不触发回调）。"""
@@ -417,40 +433,70 @@ class P115EventStrategy(WatchStrategy):
         from server.services.config_service import ConfigService
 
         svc = P115Service(ConfigService())
-        self._watched_dir_ids.clear()
-        if self.folder.file_id:
-            self._watched_dir_ids.add(str(self.folder.file_id))
-        await self._collect_subdir_ids(svc, self.folder.path, self.folder.file_id)
-        if not self._watched_dir_ids:
+        collected_paths: dict[str, str] = {}
+        await self._collect_subdir_ids(
+            svc,
+            self.folder.path,
+            self.folder.file_id,
+            collected_paths,
+        )
+        if not collected_paths:
             raise ValueError("无法确认 115 监控目录 ID，事件监控保持关闭")
+        # Only replace the active scope after a complete successful traversal.
+        # A transient provider error must not erase the last known-good scope.
+        self._watched_dir_paths = collected_paths
+        self._watched_dir_ids = set(collected_paths)
 
     async def _collect_subdir_ids(
-        self, svc: Any, path: str, file_id: str | None, depth: int = 0
+        self,
+        svc: Any,
+        path: str,
+        file_id: str | None,
+        collected_paths: dict[str, str],
     ) -> None:
-        """递归收集子目录 id（限制深度避免过深）。"""
-        if depth > 5:
+        """Recursively collect every directory with pagination and cycle guards."""
+        if len(collected_paths) >= self.MAX_WATCHED_DIRECTORIES:
+            raise ValueError(
+                f"115 监控目录数量超过安全上限 {self.MAX_WATCHED_DIRECTORIES}"
+            )
+        normalized_id = None if file_id in (None, "") else str(file_id)
+        if normalized_id and normalized_id in collected_paths:
             return
-        try:
-            result = await svc.browse(path=path, file_id=file_id, page=1, page_size=100)
+
+        page = 1
+        page_size = 100
+        while True:
+            result = await svc.browse(
+                path=path,
+                file_id=file_id,
+                page=page,
+                page_size=page_size,
+            )
             current_file_id = result.get("current_file_id")
             if current_file_id not in (None, ""):
-                self._watched_dir_ids.add(str(current_file_id))
+                normalized_id = str(current_file_id)
+                collected_paths.setdefault(normalized_id, path.rstrip("/"))
             for entry in result.get("entries", []):
                 if entry.get("is_dir") and entry.get("file_id"):
-                    self._watched_dir_ids.add(str(entry["file_id"]))
-                    # 递归收集子目录
+                    child_id = str(entry["file_id"])
+                    child_path = str(entry.get("path") or "").rstrip("/")
+                    if not child_path:
+                        continue
+                    if child_id in collected_paths:
+                        continue
                     await self._collect_subdir_ids(
-                        svc, entry["path"], entry["file_id"], depth + 1
+                        svc,
+                        child_path,
+                        child_id,
+                        collected_paths,
                     )
-        except Exception as exc:
-            logger.warning(
-                "[115事件] 收集子目录失败 path=%s file_id=%s depth=%s: %s",
-                path,
-                file_id,
-                depth,
-                exc,
-                exc_info=True,
-            )
+            entries = result.get("entries", [])
+            total = result.get("total")
+            if len(entries) < page_size:
+                break
+            if isinstance(total, int) and page * page_size >= total:
+                break
+            page += 1
 
     def _extract_events(self, resp: Any) -> list[dict]:
         """从 life_list 响应提取事件列表。"""
@@ -478,6 +524,7 @@ class P115EventStrategy(WatchStrategy):
                     continue
 
                 new_max_time = self._last_update_time
+                deferred_items: list[dict] = []
                 for event in events:
                     evt_time = event.get("update_time", 0)
                     if evt_time <= self._last_update_time:
@@ -489,6 +536,15 @@ class P115EventStrategy(WatchStrategy):
                         continue
 
                     for item in event.get("items", []):
+                        if not self._process_event_item(item):
+                            deferred_items.append(item)
+
+                # A directory and its first file can appear in the same provider
+                # batch. Refresh the scope and retry unknown parents before the
+                # event cursor advances, otherwise that first file is lost forever.
+                if deferred_items:
+                    await self._collect_dir_ids()
+                    for item in deferred_items:
                         self._process_event_item(item)
 
                 self._last_update_time = new_max_time
@@ -526,8 +582,8 @@ class P115EventStrategy(WatchStrategy):
         self._processed_file_order.append(file_id)
         self._processed_file_ids.add(file_id)
 
-    def _process_event_item(self, item: dict) -> None:
-        """处理单个事件项，判断是否为监控目录内的视频新增。"""
+    def _process_event_item(self, item: dict) -> bool:
+        """Process an item; return False only when its parent scope is unknown."""
         file_id = item.get("file_id")
         file_name = item.get("file_name", "")
         ico = item.get("ico", "")
@@ -535,32 +591,25 @@ class P115EventStrategy(WatchStrategy):
 
         if file_id in (None, "", "0"):
             logger.warning("[115事件] 忽略缺少有效文件 ID 的事件项: %s", file_name)
-            return
+            return True
 
         # file_id 去重：已处理过的文件不再处理（防止刮削整理事件导致循环）
         if file_id and str(file_id) in self._processed_file_ids:
-            return
+            return True
 
         # 检查是否视频文件（ico 字段是扩展名，如 "mp4"）
         if f".{ico}" not in VIDEO_EXTENSIONS:
-            return
+            return True
 
         # 路径匹配：parent_id 在监控目录的子目录 id 集合里才处理
         if not self._watched_dir_ids or parent_id not in self._watched_dir_ids:
-            return
+            return False
 
         # 记录已处理
         self._remember_processed_file_id(str(file_id))
 
-        # 构造虚拟路径（115 路径）
-        # parent_name 是文件所在目录名。如果等于监控目录名（直接子级），
-        # 不重复拼接；只有更深的子目录才拼。
-        parent_name = item.get("parent_name", "")
-        folder_base_name = self.folder.path.rstrip("/").rsplit("/", 1)[-1] if self.folder.path else ""
-        if parent_name and parent_name != folder_base_name:
-            virtual_path = f"{self.folder.path}/{parent_name}/{file_name}"
-        else:
-            virtual_path = f"{self.folder.path}/{file_name}"
+        parent_path = self._watched_dir_paths.get(parent_id, self.folder.path).rstrip("/")
+        virtual_path = f"{parent_path}/{file_name}"
 
         self.detected_meta[virtual_path] = {
             "file_id": str(file_id),
@@ -569,6 +618,7 @@ class P115EventStrategy(WatchStrategy):
         }
         self.on_file_detected(virtual_path, self.folder)
         logger.info(f"[115事件] 检测到新文件: {file_name}")
+        return True
 
 
 class WatcherService:
@@ -580,7 +630,7 @@ class WatcherService:
         self._status = WatcherStatus.STOPPED
         self._running = False
         self._strategies: dict[str, WatchStrategy] = {}  # folder_id -> strategy
-        self._pending_files: dict[str, tuple[str, float, WatchedFolder]] = {}  # path -> (path, detect_time, folder)
+        self._pending_files: dict[str, PendingFile] = {}
         self._last_detection: datetime | None = None
         self._on_files_detected: Callable[[WatcherNotification], None] | None = None
         self._process_task: asyncio.Task | None = None
@@ -753,8 +803,12 @@ class WatcherService:
 
         updated_folder = await self.get_folder(folder_id)
 
-        # 如果服务正在运行，重启该文件夹的监控
+        # Pending provider identity survives configuration changes, while new
+        # folder settings must apply even if the service is currently stopped.
         if updated_folder:
+            for pending in self._pending_files.values():
+                if pending.folder.id == updated_folder.id:
+                    pending.folder = updated_folder
             async with self._lifecycle_lock:
                 if self._running:
                     await self._restart_folder_watch(updated_folder)
@@ -769,6 +823,11 @@ class WatcherService:
         async with self._lifecycle_lock:
             if folder_id in self._strategies:
                 await self._stop_folder_watch(folder_id)
+            self._pending_files = {
+                path: pending
+                for path, pending in self._pending_files.items()
+                if pending.folder.id != folder_id
+            }
 
         async with db_connection(self.db_path) as db:
             cursor = await db.execute(
@@ -915,7 +974,12 @@ class WatcherService:
                             path=str(path), detected_at=datetime.now(), file_size=stat.st_size, stable=True,
                         ))
                 else:
-                    unstable[str(path)] = (str(path), current_time, folder)
+                    unstable[str(path)] = PendingFile(
+                        path=str(path),
+                        detected_at=current_time,
+                        folder=folder,
+                        file_size=stat.st_size,
+                    )
         return stable_files, unstable
 
     async def _initial_scan_p115(self, folder: WatchedFolder, pending_paths: set[str]) -> None:
@@ -966,7 +1030,19 @@ class WatcherService:
     def _on_file_detected(self, path: str, folder: WatchedFolder) -> None:
         """文件检测回调"""
         self._last_detection = datetime.now()
-        self._pending_files[path] = (path, time.time(), folder)
+        meta = self._get_p115_meta(folder.id, path) if folder.provider == "115" else None
+        existing = self._pending_files.get(path)
+        self._pending_files[path] = PendingFile(
+            path=path,
+            detected_at=time.time(),
+            folder=folder,
+            file_id=(meta.get("file_id") if meta else None)
+            or (existing.file_id if existing else None),
+            parent_id=(meta.get("parent_id") if meta else None)
+            or (existing.parent_id if existing else None),
+            file_size=(meta.get("size", 0) if meta else 0)
+            or (existing.file_size if existing else 0),
+        )
         logger.info(f"文件加入待处理队列: {path}")
 
     def _get_p115_meta(self, folder_id: str, file_path: str) -> dict | None:
@@ -989,20 +1065,17 @@ class WatcherService:
     ) -> None:
         """Keep files whose jobs were not created so the watcher can retry them."""
         retry_at = time.time()
-        strategy = self._strategies.get(folder.id)
         for file in files:
             if file.path in completed:
                 continue
-            if (
-                folder.provider == "115"
-                and isinstance(strategy, (P115ScanStrategy, P115EventStrategy))
-            ):
-                strategy.detected_meta[file.path] = {
-                    "file_id": file.file_id,
-                    "parent_id": file.parent_id,
-                    "size": file.file_size,
-                }
-            self._pending_files[file.path] = (file.path, retry_at, folder)
+            self._pending_files[file.path] = PendingFile(
+                path=file.path,
+                detected_at=retry_at,
+                folder=folder,
+                file_id=file.file_id,
+                parent_id=file.parent_id,
+                file_size=file.file_size,
+            )
 
     def _remove_pending_paths(self, paths: set[str], folder: WatchedFolder) -> None:
         for path in paths:
@@ -1019,12 +1092,15 @@ class WatcherService:
         stable_by_folder: dict[str, tuple[list[DetectedFile], WatchedFolder]] = {}
         missing_local_paths: set[str] = set()
 
-        for path, (file_path, detect_time, folder) in list(self._pending_files.items()):
-            age = current_time - detect_time
+        for path, pending in list(self._pending_files.items()):
+            file_path = pending.path
+            folder = pending.folder
+            if not folder.enabled:
+                continue
+            age = current_time - pending.detected_at
             if age < folder.file_stable_seconds:
                 continue
             if folder.provider == "115":
-                meta = self._get_p115_meta(folder.id, file_path)
                 key = folder.id
                 if key not in stable_by_folder:
                     stable_by_folder[key] = ([], folder)
@@ -1032,10 +1108,10 @@ class WatcherService:
                     DetectedFile(
                         path=file_path,
                         detected_at=datetime.now(),
-                        file_size=meta.get("size", 0) if meta else 0,
+                        file_size=pending.file_size,
                         stable=True,
-                        file_id=meta.get("file_id") if meta else None,
-                        parent_id=meta.get("parent_id") if meta else None,
+                        file_id=pending.file_id,
+                        parent_id=pending.parent_id,
                     )
                 )
                 continue
@@ -1062,6 +1138,8 @@ class WatcherService:
             self._pending_files.pop(path, None)
 
         for files, folder in stable_by_folder.values():
+            if folder.provider == "115" and any(not file.file_id for file in files):
+                await self._refresh_pending_p115_metadata(files, folder)
             paths = {file.path for file in files}
             if not folder.auto_scrape:
                 self._remove_pending_paths(paths, folder)
@@ -1072,7 +1150,48 @@ class WatcherService:
             # Delay retries instead of spinning every watcher loop.
             for file in files:
                 if file.path not in completed and file.path in self._pending_files:
-                    self._pending_files[file.path] = (file.path, current_time, folder)
+                    self._pending_files[file.path].detected_at = current_time
+
+    async def _refresh_pending_p115_metadata(
+        self,
+        files: list[DetectedFile],
+        folder: WatchedFolder,
+    ) -> None:
+        """Recover missing provider IDs once instead of retrying invalid jobs forever."""
+        try:
+            from server.services.config_service import ConfigService
+            from server.services.p115_service import P115Service
+
+            entries = await P115Service(ConfigService()).scan_folder(
+                path=folder.path,
+                file_id=folder.file_id,
+            )
+        except Exception:
+            logger.exception(
+                "[115监控] 恢复待处理文件定位信息失败 folder=%s",
+                folder.path,
+            )
+            return
+
+        entries_by_path = {
+            str(entry.get("path")): entry
+            for entry in entries
+            if entry.get("path") and entry.get("file_id")
+        }
+        for file in files:
+            if file.file_id:
+                continue
+            entry = entries_by_path.get(file.path)
+            if not entry:
+                continue
+            file.file_id = str(entry["file_id"])
+            file.parent_id = entry.get("parent_id")
+            file.file_size = entry.get("size") or file.file_size
+            pending = self._pending_files.get(file.path)
+            if pending:
+                pending.file_id = file.file_id
+                pending.parent_id = file.parent_id
+                pending.file_size = file.file_size
 
     async def _process_pending_files(self) -> None:
         """处理待处理文件的后台任务"""
