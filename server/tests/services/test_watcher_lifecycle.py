@@ -2,13 +2,26 @@
 
 import asyncio
 import logging
+import time
+from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from server.models.watcher import WatchedFolder, WatcherStatus
+from server.models.watcher import (
+    DetectedFile,
+    WatchedFolder,
+    WatchedFolderCreate,
+    WatcherMode,
+    WatcherStatus,
+)
 from server.services import watcher_service as watcher_module
-from server.services.watcher_service import WatcherService
+from server.services.watcher_service import (
+    P115EventStrategy,
+    P115ScanStrategy,
+    WatcherService,
+)
 
 
 class FakeStrategy:
@@ -23,6 +36,229 @@ class FakeStrategy:
 class FailingStopStrategy(FakeStrategy):
     async def stop(self) -> None:
         raise RuntimeError("strategy stop failed")
+
+
+def _p115_folder(*, mode: WatcherMode = WatcherMode.COMPAT) -> WatchedFolder:
+    return WatchedFolder(
+        id="p115-folder",
+        path="/115网盘/待整理",
+        provider="115",
+        mode=mode,
+        file_id="folder-1",
+        file_stable_seconds=0,
+    )
+
+
+def test_p115_scan_recovery_establishes_baseline_before_emitting_new_files() -> None:
+    detected: list[str] = []
+    folder = _p115_folder()
+    strategy = P115ScanStrategy(folder, lambda path, _folder: detected.append(path))
+
+    strategy._apply_scan_snapshot([
+        {"file_id": "old-1", "path": "/115网盘/待整理/old.mkv"},
+    ])
+    assert detected == []
+
+    strategy._apply_scan_snapshot([
+        {"file_id": "old-1", "path": "/115网盘/待整理/old.mkv"},
+        {
+            "file_id": "new-1",
+            "parent_id": "folder-1",
+            "path": "/115网盘/待整理/new.mkv",
+            "size": 123,
+        },
+    ])
+
+    assert detected == ["/115网盘/待整理/new.mkv"]
+    assert strategy.detected_meta[detected[0]]["file_id"] == "new-1"
+
+
+def test_p115_event_strategy_fails_closed_without_scope_or_file_id() -> None:
+    detected: list[str] = []
+    strategy = P115EventStrategy(
+        _p115_folder(mode=WatcherMode.EVENT),
+        lambda path, _folder: detected.append(path),
+    )
+    valid_item = {
+        "file_id": "file-1",
+        "file_name": "episode.mkv",
+        "ico": "mkv",
+        "parent_id": "folder-1",
+    }
+
+    strategy._process_event_item(valid_item)
+    assert detected == []
+
+    strategy._watched_dir_ids.add("folder-1")
+    strategy._process_event_item({**valid_item, "file_id": None})
+    assert detected == []
+
+    strategy._process_event_item(valid_item)
+    assert detected == ["/115网盘/待整理/episode.mkv"]
+
+
+def test_p115_event_deduplication_cache_is_bounded() -> None:
+    strategy = P115EventStrategy(
+        _p115_folder(mode=WatcherMode.EVENT),
+        lambda _path, _folder: None,
+    )
+    strategy.PROCESSED_FILE_LIMIT = 2
+
+    strategy._remember_processed_file_id("one")
+    strategy._remember_processed_file_id("two")
+    strategy._remember_processed_file_id("three")
+
+    assert strategy._processed_file_ids == {"two", "three"}
+
+
+@pytest.mark.asyncio
+async def test_p115_event_empty_baseline_starts_from_current_time(
+    monkeypatch,
+) -> None:
+    strategy = P115EventStrategy(
+        _p115_folder(mode=WatcherMode.EVENT),
+        lambda _path, _folder: None,
+    )
+
+    async def collect_scope() -> None:
+        strategy._watched_dir_ids = {"folder-1"}
+
+    client = SimpleNamespace(
+        life_list=AsyncMock(return_value={"state": True, "data": {"list": []}}),
+    )
+    monkeypatch.setattr(strategy, "_collect_dir_ids", collect_scope)
+    monkeypatch.setattr(strategy, "_get_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(watcher_module.time, "time", lambda: 1234.9)
+
+    await strategy._init()
+
+    assert strategy._last_update_time == 1234
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"path": "/115网盘/待整理", "provider": "local"}, "不能声明为本地"),
+        ({"path": "/media", "provider": "115"}, "必须使用 /115网盘"),
+        (
+            {
+                "path": "/media",
+                "provider": "local",
+                "mode": WatcherMode.EVENT,
+            },
+            "不支持 115 事件模式",
+        ),
+        (
+            {
+                "path": "/media",
+                "provider": "local",
+                "output_dir": "/115网盘/媒体库",
+            },
+            "暂不支持将本地监控文件输出到 115",
+        ),
+    ],
+)
+def test_watched_folder_create_rejects_inconsistent_storage_selection(
+    kwargs,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        WatchedFolderCreate(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_pending_file_is_removed_only_after_job_creation_succeeds(
+    temp_db,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service = WatcherService(temp_db)
+    folder = WatchedFolder(
+        id="local-folder",
+        path=str(tmp_path),
+        file_stable_seconds=0,
+    )
+    first = tmp_path / "first.mkv"
+    second = tmp_path / "second.mkv"
+    first.touch()
+    second.touch()
+    detected_at = time.time() - 10
+    service._pending_files = {
+        str(first): (str(first), detected_at, folder),
+        str(second): (str(second), detected_at, folder),
+    }
+    monkeypatch.setattr(
+        service,
+        "_create_jobs_for_files",
+        AsyncMock(return_value={str(first)}),
+    )
+
+    await service._process_pending_once()
+
+    assert str(first) not in service._pending_files
+    assert str(second) in service._pending_files
+
+
+@pytest.mark.asyncio
+async def test_job_creation_failure_is_isolated_per_detected_file(
+    temp_db,
+    monkeypatch,
+) -> None:
+    service = WatcherService(temp_db)
+    folder = WatchedFolder(id="local-folder", path="/media")
+    files = [
+        DetectedFile(
+            path=f"/media/{name}.mkv",
+            detected_at=datetime.now(),
+            file_size=1,
+            stable=True,
+        )
+        for name in ("first", "second")
+    ]
+    config = SimpleNamespace(
+        organize_dir="/library",
+        metadata_dir="",
+        organize_mode=watcher_module.OrganizeMode.COPY,
+    )
+    config_service = SimpleNamespace(
+        get_organize_config=AsyncMock(return_value=config),
+    )
+    create_job = AsyncMock(side_effect=[RuntimeError("temporary failure"), object()])
+
+    monkeypatch.setattr(
+        "server.services.config_service.ConfigService",
+        lambda: config_service,
+    )
+    monkeypatch.setattr(
+        "server.services.scrape_job_service.ScrapeJobService",
+        lambda: SimpleNamespace(create_job=create_job),
+    )
+
+    completed = await service._create_jobs_for_files(files, folder)
+
+    assert completed == {"/media/second.mkv"}
+    assert create_job.await_count == 2
+
+
+def test_legacy_watcher_row_is_safely_normalized(temp_db) -> None:
+    service = WatcherService(temp_db)
+    folder = service._row_to_folder({
+        "id": "legacy",
+        "path": "/115网盘/待整理",
+        "enabled": 1,
+        "mode": "realtime",
+        "scan_interval_seconds": 60,
+        "file_stable_seconds": 30,
+        "auto_scrape": 1,
+        "output_dir": None,
+        "provider": "local",
+        "file_id": "folder-1",
+        "last_scan": None,
+        "created_at": None,
+    })
+
+    assert folder.provider == "115"
+    assert folder.mode == WatcherMode.COMPAT
 
 
 @pytest.mark.asyncio
