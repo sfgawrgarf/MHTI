@@ -527,3 +527,6 @@ async def test_failed_strategy_stop_remains_visible_for_retry(temp_db, caplog) -
 
     with pytest.raises(RuntimeError, match="拒绝重复启动"):
         await service.start()
+
+    with pytest.raises(RuntimeError, match="未能停止"):
+        await service.stop(require_clean=True)

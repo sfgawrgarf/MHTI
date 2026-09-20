@@ -1247,10 +1247,12 @@ class WatcherService:
                     len(self._strategies),
                 )
 
-    async def stop(self) -> None:
-        """Stop the watcher service."""
+    async def stop(self, *, require_clean: bool = False) -> None:
+        """Stop the watcher service, optionally rejecting partial shutdown."""
         async with self._lifecycle_lock:
             await self._stop_locked()
+            if require_clean and self._strategies:
+                raise RuntimeError("仍有监控策略未能停止")
 
     async def _stop_locked(self) -> None:
         """Stop all watcher resources while the lifecycle lock is held."""
