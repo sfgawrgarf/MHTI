@@ -99,7 +99,8 @@ async def test_resolve_conflict_allows_reprocessing_skipped_or_deleted_record(mo
                     "path": "/incoming/example.mkv",
                     "file_id": "abc",
                     "is_dir": False,
-                }
+                },
+                "allow_local_output": True,
             }
         ),
     )
@@ -193,7 +194,8 @@ async def test_resolve_conflict_rematches_any_selectable_conflict(
                     "path": "/incoming/example.mkv",
                     "file_id": "abc",
                     "is_dir": False,
-                }
+                },
+                "allow_local_output": True,
             }
         ),
     )
