@@ -60,6 +60,13 @@ HISTORY_COLUMNS = (
     ("file_fingerprint", "TEXT"),
 )
 
+SCHEDULED_TASK_COLUMNS = (
+    ("last_attempt", "TEXT"),
+    ("last_status", "TEXT"),
+    ("last_error", "TEXT"),
+    ("retry_count", "INTEGER DEFAULT 0"),
+)
+
 
 async def _add_missing_columns(
     db: aiosqlite.Connection,
@@ -89,6 +96,11 @@ async def migrate_scrape_jobs_table(db: aiosqlite.Connection) -> None:
 async def migrate_history_table(db: aiosqlite.Connection) -> None:
     """Add only missing columns; the caller owns the migration transaction."""
     await _add_missing_columns(db, "history_records", HISTORY_COLUMNS)
+
+
+async def migrate_scheduled_tasks_table(db: aiosqlite.Connection) -> None:
+    """Add scheduler execution-state columns for existing installations."""
+    await _add_missing_columns(db, "scheduled_tasks", SCHEDULED_TASK_COLUMNS)
 
 
 async def create_all_tables(db: aiosqlite.Connection) -> None:
@@ -139,6 +151,14 @@ async def _create_auth_tables(db: aiosqlite.Connection) -> None:
             avatar TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+    """)
+    await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS admin_singleton_insert
+        BEFORE INSERT ON admin
+        WHEN EXISTS (SELECT 1 FROM admin)
+        BEGIN
+            SELECT RAISE(ABORT, 'only one administrator is allowed');
+        END
     """)
 
     # 迁移: 为旧数据库添加 avatar 字段
@@ -234,10 +254,15 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
             cron_expression TEXT NOT NULL,
             enabled INTEGER DEFAULT 1,
             last_run TEXT,
+            last_attempt TEXT,
+            last_status TEXT,
+            last_error TEXT,
+            retry_count INTEGER DEFAULT 0,
             next_run TEXT,
             created_at TEXT NOT NULL
         )
     """)
+    await migrate_scheduled_tasks_table(db)
 
     # History records table
     await db.execute("""

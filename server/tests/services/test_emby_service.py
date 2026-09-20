@@ -14,7 +14,13 @@ import httpx
 
 from server.services.emby_service import EmbyService
 from server.services.config_service import ConfigService
-from server.models.emby import EmbyConfig, EmbyStatus, EmbyTestResponse
+from server.models.emby import (
+    ConflictCheckRequest,
+    ConflictType,
+    EmbyConfig,
+    EmbyStatus,
+    EmbyTestResponse,
+)
 
 
 @pytest.fixture
@@ -321,3 +327,84 @@ class TestEmbyGetLibraries:
         libraries = await emby_service._get_libraries(mock_client, user_id="")
 
         assert libraries == []
+
+
+class TestEmbyConflictSafety:
+    @pytest.mark.asyncio
+    async def test_searches_each_selected_library_without_global_fallback(
+        self, emby_service
+    ):
+        responses = {
+            "allowed-1": {
+                "Items": [{"Id": "one", "Name": "Other", "ProviderIds": {}}]
+            },
+            "allowed-2": {
+                "Items": [
+                    {
+                        "Id": "two",
+                        "Name": "Target",
+                        "ProviderIds": {"Tmdb": "42"},
+                    }
+                ]
+            },
+        }
+        client = AsyncMock()
+
+        async def get(_url, *, params):
+            response = MagicMock()
+            response.json.return_value = responses[params["ParentId"]]
+            return response
+
+        client.get.side_effect = get
+        match = await emby_service._search_series(
+            client,
+            "Target",
+            42,
+            EmbyConfig(library_ids=["allowed-1", "allowed-2", "allowed-1"]),
+        )
+
+        assert match is not None and match.id == "two"
+        assert [call.kwargs["params"]["ParentId"] for call in client.get.await_args_list] == [
+            "allowed-1",
+            "allowed-2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_enabled_check_without_credentials_fails_closed(
+        self, emby_service, config_service
+    ):
+        await config_service.save_emby_config(
+            EmbyConfig(enabled=True, check_before_scrape=True)
+        )
+
+        result = await emby_service.check_conflict(
+            ConflictCheckRequest(series_name="Target", season=1, episode=1)
+        )
+
+        assert result.conflict_type == ConflictType.CHECK_FAILED
+
+    @pytest.mark.asyncio
+    async def test_connection_failure_is_not_reported_as_no_conflict(
+        self, emby_service, config_service
+    ):
+        await config_service.save_emby_config(
+            EmbyConfig(
+                enabled=True,
+                check_before_scrape=True,
+                server_url="http://emby.invalid",
+                api_key="secret",
+            )
+        )
+        client_context = MagicMock()
+        client_context.__aenter__ = AsyncMock(return_value=MagicMock())
+        client_context.__aexit__ = AsyncMock(return_value=None)
+        with patch.object(emby_service, "_get_client", return_value=client_context), patch.object(
+            emby_service,
+            "_search_series",
+            new=AsyncMock(side_effect=httpx.ConnectError("offline")),
+        ):
+            result = await emby_service.check_conflict(
+                ConflictCheckRequest(series_name="Target", season=1, episode=1)
+            )
+
+        assert result.conflict_type == ConflictType.CHECK_FAILED

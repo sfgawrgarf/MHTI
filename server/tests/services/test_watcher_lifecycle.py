@@ -8,11 +8,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import aiosqlite
+
+from server.core.db import configure_connection, create_all_tables
 
 from server.models.watcher import (
     DetectedFile,
     WatchedFolder,
     WatchedFolderCreate,
+    WatchedFolderUpdate,
     WatcherMode,
     WatcherStatus,
 )
@@ -284,6 +288,45 @@ def test_watched_folder_create_rejects_inconsistent_storage_selection(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         WatchedFolderCreate(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("scan_interval_seconds", 4),
+        ("scan_interval_seconds", 86401),
+        ("file_stable_seconds", -1),
+        ("file_stable_seconds", 86401),
+    ],
+)
+def test_watcher_timing_limits_reject_pathological_values(field, value) -> None:
+    with pytest.raises(ValueError):
+        WatchedFolderCreate(path="/media", **{field: value})
+
+
+@pytest.mark.asyncio
+async def test_explicit_null_clears_optional_folder_fields(temp_db) -> None:
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.commit()
+    service = WatcherService(temp_db)
+    folder = await service.create_folder(
+        WatchedFolderCreate(
+            path="/media/source",
+            output_dir="/media/output",
+            file_id="legacy-id",
+        )
+    )
+
+    updated = await service.update_folder(
+        folder.id,
+        WatchedFolderUpdate(output_dir=None, file_id=None),
+    )
+
+    assert updated is not None
+    assert updated.output_dir is None
+    assert updated.file_id is None
 
 
 @pytest.mark.asyncio

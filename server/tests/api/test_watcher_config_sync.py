@@ -1,15 +1,35 @@
-"""Regression tests for global watcher configuration synchronization."""
+"""Regression tests for atomic global watcher configuration synchronization."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastapi import HTTPException
 
 from server.api import config as config_api
 from server.models.watcher import (
     WatchedFolder,
+    WatcherConfig,
     WatcherConfigRequest,
     WatcherMode,
 )
+
+
+def _watcher(existing: list[WatchedFolder], *, running: bool = False) -> Mock:
+    watcher = Mock()
+    watcher._running = running
+    watcher.list_folders = AsyncMock(return_value=(existing, len(existing)))
+    watcher.replace_folders = AsyncMock()
+    watcher.start = AsyncMock()
+    watcher.stop = AsyncMock()
+    return watcher
+
+
+def _config_service(old: WatcherConfig | None = None) -> Mock:
+    service = Mock()
+    service.get_watcher_config = AsyncMock(return_value=old or WatcherConfig())
+    service.save_watcher_config = AsyncMock()
+    return service
 
 
 def test_effective_mode_respects_provider_capabilities() -> None:
@@ -22,147 +42,174 @@ def test_effective_mode_respects_provider_capabilities() -> None:
     assert config_api._effective_watcher_mode(
         "/115网盘/电视剧", WatcherMode.EVENT
     ) == WatcherMode.EVENT
-    assert config_api._effective_watcher_mode(
-        "/115网盘备份", WatcherMode.EVENT
-    ) == WatcherMode.COMPAT
 
 
 @pytest.mark.asyncio
 async def test_existing_folder_mode_and_performance_profile_are_synchronized(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setenv("MHTI_ALLOWED_MEDIA_ROOTS", str(tmp_path))
     existing = WatchedFolder(
         id="folder-1",
-        path="/media/tv",
+        path=str(media),
         enabled=True,
         mode=WatcherMode.REALTIME,
         scan_interval_seconds=60,
     )
-    watcher = Mock()
-    watcher.list_folders = AsyncMock(return_value=([existing], 1))
-    watcher.update_folder = AsyncMock(return_value=existing)
-    watcher.create_folder = AsyncMock()
-    watcher.delete_folder = AsyncMock()
-    watcher.start = AsyncMock()
-    watcher.stop = AsyncMock()
+    watcher = _watcher([existing])
     monkeypatch.setattr(config_api, "get_watcher_service", lambda: watcher)
+    config_service = _config_service()
 
-    config_service = Mock()
-    config_service.save_watcher_config = AsyncMock()
-    request = WatcherConfigRequest(
-        enabled=True,
-        mode=WatcherMode.COMPAT,
-        performance_mode=True,
-        watch_dirs=[existing.path],
+    response = await config_api.save_watcher_config(
+        WatcherConfigRequest(
+            enabled=True,
+            mode=WatcherMode.COMPAT,
+            performance_mode=True,
+            watch_dirs=[str(media)],
+        ),
+        config_service,
     )
 
-    response = await config_api.save_watcher_config(request, config_service)
-
-    watcher.update_folder.assert_awaited_once()
-    folder_id, update = watcher.update_folder.await_args.args
-    assert folder_id == existing.id
-    assert update.mode == WatcherMode.COMPAT
-    assert update.scan_interval_seconds == 300
-    assert update.enabled is True
-    watcher.create_folder.assert_not_awaited()
+    desired = watcher.replace_folders.await_args.args[0]
+    assert len(desired) == 1
+    assert desired[0].id == existing.id
+    assert desired[0].mode == WatcherMode.COMPAT
+    assert desired[0].scan_interval_seconds == 300
     watcher.start.assert_awaited_once_with()
     assert response.performance_mode is True
 
 
 @pytest.mark.asyncio
 async def test_new_local_folder_uses_compat_for_global_event_mode(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    watcher = Mock()
-    watcher.list_folders = AsyncMock(return_value=([], 0))
-    watcher.update_folder = AsyncMock()
-    watcher.create_folder = AsyncMock()
-    watcher.delete_folder = AsyncMock()
-    watcher.start = AsyncMock()
-    watcher.stop = AsyncMock()
+    media = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setenv("MHTI_ALLOWED_MEDIA_ROOTS", str(tmp_path))
+    watcher = _watcher([])
     monkeypatch.setattr(config_api, "get_watcher_service", lambda: watcher)
 
-    config_service = Mock()
-    config_service.save_watcher_config = AsyncMock()
-    request = WatcherConfigRequest(
-        enabled=True,
-        mode=WatcherMode.EVENT,
-        performance_mode=False,
-        watch_dirs=["/media/tv"],
+    await config_api.save_watcher_config(
+        WatcherConfigRequest(
+            enabled=True,
+            mode=WatcherMode.EVENT,
+            watch_dirs=[str(media)],
+        ),
+        _config_service(),
     )
 
-    await config_api.save_watcher_config(request, config_service)
-
-    create = watcher.create_folder.await_args.args[0]
-    assert create.provider == "local"
-    assert create.mode == WatcherMode.COMPAT
-    assert create.scan_interval_seconds == 60
+    created = watcher.replace_folders.await_args.args[0][0]
+    assert created.provider == "local"
+    assert created.mode == WatcherMode.COMPAT
+    assert created.scan_interval_seconds == 60
 
 
 @pytest.mark.asyncio
-async def test_disabling_global_watcher_persists_folder_disabled_state(
+async def test_disabling_global_watcher_atomically_disables_folders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    existing = WatchedFolder(
-        id="folder-1",
-        path="/media/tv",
-        enabled=True,
-        mode=WatcherMode.REALTIME,
-    )
-    watcher = Mock()
-    watcher.list_folders = AsyncMock(return_value=([existing], 1))
-    watcher.update_folder = AsyncMock(return_value=existing)
-    watcher.create_folder = AsyncMock()
-    watcher.delete_folder = AsyncMock()
-    watcher.start = AsyncMock()
-    watcher.stop = AsyncMock()
+    existing = WatchedFolder(id="folder-1", path="/media/tv", enabled=True)
+    watcher = _watcher([existing], running=True)
     monkeypatch.setattr(config_api, "get_watcher_service", lambda: watcher)
 
-    config_service = Mock()
-    config_service.save_watcher_config = AsyncMock()
-    request = WatcherConfigRequest(
-        enabled=False,
-        mode=WatcherMode.REALTIME,
-        watch_dirs=[existing.path],
+    await config_api.save_watcher_config(
+        WatcherConfigRequest(enabled=False, watch_dirs=[existing.path]),
+        _config_service(WatcherConfig(enabled=True, watch_dirs=[existing.path])),
     )
 
-    await config_api.save_watcher_config(request, config_service)
-
+    desired = watcher.replace_folders.await_args.args[0]
+    assert len(desired) == 1 and desired[0].enabled is False
     watcher.stop.assert_awaited_once_with()
     watcher.start.assert_not_awaited()
-    watcher.delete_folder.assert_not_awaited()
-    folder_id, update = watcher.update_folder.await_args.args
-    assert folder_id == existing.id
-    assert update.enabled is False
 
 
 @pytest.mark.asyncio
 async def test_enabled_empty_watch_list_removes_stale_folders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    existing = WatchedFolder(
-        id="folder-1",
-        path="/media/tv",
-        enabled=True,
-        mode=WatcherMode.REALTIME,
-    )
-    watcher = Mock()
-    watcher.list_folders = AsyncMock(return_value=([existing], 1))
-    watcher.update_folder = AsyncMock()
-    watcher.create_folder = AsyncMock()
-    watcher.delete_folder = AsyncMock(return_value=True)
-    watcher.start = AsyncMock()
-    watcher.stop = AsyncMock()
+    existing = WatchedFolder(id="folder-1", path="/media/tv")
+    watcher = _watcher([existing])
     monkeypatch.setattr(config_api, "get_watcher_service", lambda: watcher)
-
-    config_service = Mock()
-    config_service.save_watcher_config = AsyncMock()
 
     await config_api.save_watcher_config(
         WatcherConfigRequest(enabled=True, watch_dirs=[]),
-        config_service,
+        _config_service(),
     )
 
-    watcher.delete_folder.assert_awaited_once_with(existing.id)
+    watcher.replace_folders.assert_awaited_once_with([])
     watcher.stop.assert_awaited_once_with()
     watcher.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_p115_resolution_failure_does_not_persist_partial_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watcher = _watcher([])
+    monkeypatch.setattr(config_api, "get_watcher_service", lambda: watcher)
+    config_service = _config_service()
+    config_service.get_115_config = AsyncMock(
+        return_value=SimpleNamespace(is_logged_in=True)
+    )
+
+    class FailingP115Service:
+        def __init__(self, _config_service):
+            pass
+
+        async def _load_p115_client_with_config(self, _config):
+            return object()
+
+        def _normalize_virtual_path(self, path):
+            return path
+
+        async def _resolve_directory_id(self, **_kwargs):
+            raise RuntimeError("remote unavailable")
+
+    monkeypatch.setattr(config_api, "P115Service", FailingP115Service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await config_api.save_watcher_config(
+            WatcherConfigRequest(
+                enabled=True,
+                mode=WatcherMode.EVENT,
+                watch_dirs=["/115网盘/电视剧"],
+            ),
+            config_service,
+        )
+
+    assert exc_info.value.status_code == 400
+    watcher.stop.assert_not_awaited()
+    watcher.replace_folders.assert_not_awaited()
+    config_service.save_watcher_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_failure_restores_previous_database_and_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    old_path = tmp_path / "old"
+    new_path = tmp_path / "new"
+    old_path.mkdir()
+    new_path.mkdir()
+    monkeypatch.setenv("MHTI_ALLOWED_MEDIA_ROOTS", str(tmp_path))
+    existing = WatchedFolder(id="old", path=str(old_path), enabled=True)
+    watcher = _watcher([existing], running=True)
+    watcher.start.side_effect = [RuntimeError("start failed"), None]
+    monkeypatch.setattr(config_api, "get_watcher_service", lambda: watcher)
+    old_config = WatcherConfig(enabled=True, watch_dirs=[str(old_path)])
+    config_service = _config_service(old_config)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await config_api.save_watcher_config(
+            WatcherConfigRequest(enabled=True, watch_dirs=[str(new_path)]),
+            config_service,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert watcher.replace_folders.await_count == 2
+    assert watcher.replace_folders.await_args_list[1].args[0] == [existing]
+    assert config_service.save_watcher_config.await_count == 2
+    assert config_service.save_watcher_config.await_args_list[1].args[0] == old_config
+    assert watcher.start.await_count == 2

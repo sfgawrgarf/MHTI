@@ -1,8 +1,11 @@
 """Configuration API routes."""
 
 import logging
+import uuid
+from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from server.core.auth import require_auth
@@ -31,8 +34,7 @@ from server.models.watcher import (
     WatcherConfig,
     WatcherConfigRequest,
     WatcherConfigResponse,
-    WatchedFolderCreate,
-    WatchedFolderUpdate,
+    WatchedFolder,
     WatcherMode,
 )
 from server.services.config_service import ConfigService
@@ -316,90 +318,102 @@ async def save_watcher_config(
         performance_mode=request.performance_mode,
         watch_dirs=request.watch_dirs,
     )
-    await config_service.save_watcher_config(config)
-
-    # 同步 watch_dirs 到 watched_folders 表并启动/停止服务
     watcher_service = get_watcher_service()
-
-    # 获取现有的监控目录。关闭全局监控时也要同步 enabled 状态，否则应用
-    # 重启后会根据遗留的 enabled=1 目录自动恢复监控。
     existing_folders, _ = await watcher_service.list_folders()
+    old_config = await config_service.get_watcher_config()
+    was_running = getattr(watcher_service, "_running", False) is True
+    existing_by_path = {folder.path: folder for folder in existing_folders}
+    desired_folders: list[WatchedFolder] = []
 
-    if request.enabled:
-        existing_by_path = {folder.path: folder for folder in existing_folders}
-        scan_interval = _watch_scan_interval(request.performance_mode)
-
-        # 添加新目录，并把全局模式同步到已经存在的目录。
-        for dir_path in request.watch_dirs:
-            provider = "115" if is_p115_virtual_path(dir_path) else "local"
-            effective_mode = _effective_watcher_mode(dir_path, request.mode)
-            existing = existing_by_path.get(dir_path)
-            if existing is not None:
-                if (
-                    not existing.enabled
-                    or existing.mode != effective_mode
-                    or existing.scan_interval_seconds != scan_interval
-                    or existing.provider != provider
-                ):
-                    await watcher_service.update_folder(
-                        existing.id,
-                        WatchedFolderUpdate(
-                            enabled=True,
-                            mode=effective_mode,
-                            scan_interval_seconds=scan_interval,
-                            provider=provider,
-                        ),
-                    )
-                continue
-
-            create_req = WatchedFolderCreate(
-                path=dir_path,
-                enabled=True,
-                mode=effective_mode,
-                scan_interval_seconds=scan_interval,
-                provider=provider,
-            )
-            # 路径以 /115网盘/ 开头 → 自动解析 file_id
-            if provider == "115":
+    scan_interval = _watch_scan_interval(request.performance_mode)
+    p115_service: P115Service | None = None
+    p115_client = None
+    for dir_path in request.watch_dirs:
+        provider = "115" if is_p115_virtual_path(dir_path) else "local"
+        existing = existing_by_path.get(dir_path)
+        file_id: str | None = existing.file_id if existing else None
+        if request.enabled:
+            if provider == "local":
                 try:
-                    from server.services.p115_service import P115Service
-                    p115_svc = P115Service(config_service)
-                    cfg = await config_service.get_115_config()
-                    if cfg.is_logged_in:
-                        client = await p115_svc._load_p115_client_with_config(cfg)
-                        normalized = p115_svc._normalize_virtual_path(dir_path)
-                        dir_id = await p115_svc._resolve_directory_id(
-                            client=client, path=normalized, file_id=None,
+                    local_path = Path(dir_path)
+                    if not local_path.is_absolute():
+                        raise ValueError("监控路径必须是绝对路径")
+                    local_path = local_path.resolve(strict=True)
+                    if not local_path.is_dir():
+                        raise ValueError("监控路径不是目录")
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            else:
+                try:
+                    if p115_service is None:
+                        p115_service = P115Service(config_service)
+                        p115_config = await config_service.get_115_config()
+                        if not p115_config.is_logged_in:
+                            raise RuntimeError("115 尚未登录")
+                        p115_client = await p115_service._load_p115_client_with_config(
+                            p115_config
                         )
-                        create_req.file_id = str(dir_id)
+                    normalized = p115_service._normalize_virtual_path(dir_path)
+                    resolved_id = await p115_service._resolve_directory_id(
+                        client=p115_client,
+                        path=normalized,
+                        file_id=None,
+                    )
+                    file_id = str(resolved_id)
                 except Exception as exc:
-                    # 解析失败仍创建，后续轮询会按路径重试；保留根因便于诊断。
                     logger.warning(
-                        "无法预解析 115 监控目录 path=%s: %s",
+                        "115 监控目录预校验失败 path=%s: %s",
                         dir_path,
                         exc,
-                        exc_info=True,
                     )
-            await watcher_service.create_folder(create_req)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"无法访问 115 监控目录: {dir_path}",
+                    ) from exc
 
-        # 删除不在列表中的目录
-        for folder in existing_folders:
-            if folder.path not in request.watch_dirs:
-                await watcher_service.delete_folder(folder.id)
+        desired_folders.append(
+            WatchedFolder(
+                id=existing.id if existing else str(uuid.uuid4())[:8],
+                path=dir_path,
+                enabled=request.enabled,
+                mode=_effective_watcher_mode(dir_path, request.mode),
+                scan_interval_seconds=scan_interval,
+                file_stable_seconds=existing.file_stable_seconds if existing else 30,
+                auto_scrape=existing.auto_scrape if existing else True,
+                output_dir=existing.output_dir if existing else None,
+                provider=provider,
+                file_id=file_id,
+                last_scan=existing.last_scan if existing else None,
+                created_at=existing.created_at if existing else datetime.now(),
+            )
+        )
 
-        if request.watch_dirs:
-            await watcher_service.start()
-        else:
-            await watcher_service.stop()
-    else:
-        # 先停止运行中的策略，再持久化禁用状态，防止重启后意外恢复。
+    try:
         await watcher_service.stop()
-        for folder in existing_folders:
-            if folder.enabled:
-                await watcher_service.update_folder(
-                    folder.id,
-                    WatchedFolderUpdate(enabled=False),
-                )
+        await watcher_service.replace_folders(desired_folders)
+        await config_service.save_watcher_config(config)
+        if request.enabled and desired_folders:
+            await watcher_service.start()
+    except Exception as exc:
+        logger.exception("保存监控配置失败，正在恢复旧配置")
+        rollback_succeeded = False
+        try:
+            await watcher_service.stop()
+            await watcher_service.replace_folders(existing_folders)
+            await config_service.save_watcher_config(old_config)
+            if was_running:
+                await watcher_service.start()
+            rollback_succeeded = True
+        except Exception:
+            logger.exception("监控配置回滚失败")
+        if isinstance(exc, HTTPException):
+            raise
+        detail = (
+            "监控配置保存失败，已恢复原配置"
+            if rollback_succeeded
+            else "监控配置保存且回滚失败，请检查服务日志"
+        )
+        raise HTTPException(status_code=500, detail=detail) from exc
 
     return WatcherConfigResponse(
         enabled=config.enabled,

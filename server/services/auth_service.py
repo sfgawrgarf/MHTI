@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
+import aiosqlite
 from jwt.exceptions import InvalidTokenError
 
 from server.core.database import get_db_manager
@@ -68,15 +69,19 @@ class AuthService:
 
     async def register_admin(self, username: str, password: str) -> bool:
         """Register admin account. Returns True if successful."""
-        if await self.is_initialized():
-            return False
-
         hash_value, salt = self._hash_password(password)
         password_hash = f"{salt}${hash_value}"
 
         manager = await get_db_manager()
         async with manager.get_connection() as db:
             try:
+                # Serialize the singleton check and insert. The database trigger
+                # remains the final invariant if another code path inserts.
+                await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute("SELECT 1 FROM admin LIMIT 1")
+                if await cursor.fetchone():
+                    await db.rollback()
+                    return False
                 await db.execute(
                     "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
                     (username, password_hash),
@@ -84,7 +89,12 @@ class AuthService:
                 await db.commit()
                 logger.info(f"Admin account created: {username}")
                 return True
+            except aiosqlite.IntegrityError:
+                await db.rollback()
+                logger.warning("Concurrent administrator registration was rejected")
+                return False
             except Exception as e:
+                await db.rollback()
                 logger.error(f"Failed to create admin account: {e}")
                 return False
 

@@ -116,3 +116,21 @@ async def test_close_is_serialized_behind_an_active_send() -> None:
     assert await close_task is True
     assert websocket.max_active_writes == 1
     assert "client" not in manager.active_connections
+
+
+@pytest.mark.asyncio
+async def test_close_session_only_disconnects_matching_session() -> None:
+    manager = ConnectionManager()
+    first = FakeWebSocket()
+    second = FakeWebSocket()
+    other = FakeWebSocket()
+    manager.connect("first", first, "revoked")
+    manager.connect("second", second, "revoked")
+    manager.connect("other", other, "active")
+
+    closed = await manager.close_session("revoked")
+
+    assert closed == 2
+    assert first.closed is True and second.closed is True
+    assert other.closed is False
+    assert set(manager.active_connections) == {"other"}

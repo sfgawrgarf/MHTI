@@ -726,6 +726,49 @@ class WatcherService:
         folders = [self._row_to_folder(row) for row in rows]
         return folders, total
 
+    async def replace_folders(self, folders: list[WatchedFolder]) -> None:
+        """Replace the persisted watcher snapshot in one database transaction."""
+        await self._ensure_db()
+        async with db_connection(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("DELETE FROM watched_folders")
+            await db.executemany(
+                """
+                INSERT INTO watched_folders
+                (id, path, enabled, mode, scan_interval_seconds,
+                 file_stable_seconds, auto_scrape, output_dir, provider,
+                 file_id, last_scan, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        folder.id,
+                        folder.path,
+                        1 if folder.enabled else 0,
+                        folder.mode.value,
+                        folder.scan_interval_seconds,
+                        folder.file_stable_seconds,
+                        1 if folder.auto_scrape else 0,
+                        folder.output_dir,
+                        folder.provider,
+                        folder.file_id,
+                        folder.last_scan.isoformat() if folder.last_scan else None,
+                        folder.created_at.isoformat() if folder.created_at else datetime.now().isoformat(),
+                    )
+                    for folder in folders
+                ],
+            )
+            await db.commit()
+
+        folders_by_id = {folder.id: folder for folder in folders}
+        self._pending_files = {
+            path: pending
+            for path, pending in self._pending_files.items()
+            if pending.folder.id in folders_by_id
+        }
+        for pending in self._pending_files.values():
+            pending.folder = folders_by_id[pending.folder.id]
+
     async def get_folder(self, folder_id: str) -> WatchedFolder | None:
         """Get a watched folder by ID."""
         await self._ensure_db()
@@ -755,9 +798,7 @@ class WatcherService:
 
         candidate_data = folder.model_dump()
         for field_name in update.model_fields_set:
-            value = getattr(update, field_name)
-            if value is not None:
-                candidate_data[field_name] = value
+            candidate_data[field_name] = getattr(update, field_name)
         # Validate the merged state before persisting a partial update.
         WatchedFolder(**candidate_data)
 
@@ -782,13 +823,13 @@ class WatcherService:
         if update.auto_scrape is not None:
             updates.append("auto_scrape = ?")
             values.append(1 if update.auto_scrape else 0)
-        if update.output_dir is not None:
+        if "output_dir" in update.model_fields_set:
             updates.append("output_dir = ?")
             values.append(update.output_dir)
         if update.provider is not None:
             updates.append("provider = ?")
             values.append(update.provider)
-        if update.file_id is not None:
+        if "file_id" in update.model_fields_set:
             updates.append("file_id = ?")
             values.append(update.file_id)
 
@@ -864,12 +905,9 @@ class WatcherService:
         if strategy.running:
             self._strategies[folder.id] = strategy
         else:
-            logger.warning(
-                "监控目录未启动 folder=%s id=%s provider=%s mode=%s",
-                folder.path,
-                folder.id,
-                folder.provider,
-                folder.mode.value,
+            raise RuntimeError(
+                f"监控目录未能启动: {folder.path} "
+                f"(provider={folder.provider}, mode={folder.mode.value})"
             )
 
     async def _stop_folder_watch(self, folder_id: str) -> None:

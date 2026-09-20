@@ -657,6 +657,9 @@ class Test115OutputBranches:
                 output_locator=output_locator,
                 allow_local_output=True,
                 link_mode=OrganizeMode.COPY,
+                # This test isolates 115 publication and intentionally has no
+                # Emby service. Opt out explicitly now that checks fail closed.
+                skip_emby_check=True,
             )
         )
 

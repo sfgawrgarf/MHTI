@@ -174,8 +174,8 @@ class EmbyService:
 
         if not config.server_url or not config.api_key:
             return ConflictCheckResult(
-                conflict_type=ConflictType.NO_CONFLICT,
-                message="Emby 未配置",
+                conflict_type=ConflictType.CHECK_FAILED,
+                message="Emby 冲突检查已启用，但服务器地址或 API 密钥未配置",
             )
 
         try:
@@ -210,8 +210,8 @@ class EmbyService:
         except Exception as e:
             logger.warning(f"Emby 冲突检查失败: {e}")
             return ConflictCheckResult(
-                conflict_type=ConflictType.NO_CONFLICT,
-                message=f"检查失败: {str(e)}",
+                conflict_type=ConflictType.CHECK_FAILED,
+                message=f"Emby 冲突检查失败: {str(e)}",
             )
 
     async def _search_series(
@@ -230,22 +230,25 @@ class EmbyService:
             "Fields": "ProviderIds,Path",  # 需要获取 ProviderIds
         }
 
-        # 如果指定了单个媒体库，限制搜索范围
-        if config.library_ids and len(config.library_ids) == 1:
-            params["ParentId"] = config.library_ids[0]
-
-        resp = await client.get("/Items", params=params)
-        resp.raise_for_status()
-        data = resp.json()
-
-        items = data.get("Items", [])
+        items: list[dict] = []
+        if config.library_ids:
+            # Emby only accepts one ParentId per request. Query every selected
+            # library explicitly; a global search cannot prove library membership.
+            seen_ids: set[str] = set()
+            for library_id in dict.fromkeys(config.library_ids):
+                library_params = {**params, "ParentId": library_id}
+                resp = await client.get("/Items", params=library_params)
+                resp.raise_for_status()
+                for item in resp.json().get("Items", []):
+                    item_id = str(item.get("Id") or "")
+                    if item_id and item_id not in seen_ids:
+                        seen_ids.add(item_id)
+                        items.append(item)
+        else:
+            resp = await client.get("/Items", params=params)
+            resp.raise_for_status()
+            items = resp.json().get("Items", [])
         logger.info(f"Emby 搜索 '{name}' 找到 {len(items)} 个结果")
-
-        # 如果指定了多个媒体库，过滤结果
-        if config.library_ids and len(config.library_ids) > 1:
-            # 需要检查每个 item 是否属于指定的媒体库
-            # 这里简化处理，不做过滤
-            pass
 
         for item in items:
             provider_ids = item.get("ProviderIds", {})

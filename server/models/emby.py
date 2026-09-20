@@ -12,6 +12,7 @@ class ConflictType(str, Enum):
     NO_CONFLICT = "no_conflict"  # 无冲突
     EPISODE_EXISTS = "episode_exists"  # 集已存在
     SERIES_EXISTS = "series_exists"  # 剧集存在但集不同
+    CHECK_FAILED = "check_failed"  # 冲突检查不可用，禁止继续输出
 
 
 class EmbyConfig(BaseModel):

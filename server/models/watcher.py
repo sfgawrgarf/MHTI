@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from server.models.storage import is_p115_virtual_path
 
@@ -23,7 +23,7 @@ class WatcherConfig(BaseModel):
     enabled: bool = False  # 启用目录监控
     mode: WatcherMode = WatcherMode.REALTIME  # 监控模式
     performance_mode: bool = False  # 性能模式
-    watch_dirs: list[str] = []  # 监控目录列表
+    watch_dirs: list[str] = Field(default_factory=list)  # 监控目录列表
 
 
 class WatcherConfigRequest(BaseModel):
@@ -32,7 +32,17 @@ class WatcherConfigRequest(BaseModel):
     enabled: bool = False
     mode: WatcherMode = WatcherMode.REALTIME
     performance_mode: bool = False
-    watch_dirs: list[str] = []
+    watch_dirs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_watch_dirs(self) -> "WatcherConfigRequest":
+        normalized = [path.strip() for path in self.watch_dirs]
+        if any(not path for path in normalized):
+            raise ValueError("监控目录不能为空")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("监控目录不能重复")
+        self.watch_dirs = normalized
+        return self
 
 
 class WatcherConfigResponse(BaseModel):
@@ -84,8 +94,8 @@ class WatchedFolder(BaseModel):
     path: str
     enabled: bool = True
     mode: WatcherMode = WatcherMode.REALTIME  # 每个文件夹独立监控模式
-    scan_interval_seconds: int = 60
-    file_stable_seconds: int = 30
+    scan_interval_seconds: int = Field(60, ge=5, le=86400)
+    file_stable_seconds: int = Field(30, ge=0, le=86400)
     auto_scrape: bool = True
     output_dir: str | None = None  # 独立整理目录（留空则用全局配置）
     provider: WatcherProvider = "local"  # 存储提供方：local / 115
@@ -110,8 +120,8 @@ class WatchedFolderCreate(BaseModel):
     path: str
     enabled: bool = True
     mode: WatcherMode = WatcherMode.REALTIME
-    scan_interval_seconds: int = 60
-    file_stable_seconds: int = 30
+    scan_interval_seconds: int = Field(60, ge=5, le=86400)
+    file_stable_seconds: int = Field(30, ge=0, le=86400)
     auto_scrape: bool = True
     output_dir: str | None = None
     provider: WatcherProvider = "local"
@@ -134,8 +144,8 @@ class WatchedFolderUpdate(BaseModel):
     path: str | None = None
     enabled: bool | None = None
     mode: WatcherMode | None = None
-    scan_interval_seconds: int | None = None
-    file_stable_seconds: int | None = None
+    scan_interval_seconds: int | None = Field(None, ge=5, le=86400)
+    file_stable_seconds: int | None = Field(None, ge=0, le=86400)
     auto_scrape: bool | None = None
     output_dir: str | None = None
     provider: WatcherProvider | None = None

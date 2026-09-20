@@ -17,6 +17,10 @@ class ScheduledTask(BaseModel):
     cron_expression: str
     enabled: bool = True
     last_run: datetime | None = None
+    last_attempt: datetime | None = None
+    last_status: str | None = None
+    last_error: str | None = None
+    retry_count: int = 0
     next_run: datetime | None = None
     created_at: datetime | None = None
 
@@ -48,6 +52,10 @@ class ScheduledTaskResponse(BaseModel):
     cron_expression: str
     enabled: bool
     last_run: datetime | None
+    last_attempt: datetime | None
+    last_status: str | None
+    last_error: str | None
+    retry_count: int
     next_run: datetime | None
     created_at: datetime | None
 

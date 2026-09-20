@@ -4,13 +4,14 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
 from croniter import croniter
 
 from server.core.db.connection import db_connection
+from server.core.db.schema import migrate_scheduled_tasks_table
 from server.core.database import DATABASE_PATH
 from server.models.scheduler import (
     ScheduledTask,
@@ -32,11 +33,13 @@ class SchedulerService:
         *,
         executor: ScheduledTaskExecutor | None = None,
         poll_interval: float = 30.0,
+        retry_delays: tuple[float, ...] = (30.0, 120.0, 300.0),
     ):
         """Initialize scheduler service."""
         self.db_path = db_path or DATABASE_PATH
         self._executor = executor
         self._poll_interval = max(0.1, poll_interval)
+        self._retry_delays = tuple(max(0.0, delay) for delay in retry_delays)
         self._worker_task: asyncio.Task[None] | None = None
         self._wake_event: asyncio.Event | None = None
         self._run_lock = asyncio.Lock()
@@ -61,10 +64,15 @@ class SchedulerService:
                         cron_expression TEXT NOT NULL,
                         enabled INTEGER DEFAULT 1,
                         last_run TEXT,
+                        last_attempt TEXT,
+                        last_status TEXT,
+                        last_error TEXT,
+                        retry_count INTEGER DEFAULT 0,
                         next_run TEXT,
                         created_at TEXT NOT NULL
                     )"""
                 )
+                await migrate_scheduled_tasks_table(db)
                 await db.execute(
                     """CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due
                        ON scheduled_tasks(enabled, next_run)"""
@@ -92,6 +100,37 @@ class SchedulerService:
                     logger.warning(
                         "Disabled %s invalid or unsupported legacy scheduled tasks",
                         len(invalid_ids),
+                    )
+                # A process restart can leave a claimed execution in "running".
+                # Requeue it immediately within the same bounded retry policy.
+                cursor = await db.execute(
+                    """SELECT id, cron_expression, retry_count
+                       FROM scheduled_tasks WHERE last_status = 'running'"""
+                )
+                interrupted_rows = await cursor.fetchall()
+                recovered_at = datetime.now()
+                for task_id, cron_expression, retry_count in interrupted_rows:
+                    next_retry_count = int(retry_count or 0) + 1
+                    if next_retry_count <= len(self._retry_delays):
+                        status = "retrying"
+                        next_run = recovered_at
+                    else:
+                        status = "failed"
+                        next_run = self._calculate_next_run(
+                            str(cron_expression), recovered_at
+                        )
+                    await db.execute(
+                        """UPDATE scheduled_tasks
+                           SET last_status = ?, last_error = ?, retry_count = ?,
+                               next_run = ?
+                           WHERE id = ?""",
+                        (
+                            status,
+                            "上次执行因服务重启而中断",
+                            next_retry_count,
+                            next_run.isoformat() if next_run else None,
+                            task_id,
+                        ),
                     )
                 await db.commit()
             self._db_ready = True
@@ -329,24 +368,39 @@ class SchedulerService:
                 rows = await cursor.fetchall()
                 for row in rows:
                     task = self._row_to_task(row)
-                    next_run = self._calculate_next_run(
-                        task.cron_expression,
-                        current_time,
-                    )
-                    if next_run is None:
+                    if not self._validate_cron(task.cron_expression):
                         await db.execute(
-                            "UPDATE scheduled_tasks SET enabled = 0, next_run = NULL WHERE id = ?",
-                            (task.id,),
+                            """UPDATE scheduled_tasks
+                               SET enabled = 0, next_run = NULL,
+                                   last_status = 'failed', last_error = ?
+                               WHERE id = ?""",
+                            ("无效的 Cron 表达式", task.id),
                         )
                         logger.error("Disabled scheduled task with invalid cron: %s", task.id)
                         continue
+                    retry_count = (
+                        task.retry_count if task.last_status == "retrying" else 0
+                    )
                     update = await db.execute(
-                        """UPDATE scheduled_tasks SET next_run = ?
-                           WHERE id = ? AND enabled = 1 AND next_run = ?""",
-                        (next_run.isoformat(), task.id, row["next_run"]),
+                        """UPDATE scheduled_tasks
+                           SET next_run = NULL, last_attempt = ?,
+                               last_status = 'running', last_error = NULL,
+                               retry_count = ?
+                           WHERE id = ? AND enabled = 1 AND next_run = ?
+                             AND COALESCE(last_status, '') != 'running'""",
+                        (
+                            current_time.isoformat(),
+                            retry_count,
+                            task.id,
+                            row["next_run"],
+                        ),
                     )
                     if update.rowcount:
-                        task.next_run = next_run
+                        task.next_run = None
+                        task.last_attempt = current_time
+                        task.last_status = "running"
+                        task.last_error = None
+                        task.retry_count = retry_count
                         claimed.append(task)
                 await db.commit()
 
@@ -354,20 +408,73 @@ class SchedulerService:
             try:
                 await self._execute_task(task)
             except asyncio.CancelledError:
+                await self._record_task_failure(
+                    task,
+                    "任务执行因服务停止而中断",
+                    datetime.now(),
+                )
                 raise
-            except Exception:
+            except Exception as exc:
+                error_message = str(exc) or type(exc).__name__
                 logger.exception("Scheduled task failed: %s (%s)", task.name, task.id)
+                await self._record_task_failure(
+                    task,
+                    error_message,
+                    datetime.now(),
+                )
                 continue
 
             finished_at = datetime.now()
+            next_run = self._calculate_next_run(task.cron_expression, finished_at)
             async with db_connection(self.db_path) as db:
                 await db.execute(
-                    "UPDATE scheduled_tasks SET last_run = ? WHERE id = ?",
-                    (finished_at.isoformat(), task.id),
+                    """UPDATE scheduled_tasks
+                       SET last_run = ?, last_status = 'success',
+                           last_error = NULL, retry_count = 0, next_run = ?
+                       WHERE id = ?""",
+                    (
+                        finished_at.isoformat(),
+                        next_run.isoformat() if next_run else None,
+                        task.id,
+                    ),
                 )
                 await db.commit()
 
         return len(claimed)
+
+    async def _record_task_failure(
+        self,
+        task: ScheduledTask,
+        error_message: str,
+        failed_at: datetime,
+    ) -> None:
+        """Persist a bounded retry or the final failed execution state."""
+        retry_count = task.retry_count + 1
+        if retry_count <= len(self._retry_delays):
+            status = "retrying"
+            next_run = failed_at + timedelta(
+                seconds=self._retry_delays[retry_count - 1]
+            )
+        else:
+            status = "failed"
+            next_run = self._calculate_next_run(task.cron_expression, failed_at)
+
+        async with db_connection(self.db_path) as db:
+            await db.execute(
+                """UPDATE scheduled_tasks
+                   SET last_attempt = ?, last_status = ?, last_error = ?,
+                       retry_count = ?, next_run = ?
+                   WHERE id = ?""",
+                (
+                    failed_at.isoformat(),
+                    status,
+                    error_message,
+                    retry_count,
+                    next_run.isoformat() if next_run else None,
+                    task.id,
+                ),
+            )
+            await db.commit()
 
     async def _execute_task(self, task: ScheduledTask) -> None:
         self._validate_task_fields(task.folder_path, task.cron_expression)
@@ -408,6 +515,14 @@ class SchedulerService:
             cron_expression=row["cron_expression"],
             enabled=bool(row["enabled"]),
             last_run=datetime.fromisoformat(row["last_run"]) if row["last_run"] else None,
+            last_attempt=(
+                datetime.fromisoformat(row["last_attempt"])
+                if row["last_attempt"]
+                else None
+            ),
+            last_status=row["last_status"],
+            last_error=row["last_error"],
+            retry_count=int(row["retry_count"] or 0),
             next_run=datetime.fromisoformat(row["next_run"]) if row["next_run"] else None,
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         )

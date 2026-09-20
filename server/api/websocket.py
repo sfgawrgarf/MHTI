@@ -98,6 +98,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 client_id,
                 manager,
                 lambda: last_activity_time,
+                session_id=auth.session_id,
+                username=auth.username,
             )
         )
 
@@ -173,6 +175,9 @@ async def _timeout_monitor(
     client_id: str,
     manager: ConnectionManager,
     get_last_activity_time: Callable[[], float],
+    *,
+    session_id: str | None = None,
+    username: str | None = None,
 ):
     """客户端超时检测
 
@@ -182,6 +187,29 @@ async def _timeout_monitor(
     try:
         while True:
             await asyncio.sleep(10)  # 每10秒检查一次
+            if session_id and username:
+                from server.services.session_service import session_service
+
+                try:
+                    session_active = await session_service.is_session_active(
+                        session_id, username
+                    )
+                except Exception:
+                    logger.exception("[%s] 无法重新验证 WebSocket 会话", client_id)
+                    await manager.close_client(
+                        client_id,
+                        code=1011,
+                        reason="Session validation failed",
+                    )
+                    break
+                if not session_active:
+                    logger.info("[%s] 会话已失效，关闭 WebSocket", client_id)
+                    await manager.close_client(
+                        client_id,
+                        code=4401,
+                        reason="Session revoked",
+                    )
+                    break
             current_time = asyncio.get_running_loop().time()
             if current_time - get_last_activity_time() > CLIENT_TIMEOUT:
                 logger.warning(f"[{client_id}] 客户端超时（{CLIENT_TIMEOUT}s 无响应），主动断开")
