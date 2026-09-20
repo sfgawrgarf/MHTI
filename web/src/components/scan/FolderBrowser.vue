@@ -28,11 +28,13 @@ const props = withDefaults(defineProps<{
   show?: boolean
   title?: string
   locator?: StorageLocator | null
+  allowP115?: boolean
 }>(), {
   modelValue: '',
   show: false,
   title: '选择文件夹',
   locator: null,
+  allowP115: true,
 })
 
 const emit = defineEmits<{
@@ -71,11 +73,17 @@ const loadDirectory = async (
   requestedPage: number = 1,
 ) => {
   loading.value = true
-  const effectiveProvider = provider ?? currentProvider.value
-  const effectiveFileId = fileId !== undefined ? fileId : currentFileId.value
+  const requestedProvider = provider ?? currentProvider.value
+  const effectiveProvider = !props.allowP115 && requestedProvider === '115'
+    ? 'local'
+    : requestedProvider
+  const effectivePath = effectiveProvider === requestedProvider ? path : ''
+  const effectiveFileId = effectiveProvider === requestedProvider
+    ? (fileId !== undefined ? fileId : currentFileId.value)
+    : null
   try {
     const response = await filesApi.browse(
-      path,
+      effectivePath,
       requestedPage,
       pageSize,
       effectiveProvider,
@@ -102,6 +110,7 @@ const loadDirectory = async (
 // 进入目录
 const enterDirectory = (entry: DirectoryEntry) => {
   if (!entry.is_dir) return
+  if (!props.allowP115 && entry.provider === '115') return
   // 点击虚拟 115 根入口 → 切到 115 provider
   if (entry.is_virtual && entry.provider === '115') {
     loadDirectory(entry.path, '115', entry.file_id ?? '0')
@@ -180,7 +189,9 @@ const handleClose = () => {
 
 // 只显示目录
 const directories = computed(() => {
-  return entries.value.filter((e) => e.is_dir)
+  return entries.value.filter(
+    entry => entry.is_dir && (props.allowP115 || entry.provider !== '115'),
+  )
 })
 
 // 当前 provider 标签

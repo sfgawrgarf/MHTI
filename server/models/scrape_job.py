@@ -3,11 +3,15 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
-from server.models.storage import StorageLocator
+from server.models.storage import (
+    StorageLocator,
+    infer_directory_locator,
+    validate_storage_capabilities,
+)
 
 
 class ScrapeJobSource(str, Enum):
@@ -89,6 +93,25 @@ class ScrapeJobCreate(BaseModel):
     file_action: str | None = None
     selection_log: str | None = None
     skip_emby_check: bool = False
+
+    @model_validator(mode="after")
+    def validate_storage_selection(self) -> "ScrapeJobCreate":
+        self.output_locator = infer_directory_locator(
+            self.output_dir, self.output_locator
+        )
+        self.metadata_locator = infer_directory_locator(
+            self.metadata_dir, self.metadata_locator
+        )
+        validate_storage_capabilities(
+            source_path=self.file_path,
+            source_locator=self.file_locator,
+            target_path=self.output_dir,
+            target_locator=self.output_locator,
+            metadata_locator=self.metadata_locator,
+            allow_local_output=self.allow_local_output,
+            organize_mode=self.link_mode,
+        )
+        return self
 
 
 class ScrapeJobListResponse(BaseModel):

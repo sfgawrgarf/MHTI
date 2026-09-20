@@ -12,6 +12,7 @@ import {
   NSpace,
   NIcon,
   NDivider,
+  NAlert,
   useMessage,
   type SelectOption,
 } from 'naive-ui'
@@ -37,6 +38,11 @@ import {
   locatorForConfiguredPath,
   locatorForWatchedFolder,
 } from '@/utils/storageNavigation'
+import {
+  getStorageSelectionError,
+  isP115OrganizeMode,
+  isP115Selection,
+} from '@/utils/storageCapabilities'
 
 const props = defineProps<{
   show: boolean
@@ -81,6 +87,22 @@ const metadataLocator = ref<StorageLocator | null>(null)
 const allowLocalOutput = ref(false)
 const scanSources = ref<ManualJobScanSource[]>([])
 const initialSourceCount = computed(() => scanSources.value.length)
+const effectiveSources = computed(() => scanSources.value.length
+  ? scanSources.value
+  : [{ path: formData.value.scan_path, locator: scanLocator.value }],
+)
+const hasP115Source = computed(() => effectiveSources.value.some(source =>
+  isP115Selection(source.path, source.locator),
+))
+const storageSelectionError = computed(() => getStorageSelectionError({
+  sources: effectiveSources.value,
+  targetPath: formData.value.target_folder,
+  targetLocator: targetLocator.value,
+  metadataPath: formData.value.metadata_dir,
+  metadataLocator: metadataLocator.value,
+  allowLocalOutput: allowLocalOutput.value,
+  linkMode: formData.value.link_mode,
+}))
 
 // 是否涉及 115（任一 locator 为 115 时显示额外选项）
 const involvesP115 = computed(
@@ -91,12 +113,12 @@ const involvesP115 = computed(
 )
 
 // 整理模式选项
-const linkModeOptions = [
-  { label: '硬链接', value: LinkMode.HARDLINK },
-  { label: '移动', value: LinkMode.MOVE },
-  { label: '复制', value: LinkMode.COPY },
-  { label: '软链接', value: LinkMode.SYMLINK },
-]
+const linkModeOptions = computed(() => [
+  { label: '硬链接', value: LinkMode.HARDLINK, disabled: hasP115Source.value },
+  { label: '移动', value: LinkMode.MOVE, disabled: false },
+  { label: '复制', value: LinkMode.COPY, disabled: false },
+  { label: '软链接', value: LinkMode.SYMLINK, disabled: hasP115Source.value },
+])
 
 // 配置复用选项
 const configReuseOptions = computed(() => {
@@ -161,6 +183,10 @@ const handleSubmit = async () => {
   }
   if (!formData.value.target_folder.trim()) {
     message.warning('请输入整理目录')
+    return
+  }
+  if (storageSelectionError.value) {
+    message.warning(storageSelectionError.value)
     return
   }
 
@@ -236,6 +262,15 @@ watch(configReuseFolderId, (newVal) => {
   }
 })
 
+watch(hasP115Source, (isP115) => {
+  if (
+    isP115 &&
+    !isP115OrganizeMode(formData.value.link_mode)
+  ) {
+    formData.value.link_mode = LinkMode.MOVE
+  }
+})
+
 onMounted(() => {
   loadWatchedFolders()
   loadGlobalConfig()
@@ -245,21 +280,28 @@ onMounted(() => {
 watch(() => props.show, (newVal) => {
   if (newVal) {
     const firstSource = props.initialScanSources?.[0]
-    scanSources.value = props.initialScanSources?.map((source) => ({ ...source })) ?? []
+    scanSources.value = props.initialScanSources?.map((source) => ({
+      ...source,
+      locator: source.locator ?? locatorForConfiguredPath(source.path),
+    })) ?? []
     formData.value.scan_path = firstSource?.path ?? props.initialScanPath ?? ''
-    scanLocator.value = firstSource?.locator ?? props.initialScanLocator ?? null
+    const initialPath = formData.value.scan_path
+    scanLocator.value = firstSource?.locator ?? props.initialScanLocator ?? (
+      initialPath ? locatorForConfiguredPath(initialPath) : null
+    )
   }
 })
 
 // 处理刮削路径选择
 const handleScanPathConfirm = (path: string) => {
   formData.value.scan_path = path
+  scanLocator.value = locatorForConfiguredPath(path)
   scanSources.value = []
 }
 
 const handleScanPathInput = (path: string) => {
   formData.value.scan_path = path
-  scanLocator.value = null
+  scanLocator.value = path.trim() ? locatorForConfiguredPath(path) : null
   scanSources.value = []
 }
 
@@ -270,12 +312,12 @@ const handleScanPathLocator = (locator: StorageLocator) => {
 // 处理整理目录选择
 const handleTargetFolderConfirm = (path: string) => {
   formData.value.target_folder = path
-  targetLocator.value = null
+  targetLocator.value = locatorForConfiguredPath(path)
 }
 
 const handleTargetFolderInput = (path: string) => {
   formData.value.target_folder = path
-  targetLocator.value = null
+  targetLocator.value = path.trim() ? locatorForConfiguredPath(path) : null
 }
 
 const handleTargetFolderLocator = (locator: StorageLocator) => {
@@ -285,12 +327,12 @@ const handleTargetFolderLocator = (locator: StorageLocator) => {
 // 处理元数据目录选择
 const handleMetadataDirConfirm = (path: string) => {
   formData.value.metadata_dir = path
-  metadataLocator.value = null
+  metadataLocator.value = locatorForConfiguredPath(path)
 }
 
 const handleMetadataDirInput = (path: string) => {
   formData.value.metadata_dir = path
-  metadataLocator.value = null
+  metadataLocator.value = path.trim() ? locatorForConfiguredPath(path) : null
 }
 
 const handleMetadataDirLocator = (locator: StorageLocator) => {
@@ -439,6 +481,10 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
                 <span class="form-hint">115 源文件默认在线处理；开启后下载到本地整理</span>
               </template>
             </NFormItem>
+
+            <NAlert v-if="storageSelectionError" type="error" :bordered="false">
+              {{ storageSelectionError }}
+            </NAlert>
           </div>
         </NForm>
       </div>
@@ -455,7 +501,12 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
           </NButton>
           <NSpace>
             <NButton @click="handleClose">取消</NButton>
-            <NButton type="primary" :loading="submitting" @click="handleSubmit">
+            <NButton
+              type="primary"
+              :loading="submitting"
+              :disabled="storageSelectionError !== null"
+              @click="handleSubmit"
+            >
               创建任务
             </NButton>
           </NSpace>
@@ -484,6 +535,7 @@ const handleAdvancedSettingsConfirm = (settings: ManualJobAdvancedSettings) => {
   <FolderBrowserModal
     v-model:show="showMetadataDirBrowser"
     title="选择元数据目录"
+    :allow-p115="false"
     @confirm="handleMetadataDirConfirm"
     @confirm-locator="handleMetadataDirLocator"
   />

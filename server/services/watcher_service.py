@@ -17,6 +17,7 @@ from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedE
 
 from server.core.db.connection import db_connection
 from server.core.database import DATABASE_PATH
+from server.models.organize import OrganizeMode
 from server.models.storage import is_p115_virtual_path
 from server.models.watcher import (
     DetectedFile,
@@ -1108,13 +1109,35 @@ class WatcherService:
                     is_dir=False,
                 )
 
+            # A configured 115 watcher is itself the user's authorization to
+            # process new cloud files.  Preserve that workflow while manual
+            # jobs still require their explicit local-download switch.
+            allow_local_output = bool(
+                file_locator
+                and file_locator.provider == StorageProvider.P115
+                and not is_p115_virtual_path(organize_dir)
+            )
+            effective_link_mode = link_mode
+            if (
+                file_locator
+                and file_locator.provider == StorageProvider.P115
+                and link_mode not in (OrganizeMode.COPY, OrganizeMode.MOVE)
+            ):
+                effective_link_mode = OrganizeMode.COPY
+                logger.warning(
+                    "115 监控源不支持 %s，任务将改用复制模式: %s",
+                    link_mode.value,
+                    file.path,
+                )
+
             job_create = ScrapeJobCreate(
                 file_path=file.path,
                 output_dir=organize_dir,
                 metadata_dir=metadata_dir,
                 file_locator=file_locator,
                 output_locator=output_locator,
-                link_mode=link_mode,  # 传递整理模式
+                allow_local_output=allow_local_output,
+                link_mode=effective_link_mode,
                 source=ScrapeJobSource.WATCHER,
             )
             await scrape_service.create_job(job_create)

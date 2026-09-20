@@ -23,10 +23,13 @@ import { filesApi } from '@/api/files'
 import type { DirectoryEntry, StorageLocator, StorageProvider } from '@/api/types'
 import { resolveBreadcrumbBrowseTarget } from '@/utils/storageNavigation'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   show: boolean
   title?: string
-}>()
+  allowP115?: boolean
+}>(), {
+  allowP115: true,
+})
 
 const emit = defineEmits<{
   (e: 'update:show', value: boolean): void
@@ -51,7 +54,9 @@ const total = ref(0)
 
 // 过滤后的目录列表
 const filteredDirs = computed(() => {
-  const dirs = entries.value.filter((e) => e.is_dir)
+  const dirs = entries.value.filter(
+    entry => entry.is_dir && (props.allowP115 || entry.provider !== '115'),
+  )
   if (!filter.value) return dirs
   const keyword = filter.value.toLowerCase()
   return dirs.filter((d) => d.name.toLowerCase().includes(keyword))
@@ -84,11 +89,17 @@ const loadDirectory = async (
   requestedPage: number = 1,
 ) => {
   loading.value = true
-  const effectiveProvider = provider ?? currentProvider.value
-  const effectiveFileId = fileId !== undefined ? fileId : currentFileId.value
+  const requestedProvider = provider ?? currentProvider.value
+  const effectiveProvider = !props.allowP115 && requestedProvider === '115'
+    ? 'local'
+    : requestedProvider
+  const effectivePath = effectiveProvider === requestedProvider ? path : ''
+  const effectiveFileId = effectiveProvider === requestedProvider
+    ? (fileId !== undefined ? fileId : currentFileId.value)
+    : null
   try {
     const response = await filesApi.browse(
-      path,
+      effectivePath,
       requestedPage,
       pageSize,
       effectiveProvider,
@@ -114,6 +125,7 @@ const loadDirectory = async (
 // 进入目录
 const enterDirectory = (entry: DirectoryEntry) => {
   if (!entry.is_dir) return
+  if (!props.allowP115 && entry.provider === '115') return
   // 点击虚拟 115 根入口 → 切到 115 provider
   if (entry.is_virtual && entry.provider === '115') {
     loadDirectory(entry.path, '115', entry.file_id ?? '0')

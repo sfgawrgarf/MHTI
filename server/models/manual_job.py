@@ -3,8 +3,12 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel
-from server.models.storage import StorageLocator
+from pydantic import BaseModel, model_validator
+from server.models.storage import (
+    StorageLocator,
+    infer_directory_locator,
+    validate_storage_capabilities,
+)
 
 
 class ManualJobStatus(str, Enum):
@@ -119,6 +123,27 @@ class ManualJobCreate(BaseModel):
     config_reuse_id: int | None = None
     source: JobSource = JobSource.MANUAL  # 任务来源
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
+
+    @model_validator(mode="after")
+    def validate_storage_selection(self) -> "ManualJobCreate":
+        """Normalize plain paths and reject unsupported provider combinations."""
+        self.scan_locator = infer_directory_locator(self.scan_path, self.scan_locator)
+        self.target_locator = infer_directory_locator(
+            self.target_folder, self.target_locator
+        )
+        self.metadata_locator = infer_directory_locator(
+            self.metadata_dir or None, self.metadata_locator
+        )
+        validate_storage_capabilities(
+            source_path=self.scan_path,
+            source_locator=self.scan_locator,
+            target_path=self.target_folder,
+            target_locator=self.target_locator,
+            metadata_locator=self.metadata_locator,
+            allow_local_output=self.allow_local_output,
+            organize_mode=self.link_mode,
+        )
+        return self
 
 
 class ManualJobListResponse(BaseModel):
