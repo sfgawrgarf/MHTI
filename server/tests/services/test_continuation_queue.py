@@ -105,6 +105,9 @@ async def test_concurrent_ai_retries_atomically_replace_history_once(
         )
     )
     assert old is not None
+    queued_old = await jobs._scrape_queue.get()
+    assert queued_old == old.id
+    jobs._scrape_queue.task_done()
     await service.update_job(old.id, status=ScrapeJobStatus.PENDING_ACTION)
     history = HistoryService(db_path=temp_db)
     record = await history.create_record(
