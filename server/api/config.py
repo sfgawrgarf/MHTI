@@ -389,7 +389,7 @@ async def save_watcher_config(
         )
 
     try:
-        await watcher_service.stop()
+        await watcher_service.stop(require_clean=True)
         await watcher_service.replace_folders(desired_folders)
         await config_service.save_watcher_config(config)
         if request.enabled and desired_folders:
@@ -398,7 +398,7 @@ async def save_watcher_config(
         logger.exception("保存监控配置失败，正在恢复旧配置")
         rollback_succeeded = False
         try:
-            await watcher_service.stop()
+            await watcher_service.stop(require_clean=True)
             await watcher_service.replace_folders(existing_folders)
             await config_service.save_watcher_config(old_config)
             if was_running:

@@ -121,7 +121,7 @@ async def test_disabling_global_watcher_atomically_disables_folders(
 
     desired = watcher.replace_folders.await_args.args[0]
     assert len(desired) == 1 and desired[0].enabled is False
-    watcher.stop.assert_awaited_once_with()
+    watcher.stop.assert_awaited_once_with(require_clean=True)
     watcher.start.assert_not_awaited()
 
 
@@ -139,7 +139,7 @@ async def test_enabled_empty_watch_list_removes_stale_folders(
     )
 
     watcher.replace_folders.assert_awaited_once_with([])
-    watcher.stop.assert_awaited_once_with()
+    watcher.stop.assert_awaited_once_with(require_clean=True)
     watcher.start.assert_not_awaited()
 
 
