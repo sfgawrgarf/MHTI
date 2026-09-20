@@ -170,7 +170,13 @@ class ScrapeJobService:
 
         return {row[0] for row in rows}
 
-    async def create_job(self, job: ScrapeJobCreate, skip_duplicate_check: bool = False) -> ScrapeJob | None:
+    async def create_job(
+        self,
+        job: ScrapeJobCreate,
+        skip_duplicate_check: bool = False,
+        *,
+        replacement_history_id: str | None = None,
+    ) -> ScrapeJob | None:
         """创建刮削任务并加入队列，如果已存在待处理任务则返回 None"""
         await self._ensure_db()
 
@@ -226,6 +232,52 @@ class ScrapeJobService:
             # Serialize the final duplicate check and insert.  The earlier checks
             # avoid unnecessary work; this check closes the concurrent-create race.
             await db.execute("BEGIN IMMEDIATE")
+            replacement_conflict_data: dict | None = None
+            if replacement_history_id:
+                # AI retry creates a fresh history row when the worker starts, so
+                # claim the old no-match row and its old job in this transaction.
+                # This closes both the double-click race and the orphan-job window.
+                cursor = await db.execute(
+                    """
+                    SELECT status, conflict_type, scrape_job_id, conflict_data
+                    FROM history_records WHERE id = ?
+                    """,
+                    (replacement_history_id,),
+                )
+                record = await cursor.fetchone()
+                if (
+                    not record
+                    or record[0] != "pending_action"
+                    or record[1] != "no_match"
+                    or record[2] != job.replaces_job_id
+                ):
+                    await db.rollback()
+                    return None
+                cursor = await db.execute(
+                    "SELECT replaced_by_job_id FROM scrape_jobs WHERE id = ?",
+                    (job.replaces_job_id,),
+                )
+                old_job = await cursor.fetchone()
+                if not old_job or old_job[0]:
+                    await db.rollback()
+                    return None
+                cursor = await db.execute(
+                    """
+                    SELECT 1 FROM scrape_jobs
+                    WHERE file_path = ? AND status IN ('pending', 'running')
+                    LIMIT 1
+                    """,
+                    (job.file_path,),
+                )
+                if await cursor.fetchone():
+                    await db.rollback()
+                    return None
+                try:
+                    replacement_conflict_data = json.loads(record[3] or "{}")
+                    if not isinstance(replacement_conflict_data, dict):
+                        replacement_conflict_data = {}
+                except (json.JSONDecodeError, TypeError):
+                    replacement_conflict_data = {}
             if job.continuation_history_id:
                 # Claim the history record and enqueue its continuation atomically.
                 # A double click or concurrent retry must not move the same file twice.
@@ -297,10 +349,44 @@ class ScrapeJobService:
                 ),
             )
             if job.replaces_job_id:
-                await db.execute(
-                    "UPDATE scrape_jobs SET replaced_by_job_id = ? WHERE id = ?",
-                    (job_id, job.replaces_job_id),
+                if replacement_history_id:
+                    replaced = await db.execute(
+                        """
+                        UPDATE scrape_jobs
+                        SET replaced_by_job_id = ?, status = 'replaced'
+                        WHERE id = ? AND replaced_by_job_id IS NULL
+                        """,
+                        (job_id, job.replaces_job_id),
+                    )
+                    if replaced.rowcount != 1:
+                        await db.rollback()
+                        return None
+                else:
+                    await db.execute(
+                        "UPDATE scrape_jobs SET replaced_by_job_id = ? WHERE id = ?",
+                        (job_id, job.replaces_job_id),
+                    )
+            if replacement_history_id:
+                assert replacement_conflict_data is not None
+                replacement_conflict_data["replaced_by_job_id"] = job_id
+                replaced_history = await db.execute(
+                    """
+                    UPDATE history_records
+                    SET status = 'replaced',
+                        error_message = '已创建 AI 重试替代任务',
+                        conflict_data = ?
+                    WHERE id = ? AND status = 'pending_action'
+                      AND conflict_type = 'no_match' AND scrape_job_id = ?
+                    """,
+                    (
+                        json.dumps(replacement_conflict_data, ensure_ascii=False),
+                        replacement_history_id,
+                        job.replaces_job_id,
+                    ),
                 )
+                if replaced_history.rowcount != 1:
+                    await db.rollback()
+                    return None
             if job.continuation_history_id:
                 await db.execute(
                     "UPDATE history_records SET status = 'running', error_message = '已排队，等待处理', "
@@ -718,7 +804,12 @@ class ScrapeJobService:
                 logger.exception("Unable to notify bulk-cancelled scrape job: %s", job_id)
         return bulk_count + live_count
 
-    async def create_replacement_job(self, job: ScrapeJob) -> ScrapeJob | None:
+    async def create_replacement_job(
+        self,
+        job: ScrapeJob,
+        *,
+        replacement_history_id: str | None = None,
+    ) -> ScrapeJob | None:
         """Create a fresh worker job while preserving the old job for audit."""
         return await self.create_job(
             ScrapeJobCreate(
@@ -736,6 +827,7 @@ class ScrapeJobService:
                 replaces_job_id=job.id,
             ),
             skip_duplicate_check=True,
+            replacement_history_id=replacement_history_id,
         )
 
     def _row_to_job(self, row) -> ScrapeJob:

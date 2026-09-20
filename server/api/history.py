@@ -192,18 +192,13 @@ async def retry_no_match_with_ai(
         if old_job.file_locator is None and not Path(old_job.file_path).is_file():
             skipped.append({"id": record.id, "reason": "源文件不存在"})
             continue
-        replacement = await jobs.create_replacement_job(old_job)
-        if replacement is None:
-            skipped.append({"id": record.id, "reason": "创建替代任务失败"})
-            continue
-        conflict_data = dict(record.conflict_data or {})
-        conflict_data["replaced_by_job_id"] = replacement.id
-        await history_service.update_record(
-            record.id,
-            status=TaskStatus.REPLACED,
-            error_message="已创建 AI 重试替代任务",
-            conflict_data=conflict_data,
+        replacement = await jobs.create_replacement_job(
+            old_job,
+            replacement_history_id=record.id,
         )
+        if replacement is None:
+            skipped.append({"id": record.id, "reason": "记录已被处理或文件已有运行中任务"})
+            continue
         queued.append(replacement.id)
 
     return {"queued_job_ids": queued, "skipped": skipped}

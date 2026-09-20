@@ -90,6 +90,7 @@ class RenameService:
         self,
         request: RenameRequest,
         create_backup: bool = False,
+        resolved_dest_path: str | Path | None = None,
     ) -> RenameResult:
         """Execute a rename operation.
 
@@ -136,8 +137,12 @@ class RenameService:
                 success=False,
                 error=str(exc),
             )
-        dest_path = Path(preview.dest_path)
-        dest_folder = Path(preview.dest_folder)
+        dest_path = (
+            Path(resolved_dest_path)
+            if resolved_dest_path is not None
+            else Path(preview.dest_path)
+        )
+        dest_folder = dest_path.parent
         try:
             validate_media_path(str(dest_path))
         except PathSecurityError as exc:
@@ -164,7 +169,7 @@ class RenameService:
             # 目标冲突只在用户明确处理时改变默认的安全失败行为。
             overwrite = request.conflict_action == "overwrite"
             if (dest_path.exists() or dest_path.is_symlink()) and dest_path != source_path:
-                if request.conflict_action == "rename":
+                if request.conflict_action == "rename" and resolved_dest_path is None:
                     dest_path = self._next_available_path(dest_path)
                     logger.info(f"目标文件已存在，使用重命名目标: {dest_path}")
                 elif request.conflict_action == "overwrite":
@@ -196,6 +201,7 @@ class RenameService:
                 success=True,
                 backup_path=backup_path,
             )
+
         except PermissionError as e:
             logger.error(f"权限错误: {e}")
             return RenameResult(
@@ -212,6 +218,25 @@ class RenameService:
                 success=False,
                 error=f"OS error: {e}",
             )
+
+    def resolve_destination_path(self, request: RenameRequest) -> Path:
+        """Resolve the exact path before metadata is written.
+
+        A later execution receives this path back and will fail safely if another
+        process claims it in the meantime instead of silently selecting a different
+        filename whose sidecars no longer match.
+        """
+        preview = self.preview_rename(request)
+        source_path = Path(request.source_path)
+        dest_path = Path(preview.dest_path)
+        if (
+            request.conflict_action == "rename"
+            and dest_path != source_path
+            and (dest_path.exists() or dest_path.is_symlink())
+        ):
+            dest_path = self._next_available_path(dest_path)
+        validate_media_path(str(dest_path))
+        return dest_path
 
     @staticmethod
     def _next_available_path(dest_path: Path) -> Path:

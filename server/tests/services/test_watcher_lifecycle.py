@@ -18,6 +18,7 @@ from server.models.watcher import (
 )
 from server.services import watcher_service as watcher_module
 from server.services.watcher_service import (
+    PendingFile,
     P115EventStrategy,
     P115ScanStrategy,
     WatcherService,
@@ -135,6 +136,125 @@ async def test_p115_event_empty_baseline_starts_from_current_time(
     assert strategy._last_update_time == 1234
 
 
+@pytest.mark.asyncio
+async def test_p115_event_scope_is_paginated_and_has_no_depth_five_cutoff() -> None:
+    strategy = P115EventStrategy(
+        _p115_folder(mode=WatcherMode.EVENT),
+        lambda _path, _folder: None,
+    )
+
+    async def browse(*, path, file_id, page, page_size):
+        if file_id == "folder-1" and page == 1:
+            return {
+                "current_file_id": "folder-1",
+                "entries": [
+                    {"is_dir": False, "path": f"{path}/file-{index}.txt"}
+                    for index in range(page_size)
+                ],
+                "total": page_size + 1,
+            }
+        if file_id == "folder-1" and page == 2:
+            return {
+                "current_file_id": "folder-1",
+                "entries": [
+                    {
+                        "is_dir": True,
+                        "file_id": "level-1",
+                        "path": f"{path}/level-1",
+                    }
+                ],
+                "total": page_size + 1,
+            }
+        if str(file_id).startswith("level-"):
+            level = int(str(file_id).split("-")[1])
+            child = level + 1
+            entries = []
+            if child <= 7:
+                entries.append(
+                    {
+                        "is_dir": True,
+                        "file_id": f"level-{child}",
+                        "path": f"{path}/level-{child}",
+                    }
+                )
+            return {
+                "current_file_id": file_id,
+                "entries": entries,
+                "total": len(entries),
+            }
+        raise AssertionError((path, file_id, page))
+
+    await strategy._collect_subdir_ids(
+        SimpleNamespace(browse=browse),
+        strategy.folder.path,
+        strategy.folder.file_id,
+        strategy._watched_dir_paths,
+    )
+
+    assert "level-7" in strategy._watched_dir_paths
+    assert strategy._watched_dir_paths["level-7"].endswith("/level-7")
+
+
+def test_p115_event_uses_full_nested_directory_path() -> None:
+    detected: list[str] = []
+    strategy = P115EventStrategy(
+        _p115_folder(mode=WatcherMode.EVENT),
+        lambda path, _folder: detected.append(path),
+    )
+    strategy._watched_dir_ids = {"nested-id"}
+    strategy._watched_dir_paths = {
+        "nested-id": "/115网盘/待整理/Anime/Season 1",
+    }
+
+    assert strategy._process_event_item(
+        {
+            "file_id": "episode-1",
+            "file_name": "episode.mkv",
+            "ico": "mkv",
+            "parent_id": "nested-id",
+        }
+    )
+
+    assert detected == ["/115网盘/待整理/Anime/Season 1/episode.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_pending_p115_identity_survives_strategy_replacement(
+    temp_db, monkeypatch
+) -> None:
+    service = WatcherService(temp_db)
+    folder = _p115_folder(mode=WatcherMode.EVENT)
+    path = f"{folder.path}/episode.mkv"
+    old_strategy = P115EventStrategy(folder, service._on_file_detected)
+    old_strategy.detected_meta[path] = {
+        "file_id": "episode-id",
+        "parent_id": "folder-1",
+        "size": 123,
+    }
+    service._strategies[folder.id] = old_strategy
+    service._on_file_detected(path, folder)
+
+    service._strategies[folder.id] = P115EventStrategy(
+        folder, service._on_file_detected
+    )
+    # A duplicate callback after restart has no strategy-local metadata. It must
+    # not overwrite the durable pending identity captured by the old strategy.
+    service._on_file_detected(path, folder)
+    captured: list[DetectedFile] = []
+
+    async def create_jobs(files, _folder):
+        captured.extend(files)
+        return {file.path for file in files}
+
+    monkeypatch.setattr(service, "_create_jobs_for_files", create_jobs)
+
+    await service._process_pending_once()
+
+    assert len(captured) == 1
+    assert captured[0].file_id == "episode-id"
+    assert captured[0].parent_id == "folder-1"
+
+
 @pytest.mark.parametrize(
     "kwargs, message",
     [
@@ -184,8 +304,8 @@ async def test_pending_file_is_removed_only_after_job_creation_succeeds(
     second.touch()
     detected_at = time.time() - 10
     service._pending_files = {
-        str(first): (str(first), detected_at, folder),
-        str(second): (str(second), detected_at, folder),
+        str(first): PendingFile(str(first), detected_at, folder),
+        str(second): PendingFile(str(second), detected_at, folder),
     }
     monkeypatch.setattr(
         service,
