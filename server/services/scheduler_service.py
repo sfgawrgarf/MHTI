@@ -425,13 +425,28 @@ class SchedulerService:
                 continue
 
             finished_at = datetime.now()
-            next_run = self._calculate_next_run(task.cron_expression, finished_at)
             async with db_connection(self.db_path) as db:
+                await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute(
+                    "SELECT enabled, cron_expression FROM scheduled_tasks WHERE id = ?",
+                    (task.id,),
+                )
+                current = await cursor.fetchone()
+                if current is None:
+                    await db.rollback()
+                    continue
+                current_enabled = bool(current[0])
+                current_cron = str(current[1])
+                next_run = (
+                    self._calculate_next_run(current_cron, finished_at)
+                    if current_enabled
+                    else None
+                )
                 await db.execute(
                     """UPDATE scheduled_tasks
                        SET last_run = ?, last_status = 'success',
                            last_error = NULL, retry_count = 0, next_run = ?
-                       WHERE id = ?""",
+                       WHERE id = ? AND last_status = 'running'""",
                     (
                         finished_at.isoformat(),
                         next_run.isoformat() if next_run else None,
@@ -450,21 +465,35 @@ class SchedulerService:
     ) -> None:
         """Persist a bounded retry or the final failed execution state."""
         retry_count = task.retry_count + 1
-        if retry_count <= len(self._retry_delays):
-            status = "retrying"
-            next_run = failed_at + timedelta(
-                seconds=self._retry_delays[retry_count - 1]
-            )
-        else:
-            status = "failed"
-            next_run = self._calculate_next_run(task.cron_expression, failed_at)
-
         async with db_connection(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "SELECT enabled, cron_expression FROM scheduled_tasks WHERE id = ?",
+                (task.id,),
+            )
+            current = await cursor.fetchone()
+            if current is None:
+                await db.rollback()
+                return
+            current_enabled = bool(current[0])
+            current_cron = str(current[1])
+            if current_enabled and retry_count <= len(self._retry_delays):
+                status = "retrying"
+                next_run = failed_at + timedelta(
+                    seconds=self._retry_delays[retry_count - 1]
+                )
+            else:
+                status = "failed"
+                next_run = (
+                    self._calculate_next_run(current_cron, failed_at)
+                    if current_enabled
+                    else None
+                )
             await db.execute(
                 """UPDATE scheduled_tasks
                    SET last_attempt = ?, last_status = ?, last_error = ?,
                        retry_count = ?, next_run = ?
-                   WHERE id = ?""",
+                   WHERE id = ? AND last_status = 'running'""",
                 (
                     failed_at.isoformat(),
                     status,

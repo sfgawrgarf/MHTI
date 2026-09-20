@@ -64,6 +64,9 @@ class WatcherStatus(str, Enum):
 
 
 WatcherProvider = Literal["local", "115"]
+MIN_SCAN_INTERVAL_SECONDS = 5
+MAX_WATCH_INTERVAL_SECONDS = 86400
+MIN_FILE_STABLE_SECONDS = 0
 
 
 def _validate_watched_folder_selection(
@@ -94,8 +97,12 @@ class WatchedFolder(BaseModel):
     path: str
     enabled: bool = True
     mode: WatcherMode = WatcherMode.REALTIME  # 每个文件夹独立监控模式
-    scan_interval_seconds: int = Field(60, ge=5, le=86400)
-    file_stable_seconds: int = Field(30, ge=0, le=86400)
+    scan_interval_seconds: int = Field(
+        60, ge=MIN_SCAN_INTERVAL_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
+    file_stable_seconds: int = Field(
+        30, ge=MIN_FILE_STABLE_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
     auto_scrape: bool = True
     output_dir: str | None = None  # 独立整理目录（留空则用全局配置）
     provider: WatcherProvider = "local"  # 存储提供方：local / 115
@@ -120,8 +127,12 @@ class WatchedFolderCreate(BaseModel):
     path: str
     enabled: bool = True
     mode: WatcherMode = WatcherMode.REALTIME
-    scan_interval_seconds: int = Field(60, ge=5, le=86400)
-    file_stable_seconds: int = Field(30, ge=0, le=86400)
+    scan_interval_seconds: int = Field(
+        60, ge=MIN_SCAN_INTERVAL_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
+    file_stable_seconds: int = Field(
+        30, ge=MIN_FILE_STABLE_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
     auto_scrape: bool = True
     output_dir: str | None = None
     provider: WatcherProvider = "local"
@@ -144,8 +155,12 @@ class WatchedFolderUpdate(BaseModel):
     path: str | None = None
     enabled: bool | None = None
     mode: WatcherMode | None = None
-    scan_interval_seconds: int | None = Field(None, ge=5, le=86400)
-    file_stable_seconds: int | None = Field(None, ge=0, le=86400)
+    scan_interval_seconds: int | None = Field(
+        None, ge=MIN_SCAN_INTERVAL_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
+    file_stable_seconds: int | None = Field(
+        None, ge=MIN_FILE_STABLE_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
     auto_scrape: bool | None = None
     output_dir: str | None = None
     provider: WatcherProvider | None = None

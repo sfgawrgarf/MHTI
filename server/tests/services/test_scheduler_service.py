@@ -294,3 +294,105 @@ async def test_running_task_is_recovered_after_restart(temp_db) -> None:
     assert recovered.retry_count == 1
     assert recovered.last_error == "上次执行因服务重启而中断"
     assert recovered.next_run is not None
+
+
+@pytest.mark.asyncio
+async def test_completion_uses_cron_updated_while_task_was_running(temp_db) -> None:
+    service = SchedulerService(temp_db)
+    task = await service.create_task(
+        ScheduledTaskCreate(
+            name="rescheduled",
+            folder_path="/media/tv",
+            cron_expression="* * * * *",
+        )
+    )
+
+    async def update_schedule(_task: ScheduledTask) -> None:
+        await service.update_task(
+            task.id,
+            ScheduledTaskUpdate(cron_expression="0 0 * * *"),
+        )
+
+    service._executor = update_schedule
+    async with db_connection(temp_db) as db:
+        await db.execute(
+            "UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+            ((datetime.now() - timedelta(minutes=1)).isoformat(), task.id),
+        )
+        await db.commit()
+
+    await service.run_due_tasks(datetime.now())
+    updated = await service.get_task(task.id)
+
+    assert updated is not None
+    assert updated.cron_expression == "0 0 * * *"
+    assert updated.last_run is not None
+    assert updated.next_run == service._calculate_next_run(
+        updated.cron_expression, updated.last_run
+    )
+
+
+@pytest.mark.asyncio
+async def test_completion_does_not_reschedule_task_disabled_while_running(
+    temp_db,
+) -> None:
+    service = SchedulerService(temp_db)
+    task = await service.create_task(
+        ScheduledTaskCreate(
+            name="disabled during run",
+            folder_path="/media/tv",
+            cron_expression="* * * * *",
+        )
+    )
+
+    async def disable_task(_task: ScheduledTask) -> None:
+        await service.update_task(task.id, ScheduledTaskUpdate(enabled=False))
+
+    service._executor = disable_task
+    async with db_connection(temp_db) as db:
+        await db.execute(
+            "UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+            ((datetime.now() - timedelta(minutes=1)).isoformat(), task.id),
+        )
+        await db.commit()
+
+    await service.run_due_tasks(datetime.now())
+    updated = await service.get_task(task.id)
+
+    assert updated is not None
+    assert updated.enabled is False
+    assert updated.last_status == "success"
+    assert updated.next_run is None
+
+
+@pytest.mark.asyncio
+async def test_failure_does_not_retry_task_disabled_while_running(temp_db) -> None:
+    service = SchedulerService(temp_db, retry_delays=(0, 0))
+    task = await service.create_task(
+        ScheduledTaskCreate(
+            name="disabled failure",
+            folder_path="/media/tv",
+            cron_expression="* * * * *",
+        )
+    )
+
+    async def disable_then_fail(_task: ScheduledTask) -> None:
+        await service.update_task(task.id, ScheduledTaskUpdate(enabled=False))
+        raise RuntimeError("failed after disable")
+
+    service._executor = disable_then_fail
+    async with db_connection(temp_db) as db:
+        await db.execute(
+            "UPDATE scheduled_tasks SET next_run = ? WHERE id = ?",
+            ((datetime.now() - timedelta(minutes=1)).isoformat(), task.id),
+        )
+        await db.commit()
+
+    await service.run_due_tasks(datetime.now())
+    updated = await service.get_task(task.id)
+
+    assert updated is not None
+    assert updated.enabled is False
+    assert updated.last_status == "failed"
+    assert updated.last_error == "failed after disable"
+    assert updated.next_run is None
