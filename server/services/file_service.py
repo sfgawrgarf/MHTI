@@ -46,7 +46,7 @@ VIRTUAL_115_ROOT_ID = "0"
 
 def _sanitize_path(path_str: str) -> Path:
     """
-    Sanitize and validate path to prevent path traversal attacks.
+    Normalize a path and prevent access to protected system directories.
 
     Args:
         path_str: Raw path string from user input.
@@ -55,25 +55,22 @@ def _sanitize_path(path_str: str) -> Path:
         Sanitized Path object.
 
     Raises:
-        InvalidFolderError: If path contains dangerous patterns.
+        InvalidFolderError: If the path contains a NUL byte.
+        PermissionDeniedError: If the resolved path is inside a protected directory.
     """
     if not path_str:
         return Path("")
 
-    # 检查危险模式
-    dangerous_patterns = ["..", "~", "\x00"]
-    for pattern in dangerous_patterns:
-        if pattern in path_str:
-            raise InvalidFolderError(f"路径包含非法字符: {pattern}")
+    if "\x00" in path_str:
+        raise InvalidFolderError("路径包含非法字符: NUL")
 
     # 规范化路径
     path = Path(path_str).resolve()
 
     # 检查是否在禁止目录中
-    path_str_normalized = str(path).replace("\\", "/")
     for blocked in BLOCKED_PATHS:
-        blocked_normalized = blocked.replace("\\", "/")
-        if path_str_normalized.startswith(blocked_normalized):
+        blocked_path = Path(blocked).resolve()
+        if path == blocked_path or path.is_relative_to(blocked_path):
             raise PermissionDeniedError(f"禁止访问系统目录: {blocked}")
 
     return path

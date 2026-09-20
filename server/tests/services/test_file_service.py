@@ -2,7 +2,11 @@
 
 import pytest
 
-from server.core.exceptions import FolderNotFoundError, InvalidFolderError
+from server.core.exceptions import (
+    FolderNotFoundError,
+    InvalidFolderError,
+    PermissionDeniedError,
+)
 from server.models.file import DirectoryEntry, ScanRequest
 from server.models.storage import StorageLocator, StorageProvider
 from server.services.file_service import SUPPORTED_VIDEO_EXTENSIONS, FileService
@@ -99,6 +103,34 @@ class TestFileService:
         result = file_service.scan_folder(str(tmp_path))
 
         assert len(result) == 3
+
+    def test_scan_folder_allows_double_dot_inside_directory_name(
+        self, tmp_path, file_service,
+    ):
+        folder = tmp_path / "Show..Name"
+        folder.mkdir()
+        (folder / "episode.mkv").touch()
+
+        result = file_service.scan_folder(str(folder))
+
+        assert [item.filename for item in result] == ["episode.mkv"]
+
+    def test_blocked_path_check_uses_directory_boundaries(
+        self, tmp_path, monkeypatch,
+    ):
+        from server.services import file_service as file_service_module
+
+        blocked = tmp_path / "root"
+        blocked.mkdir()
+        sibling = tmp_path / "root-media"
+        sibling.mkdir()
+        nested = blocked / "private"
+        nested.mkdir()
+        monkeypatch.setattr(file_service_module, "BLOCKED_PATHS", {str(blocked)})
+
+        assert file_service_module._sanitize_path(str(sibling)) == sibling.resolve()
+        with pytest.raises(PermissionDeniedError):
+            file_service_module._sanitize_path(str(nested))
 
     def test_supported_extensions_constant(self):
         """Test that all expected extensions are supported."""

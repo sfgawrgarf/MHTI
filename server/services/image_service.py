@@ -107,9 +107,10 @@ class ImageService:
         config = await self._get_system_config()
         timeout = float(config.task_timeout)
         max_retries = config.retry_count
+        max_attempts = max_retries + 1
         proxy_url = await self._get_proxy_url()
 
-        for attempt in range(max_retries):
+        for attempt in range(max_attempts):
             temporary_path: Path | None = None
             try:
                 async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
@@ -177,7 +178,7 @@ class ImageService:
                 if temporary_path is not None:
                     temporary_path.unlink(missing_ok=True)
 
-            if attempt < max_retries - 1:
+            if attempt < max_attempts - 1:
                 delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
                 await asyncio.sleep(delay)
 
