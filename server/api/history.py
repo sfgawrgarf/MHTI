@@ -42,7 +42,7 @@ async def _restore_locators_from_scrape_job(record: HistoryRecord) -> dict:
         if job is None:
             raise HTTPException(status_code=409, detail="原始任务不存在，无法安全恢复整理参数")
         allow_local_output = job.allow_local_output or (
-            job.source == ScrapeJobSource.WATCHER
+            getattr(job, "source", ScrapeJobSource.MANUAL) == ScrapeJobSource.WATCHER
             and is_p115_to_local(
                 source_path=job.file_path,
                 source_locator=job.file_locator,

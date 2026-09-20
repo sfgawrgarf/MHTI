@@ -209,6 +209,31 @@ def test_direct_scrape_rejects_mismatched_file_locator_path() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("provider", "path", "message"),
+    [
+        (StorageProvider.LOCAL, "/115网盘/待整理", "不能声明为本地"),
+        (StorageProvider.P115, "/incoming", "必须使用 /115网盘"),
+    ],
+)
+def test_manual_job_rejects_locator_provider_path_mismatch(
+    provider: StorageProvider,
+    path: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        ManualJobCreate(
+            scan_path="/incoming",
+            target_folder=path,
+            target_locator=StorageLocator(
+                provider=provider,
+                path=path,
+                is_dir=True,
+            ),
+            link_mode=LinkMode.COPY,
+        )
+
+
 def test_organize_config_rejects_cloud_metadata_directory() -> None:
     with pytest.raises(ValueError, match="元数据目录仅支持本地"):
         OrganizeConfig(metadata_dir="/115网盘/元数据")

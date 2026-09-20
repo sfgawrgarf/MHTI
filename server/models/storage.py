@@ -32,6 +32,15 @@ class StorageLocator(BaseModel):
     is_dir: bool = True
 
 
+def validate_locator_namespace(locator: StorageLocator) -> None:
+    """Ensure the declared provider agrees with the locator path namespace."""
+    path_is_p115 = is_p115_virtual_path(locator.path)
+    if locator.provider == StorageProvider.P115 and not path_is_p115:
+        raise ValueError("115 存储定位必须使用 /115网盘 路径")
+    if locator.provider == StorageProvider.LOCAL and path_is_p115:
+        raise ValueError("115 网盘路径不能声明为本地存储")
+
+
 def infer_directory_locator(
     path: str | None,
     locator: StorageLocator | None,
@@ -47,6 +56,7 @@ def infer_directory_locator(
     if locator is not None:
         if not locator.path.strip():
             raise ValueError("存储定位路径不能为空")
+        validate_locator_namespace(locator)
         if path and locator.path.rstrip("/") != path.rstrip("/"):
             raise ValueError("存储定位信息与所选路径不一致")
         if not allow_file and not locator.is_dir:
@@ -71,6 +81,7 @@ def normalize_file_locator(
         return None
     if not locator.path.strip():
         raise ValueError("源文件存储定位路径不能为空")
+    validate_locator_namespace(locator)
     if locator.path.rstrip("/") != path.rstrip("/"):
         raise ValueError("存储定位信息与源文件路径不一致")
     if locator.provider == StorageProvider.LOCAL:
