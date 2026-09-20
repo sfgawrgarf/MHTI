@@ -131,7 +131,7 @@ async def test_resolve_conflict_allows_reprocessing_skipped_or_deleted_record(mo
             "metadata_dir": "/metadata",
             "link_mode": "copy",
         },
-        folder_path="/incoming/example.mkv",
+        folder_path="/115网盘/incoming/example.mkv",
     )
     history_service = AsyncMock()
     history_service.get_record.return_value = record
@@ -144,7 +144,7 @@ async def test_resolve_conflict_allows_reprocessing_skipped_or_deleted_record(mo
             return_value={
                 "file_locator": {
                     "provider": "115",
-                    "path": "/incoming/example.mkv",
+                    "path": "/115网盘/incoming/example.mkv",
                     "file_id": "abc",
                     "is_dir": False,
                 },
@@ -166,7 +166,7 @@ async def test_resolve_conflict_allows_reprocessing_skipped_or_deleted_record(mo
     assert result == {"success": True}
     assert execute_scrape.await_count == 1
     scrape_request = execute_scrape.await_args.args[2]
-    assert scrape_request.file_path == "/incoming/example.mkv"
+    assert scrape_request.file_path == "/115网盘/incoming/example.mkv"
     assert scrape_request.tmdb_id == 123
     assert scrape_request.season == 1
     assert scrape_request.episode == 2
@@ -226,7 +226,7 @@ async def test_resolve_conflict_rematches_any_selectable_conflict(
             "metadata_dir": "/metadata",
             "link_mode": "copy",
         },
-        folder_path="/incoming/example.mkv",
+        folder_path="/115网盘/incoming/example.mkv",
     )
     history_service = AsyncMock()
     history_service.get_record.return_value = record
@@ -239,7 +239,7 @@ async def test_resolve_conflict_rematches_any_selectable_conflict(
             return_value={
                 "file_locator": {
                     "provider": "115",
-                    "path": "/incoming/example.mkv",
+                    "path": "/115网盘/incoming/example.mkv",
                     "file_id": "abc",
                     "is_dir": False,
                 },
