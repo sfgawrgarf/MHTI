@@ -431,6 +431,9 @@ export interface WatchedFolder {
   scan_interval_seconds: number
   file_stable_seconds: number
   auto_scrape: boolean
+  output_dir: string | null
+  provider: StorageProvider
+  file_id: string | null
   last_scan: string | null
   created_at: string | null
 }
@@ -442,6 +445,9 @@ export interface WatchedFolderCreate {
   scan_interval_seconds?: number
   file_stable_seconds?: number
   auto_scrape?: boolean
+  output_dir?: string | null
+  provider?: StorageProvider
+  file_id?: string | null
 }
 
 export interface WatchedFolderUpdate {
@@ -451,6 +457,9 @@ export interface WatchedFolderUpdate {
   scan_interval_seconds?: number
   file_stable_seconds?: number
   auto_scrape?: boolean
+  output_dir?: string | null
+  provider?: StorageProvider
+  file_id?: string | null
 }
 
 export interface WatchedFolderListResponse {
@@ -644,6 +653,7 @@ export interface ManualJobAdvancedSettings {
   scrape_plot: boolean
   // NFO设置
   nfo_enabled: boolean
+  process_subtitle: boolean
 }
 
 export interface ManualJobListResponse {

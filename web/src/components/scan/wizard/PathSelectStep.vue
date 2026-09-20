@@ -18,6 +18,10 @@ import {
 import type { WatchedFolder, OrganizeConfig, StorageLocator } from '@/api/types'
 import FolderBrowser from '../FolderBrowser.vue'
 import { ref } from 'vue'
+import {
+  locatorForConfiguredPath,
+  locatorForWatchedFolder,
+} from '@/utils/storageNavigation'
 
 const props = defineProps<{
   scanPath: string
@@ -25,6 +29,7 @@ const props = defineProps<{
   metadataDir: string
   scanLocator: StorageLocator | null
   targetLocator: StorageLocator | null
+  metadataLocator: StorageLocator | null
   watchedFolders: WatchedFolder[]
   globalConfig: OrganizeConfig | null
   allowLocalOutput: boolean
@@ -55,7 +60,7 @@ const browserMode = ref<'scan' | 'target' | 'metadata'>('scan')
 const watchedFolderOptions = computed(() => {
   return props.watchedFolders.map(folder => ({
     label: folder.path,
-    value: folder.path,
+    value: folder.id,
   }))
 })
 
@@ -69,10 +74,13 @@ const openBrowser = (mode: 'scan' | 'target' | 'metadata') => {
 const handleFolderSelect = (path: string) => {
   if (browserMode.value === 'scan') {
     emit('update:scanPath', path)
+    emit('update:scanLocator', null)
   } else if (browserMode.value === 'target') {
     emit('update:targetFolder', path)
+    emit('update:targetLocator', null)
   } else {
     emit('update:metadataDir', path)
+    emit('update:metadataLocator', null)
   }
   showBrowser.value = false
 }
@@ -89,15 +97,34 @@ const handleFolderLocator = (locator: StorageLocator) => {
 }
 
 // 从监控目录快速填充
-const handleWatchedFolderSelect = (path: string) => {
-  emit('update:scanPath', path)
+const handleWatchedFolderSelect = (folderId: string | null) => {
+  const folder = props.watchedFolders.find(item => item.id === folderId)
+  if (!folder) return
+  emit('update:scanPath', folder.path)
+  emit('update:scanLocator', locatorForWatchedFolder(folder))
 }
 
 // 使用全局配置的整理目录
 const useGlobalTargetFolder = () => {
   if (props.globalConfig?.organize_dir) {
     emit('update:targetFolder', props.globalConfig.organize_dir)
+    emit('update:targetLocator', locatorForConfiguredPath(props.globalConfig.organize_dir))
   }
+}
+
+const handleScanPathInput = (path: string) => {
+  emit('update:scanPath', path)
+  emit('update:scanLocator', null)
+}
+
+const handleTargetFolderInput = (path: string) => {
+  emit('update:targetFolder', path)
+  emit('update:targetLocator', null)
+}
+
+const handleMetadataDirInput = (path: string) => {
+  emit('update:metadataDir', path)
+  emit('update:metadataLocator', null)
 }
 </script>
 
@@ -117,7 +144,7 @@ const useGlobalTargetFolder = () => {
           <NInput
             :value="scanPath"
             placeholder="输入或选择要刮削的文件夹路径"
-            @update:value="emit('update:scanPath', $event)"
+            @update:value="handleScanPathInput"
           />
           <NButton @click="openBrowser('scan')">
             <template #icon>
@@ -144,7 +171,7 @@ const useGlobalTargetFolder = () => {
           <NInput
             :value="targetFolder"
             placeholder="输入或选择整理后的目标文件夹"
-            @update:value="emit('update:targetFolder', $event)"
+            @update:value="handleTargetFolderInput"
           />
           <NButton @click="openBrowser('target')">
             <template #icon>
@@ -177,7 +204,7 @@ const useGlobalTargetFolder = () => {
         <NInput
           :value="metadataDir"
           placeholder="可选，留空则与视频同目录"
-          @update:value="emit('update:metadataDir', $event)"
+          @update:value="handleMetadataDirInput"
         />
         <NButton @click="openBrowser('metadata')">
           <template #icon>
@@ -204,6 +231,8 @@ const useGlobalTargetFolder = () => {
     <!-- 文件夹浏览器 -->
     <FolderBrowser
       v-model:show="showBrowser"
+      :model-value="browserMode === 'scan' ? scanPath : browserMode === 'target' ? targetFolder : metadataDir"
+      :locator="browserMode === 'scan' ? scanLocator : browserMode === 'target' ? targetLocator : metadataLocator"
       :title="browserMode === 'scan' ? '选择刮削路径' : browserMode === 'target' ? '选择整理目录' : '选择元数据目录'"
       @select="handleFolderSelect"
       @select-locator="handleFolderLocator"

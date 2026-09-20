@@ -71,6 +71,7 @@ class ManualJobAdvancedSettings(BaseModel):
     scrape_title: bool = True
     scrape_plot: bool = True
     nfo_enabled: bool = True
+    process_subtitle: bool = True
 
 
 class ManualJob(BaseModel):

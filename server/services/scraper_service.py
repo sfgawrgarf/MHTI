@@ -21,6 +21,7 @@ from server.services.file_io import run_file_io
 
 from server.models.emby import ConflictType
 from server.models.history import LogLevel, ScrapeLogEntry, ScrapeLogStep
+from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
 from server.models.rename import RenameRequest
 from server.models.scraper import (
@@ -102,6 +103,21 @@ def _should_use_ai(
     if has_confirmed_alias:
         return False
     return usage_mode == AIUsageMode.FORCE_USE or not has_adult_candidates
+
+
+def _resolve_task_output_preferences(
+    settings: ManualJobAdvancedSettings | None,
+    file_action: str | None,
+) -> tuple[str | None, bool]:
+    """Resolve task-level video conflict and subtitle behavior."""
+    overwrite_video = bool(
+        settings
+        and not settings.use_global_organize
+        and settings.overwrite_video
+    )
+    effective_file_action = file_action or ("overwrite" if overwrite_video else None)
+    process_subtitles = settings is None or settings.process_subtitle
+    return effective_file_action, process_subtitles
 
 
 class _P115StorageProvider:
@@ -671,6 +687,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         move_step: ScrapeLogStep,
         notify_log_update,
         link_mode: OrganizeMode | None,
+        advanced_settings: ManualJobAdvancedSettings | None,
     ) -> tuple[str, Path, Path]:
         """在本地元数据目录写入 NFO/图片（视频已在 115，不落本地）。
 
@@ -708,7 +725,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         )
 
         # NFO
-        nfo_config = await self._get_effective_nfo_config(None)
+        nfo_config = await self._get_effective_nfo_config(advanced_settings)
         nfo_path_str = ""
         if nfo_config["nfo_enabled"]:
             nfo_path = metadata_season_folder / f"{dest_path.stem}.nfo"
@@ -735,18 +752,25 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         await notify_log_update()
 
         # 图片
-        download_config = await self._get_effective_download_config(None)
+        download_config = await self._get_effective_download_config(advanced_settings)
+        overwrite_images = bool(download_config.get("overwrite_existing", False))
         if download_config["download_poster"] or download_config["download_fanart"]:
             await self._download_series_images(
                 series,
                 str(metadata_series_folder),
                 download_poster=download_config["download_poster"],
                 download_fanart=download_config["download_fanart"],
+                overwrite_existing=overwrite_images,
             )
             move_step.logs.append(ScrapeLogEntry(message="剧集图片处理完成"))
         if download_config["download_thumb"]:
             await self._download_episode_image(
-                season_info, season, episode, str(metadata_season_folder), dest_path.stem
+                season_info,
+                season,
+                episode,
+                str(metadata_season_folder),
+                dest_path.stem,
+                overwrite_existing=overwrite_images,
             )
             move_step.logs.append(ScrapeLogEntry(message="集封面图处理完成"))
         await notify_log_update()
@@ -990,6 +1014,11 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         if tmdb_id is None:
             raise ValueError("刮削输出缺少 TMDB ID")
 
+        task_settings = request.advanced_settings
+        effective_file_action, should_process_subtitles = (
+            _resolve_task_output_preferences(task_settings, file_action)
+        )
+
         result.parsed_season = season
         result.parsed_episode = episode
 
@@ -1025,8 +1054,6 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     metadata_locator=request.metadata_locator,
                 )
             )
-            should_process_subtitles = True
-
             if request.file_locator and request.output_locator:
                 move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
                 move_step.logs.append(
@@ -1069,6 +1096,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                         move_step=move_step,
                         notify_log_update=notify_log_update,
                         link_mode=request.link_mode,
+                        advanced_settings=task_settings,
                     )
                     result.nfo_path = nfo_path_str or None
                     return await self._complete_scrape_output(
@@ -1102,7 +1130,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                             output_dir=effective_output_dir,
                             link_mode=request.link_mode,
                         )
-                        rename_request.conflict_action = file_action
+                        rename_request.conflict_action = effective_file_action
                         dest_file, season_folder, series_folder = (
                             await self._organize_local_output(
                                 rename_request=rename_request,
@@ -1134,7 +1162,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     output_dir=effective_output_dir,
                     link_mode=request.link_mode,
                 )
-                rename_request.conflict_action = file_action
+                rename_request.conflict_action = effective_file_action
                 dest_file, season_folder, series_folder = await self._organize_local_output(
                     rename_request=rename_request,
                     source_display_path=source_display_path,
@@ -1184,12 +1212,14 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             download_config = await self._get_effective_download_config(
                 request.advanced_settings
             )
+            overwrite_images = bool(download_config.get("overwrite_existing", False))
             if download_config["download_poster"] or download_config["download_fanart"]:
                 await self._download_series_images(
                     series,
                     str(metadata_series_folder),
                     download_poster=download_config["download_poster"],
                     download_fanart=download_config["download_fanart"],
+                    overwrite_existing=overwrite_images,
                 )
                 image_step.logs.append(ScrapeLogEntry(message="剧集图片处理完成"))
             else:
@@ -1205,6 +1235,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     episode,
                     str(metadata_season_folder),
                     dest_file.stem,
+                    overwrite_existing=overwrite_images,
                 )
                 image_step.logs.append(ScrapeLogEntry(message="集封面图处理完成"))
             else:
