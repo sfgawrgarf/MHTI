@@ -32,9 +32,10 @@ export async function initializeApiBaseUrl(): Promise<void> {
   try {
     // This bootstrap endpoint is always served by the page origin so it can
     // tell the already-built frontend where the API is exposed at runtime.
-    const response = await axios.get<{ apiBaseUrl?: string }>('/api/config/frontend', {
-      timeout: 5000,
-    })
+    const response = await axios.get<{ apiBaseUrl?: string }>(
+      `${normalizeBaseUrl(DEFAULT_API_BASE_URL)}/config/frontend`,
+      { timeout: 5000 }
+    )
     if (response.data.apiBaseUrl?.trim()) {
       api.defaults.baseURL = normalizeBaseUrl(response.data.apiBaseUrl)
     }

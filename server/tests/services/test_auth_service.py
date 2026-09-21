@@ -425,3 +425,47 @@ class TestAuthServiceAsync:
             await auth_service.verify_credentials("admin", "second-password"),
         ])
         assert valid_new_passwords == 1
+
+    @pytest.mark.asyncio
+    async def test_username_change_preserves_successful_history_without_rewriting_failures(
+        self, auth_service, temp_db, monkeypatch
+    ):
+        async with aiosqlite.connect(temp_db) as db:
+            await configure_connection(db)
+            await create_all_tables(db)
+            password_hash, salt = auth_service._hash_password("password")
+            await db.execute(
+                "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
+                ("old-name", f"{salt}${password_hash}"),
+            )
+            await db.executemany(
+                """INSERT INTO login_history (username, success)
+                   VALUES (?, ?)""",
+                [("old-name", 1), ("old-name", 0)],
+            )
+            await db.commit()
+
+        class IsolatedManager:
+            @asynccontextmanager
+            async def get_connection(self):
+                async with aiosqlite.connect(temp_db) as db:
+                    await configure_connection(db)
+                    yield db
+
+        async def get_manager():
+            return IsolatedManager()
+
+        monkeypatch.setattr(
+            "server.services.auth_service.get_db_manager", get_manager
+        )
+
+        success, _ = await auth_service.update_username(
+            "old-name", "new-name", "password"
+        )
+
+        assert success is True
+        async with aiosqlite.connect(temp_db) as db:
+            cursor = await db.execute(
+                "SELECT username, success FROM login_history ORDER BY id"
+            )
+            assert await cursor.fetchall() == [("new-name", 1), ("old-name", 0)]

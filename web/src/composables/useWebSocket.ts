@@ -54,7 +54,8 @@ const state = getGlobalState()
 function getWebSocketUrl(): string {
   const apiUrl = new URL(getApiBaseUrl(), window.location.origin)
   const protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${apiUrl.host}/ws`
+  const proxyPrefix = apiUrl.pathname.replace(/\/api\/?$/, '').replace(/\/$/, '')
+  return `${protocol}//${apiUrl.host}${proxyPrefix}/ws`
 }
 
 // 重连配置

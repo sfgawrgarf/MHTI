@@ -951,6 +951,16 @@ class WatcherService:
         await self._ensure_db()
         folder = await self.get_folder(folder_id)
         if folder is None:
+            # Heal legacy/runtime drift even though the API still reports that
+            # no persisted row was deleted.
+            async with self._lifecycle_lock:
+                if folder_id in self._strategies:
+                    await self._stop_folder_watch(folder_id)
+                self._pending_files = {
+                    path: pending
+                    for path, pending in self._pending_files.items()
+                    if pending.folder.id != folder_id
+                }
             return False
 
         async with self._lifecycle_lock:

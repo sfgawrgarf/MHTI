@@ -320,7 +320,8 @@ class AuthService:
                     (new_username, row[0]),
                 )
                 await db.execute(
-                    "UPDATE login_history SET username = ? WHERE username = ?",
+                    """UPDATE login_history SET username = ?
+                       WHERE username = ? AND success = 1""",
                     (new_username, current_username),
                 )
                 await db.commit()

@@ -147,12 +147,12 @@ describe('useWebSocket message lifecycle', () => {
 
   it('uses the runtime API origin for WebSocket connections', async () => {
     const { default: api } = await import('@/api')
-    api.defaults.baseURL = 'https://api.example.test/api'
+    api.defaults.baseURL = 'https://api.example.test/mhti/api'
     const { useWebSocket } = await import('./useWebSocket')
 
     useWebSocket().connect()
 
-    expect(FakeWebSocket.instances[0]!.url).toBe('wss://api.example.test/ws')
+    expect(FakeWebSocket.instances[0]!.url).toBe('wss://api.example.test/mhti/ws')
   })
 
   it('ignores a stale close event after a newer connection is established', async () => {

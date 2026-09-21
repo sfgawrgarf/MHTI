@@ -415,6 +415,30 @@ async def test_delete_folder_restores_runtime_when_database_delete_fails(
 
 
 @pytest.mark.asyncio
+async def test_delete_missing_folder_cleans_stale_runtime_state(temp_db) -> None:
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.commit()
+    service = WatcherService(temp_db)
+    stale = WatchedFolder(id="stale", path="/media/stale")
+    strategy = FakeStrategy(stale)
+    service._strategies[stale.id] = strategy
+    service._pending_files["/media/stale/episode.mkv"] = PendingFile(
+        path="/media/stale/episode.mkv",
+        detected_at=0,
+        folder=stale,
+    )
+
+    deleted = await service.delete_folder(stale.id)
+
+    assert deleted is False
+    assert strategy.stopped is True
+    assert stale.id not in service._strategies
+    assert service._pending_files == {}
+
+
+@pytest.mark.asyncio
 async def test_legacy_watcher_intervals_are_normalized_before_loading(temp_db) -> None:
     async with aiosqlite.connect(temp_db) as db:
         await configure_connection(db)
