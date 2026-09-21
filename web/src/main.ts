@@ -4,6 +4,7 @@ import App from './App.vue'
 import router from './router'
 import { useThemeStore } from './stores/theme'
 import { useAuthStore } from './stores/auth'
+import { initializeApiBaseUrl } from './api'
 import './style.css'
 import './styles/ios-theme.css'
 
@@ -17,10 +18,12 @@ app.use(router)
 const themeStore = useThemeStore()
 themeStore.initTheme()
 
-// 初始化认证状态后再挂载应用
-const authStore = useAuthStore()
-authStore.checkAuth().then(() => {
-  router.isReady().then(() => {
-    app.mount('#app')
-  })
-})
+async function bootstrap() {
+  await initializeApiBaseUrl()
+  const authStore = useAuthStore()
+  await authStore.checkAuth()
+  await router.isReady()
+  app.mount('#app')
+}
+
+void bootstrap()

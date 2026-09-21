@@ -103,9 +103,17 @@ class SchedulerService:
                     )
                 # A process restart can leave a claimed execution in "running".
                 # Requeue it immediately within the same bounded retry policy.
+                await db.execute(
+                    """UPDATE scheduled_tasks
+                       SET last_status = 'failed',
+                           last_error = '上次执行因服务重启而中断',
+                           next_run = NULL
+                       WHERE last_status = 'running' AND enabled = 0"""
+                )
                 cursor = await db.execute(
                     """SELECT id, cron_expression, retry_count
-                       FROM scheduled_tasks WHERE last_status = 'running'"""
+                       FROM scheduled_tasks
+                       WHERE last_status = 'running' AND enabled = 1"""
                 )
                 interrupted_rows = await cursor.fetchall()
                 recovered_at = datetime.now()

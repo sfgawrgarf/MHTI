@@ -2,6 +2,7 @@
  * WebSocket 客户端 - 实时接收刮削进度
  */
 import { ref, computed } from 'vue'
+import { getApiBaseUrl } from '@/api'
 
 // WebSocket 消息类型
 export interface WSMessage {
@@ -50,8 +51,12 @@ function getGlobalState(): WebSocketGlobalState {
 
 const state = getGlobalState()
 
-// WebSocket 服务器地址 - 通过 Nginx 代理连接，自动适配协议和端口
-const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+function getWebSocketUrl(): string {
+  const apiUrl = new URL(getApiBaseUrl(), window.location.origin)
+  const protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+  const proxyPrefix = apiUrl.pathname.replace(/\/api\/?$/, '').replace(/\/$/, '')
+  return `${protocol}//${apiUrl.host}${proxyPrefix}/ws`
+}
 
 // 重连配置
 const RECONNECT_DELAY = 3000
@@ -140,7 +145,7 @@ function connect(): void {
   state.reconnectEnabled = true
 
   try {
-    const socket = new WebSocket(WS_URL)
+    const socket = new WebSocket(getWebSocketUrl())
     state.ws = socket
 
     socket.onopen = () => {

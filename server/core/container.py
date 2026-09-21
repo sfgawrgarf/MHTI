@@ -155,7 +155,7 @@ async def init_services() -> None:
     from server.services.rename_service import RenameService
     from server.services.subtitle_service import SubtitleService
     from server.services.template_service import TemplateService
-    from server.services.websocket_manager import ConnectionManager
+    from server.services.websocket_manager import get_ws_manager
 
     # Register core services (stateless, can be singletons)
     container.register(Services.CONFIG, ConfigService)
@@ -165,8 +165,8 @@ async def init_services() -> None:
     container.register(Services.SUBTITLE, SubtitleService)
     container.register(Services.TEMPLATE, TemplateService)
 
-    # Register WebSocket manager as singleton instance
-    container.register_instance(Services.WEBSOCKET, ConnectionManager())
+    # Use the same singleton as the API, notifier and logging runtime.
+    container.register_instance(Services.WEBSOCKET, get_ws_manager())
 
     # Services with dependencies (IMAGE, TMDB, EMBY, SCRAPER) will be created lazily
     # via their respective get_*_service() functions

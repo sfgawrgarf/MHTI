@@ -639,6 +639,7 @@ class WatcherService:
         self._process_task: asyncio.Task | None = None
         self._initial_scan_task: asyncio.Task | None = None
         self._lifecycle_lock = asyncio.Lock()
+        self._folder_mutation_lock = asyncio.Lock()
 
     async def _ensure_db(self) -> None:
         """Ensure database directory exists and run migrations."""
@@ -699,34 +700,16 @@ class WatcherService:
             await db.commit()
 
     async def create_folder(self, folder: WatchedFolderCreate) -> WatchedFolder:
+        """Serialize folder CRUD so runtime snapshots cannot become stale."""
+        async with self._folder_mutation_lock:
+            return await self._create_folder(folder)
+
+    async def _create_folder(self, folder: WatchedFolderCreate) -> WatchedFolder:
         """Create a new watched folder."""
         await self._ensure_db()
 
         folder_id = str(uuid.uuid4())[:8]
         now = datetime.now()
-
-        async with db_connection(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO watched_folders
-                (id, path, enabled, mode, scan_interval_seconds, file_stable_seconds, auto_scrape, output_dir, provider, file_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    folder_id,
-                    folder.path,
-                    1 if folder.enabled else 0,
-                    folder.mode.value,
-                    folder.scan_interval_seconds,
-                    folder.file_stable_seconds,
-                    1 if folder.auto_scrape else 0,
-                    folder.output_dir,
-                    folder.provider,
-                    folder.file_id,
-                    now.isoformat(),
-                ),
-            )
-            await db.commit()
 
         new_folder = WatchedFolder(
             id=folder_id,
@@ -743,11 +726,47 @@ class WatcherService:
             created_at=now,
         )
 
-        # 如果服务正在运行且文件夹启用，立即启动监控
-        if folder.enabled:
-            async with self._lifecycle_lock:
-                if self._running:
+        # Runtime and persistence form one logical change. If either half
+        # fails, compensate the other half before returning an error.
+        async with self._lifecycle_lock:
+            started = False
+            try:
+                if folder.enabled and self._running:
                     await self._start_folder_watch(new_folder)
+                    started = True
+                async with db_connection(self.db_path) as db:
+                    await db.execute(
+                        """
+                        INSERT INTO watched_folders
+                        (id, path, enabled, mode, scan_interval_seconds, file_stable_seconds, auto_scrape, output_dir, provider, file_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            folder_id,
+                            folder.path,
+                            1 if folder.enabled else 0,
+                            folder.mode.value,
+                            folder.scan_interval_seconds,
+                            folder.file_stable_seconds,
+                            1 if folder.auto_scrape else 0,
+                            folder.output_dir,
+                            folder.provider,
+                            folder.file_id,
+                            now.isoformat(),
+                        ),
+                    )
+                    await db.commit()
+            except BaseException:
+                if started:
+                    try:
+                        await self._stop_folder_watch(folder_id)
+                    except Exception:
+                        self._status = WatcherStatus.ERROR
+                        logger.exception(
+                            "Unable to roll back watcher after create failed: %s",
+                            folder_id,
+                        )
+                raise
 
         return new_folder
 
@@ -833,6 +852,13 @@ class WatcherService:
     async def update_folder(
         self, folder_id: str, update: WatchedFolderUpdate
     ) -> WatchedFolder | None:
+        """Serialize folder updates across database and runtime state."""
+        async with self._folder_mutation_lock:
+            return await self._update_folder(folder_id, update)
+
+    async def _update_folder(
+        self, folder_id: str, update: WatchedFolderUpdate
+    ) -> WatchedFolder | None:
         """Update a watched folder."""
         await self._ensure_db()
 
@@ -843,8 +869,8 @@ class WatcherService:
         candidate_data = folder.model_dump()
         for field_name in update.model_fields_set:
             candidate_data[field_name] = getattr(update, field_name)
-        # Validate the merged state before persisting a partial update.
-        WatchedFolder(**candidate_data)
+        # Validate the merged state before changing runtime or persistence.
+        updated_folder = WatchedFolder(**candidate_data)
 
         updates = []
         values = []
@@ -877,50 +903,99 @@ class WatcherService:
             updates.append("file_id = ?")
             values.append(update.file_id)
 
-        if updates:
-            values.append(folder_id)
-            async with db_connection(self.db_path) as db:
-                await db.execute(
-                    f"UPDATE watched_folders SET {', '.join(updates)} WHERE id = ?",
-                    values,
-                )
-                await db.commit()
+        if not updates:
+            return folder
 
-        updated_folder = await self.get_folder(folder_id)
+        values.append(folder_id)
+        async with self._lifecycle_lock:
+            runtime_changed = False
+            try:
+                if self._running:
+                    runtime_changed = True
+                    await self._restart_folder_watch(updated_folder)
+                async with db_connection(self.db_path) as db:
+                    cursor = await db.execute(
+                        f"UPDATE watched_folders SET {', '.join(updates)} WHERE id = ?",
+                        values,
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(f"Watcher folder disappeared during update: {folder_id}")
+                    await db.commit()
+            except BaseException:
+                if runtime_changed:
+                    try:
+                        await self._restart_folder_watch(folder)
+                    except Exception:
+                        self._status = WatcherStatus.ERROR
+                        logger.exception(
+                            "Unable to restore previous watcher after update failed: %s",
+                            folder_id,
+                        )
+                raise
 
         # Pending provider identity survives configuration changes, while new
         # folder settings must apply even if the service is currently stopped.
-        if updated_folder:
-            for pending in self._pending_files.values():
-                if pending.folder.id == updated_folder.id:
-                    pending.folder = updated_folder
-            async with self._lifecycle_lock:
-                if self._running:
-                    await self._restart_folder_watch(updated_folder)
+        for pending in self._pending_files.values():
+            if pending.folder.id == updated_folder.id:
+                pending.folder = updated_folder
 
         return updated_folder
 
     async def delete_folder(self, folder_id: str) -> bool:
+        """Serialize deletion with other folder mutations."""
+        async with self._folder_mutation_lock:
+            return await self._delete_folder(folder_id)
+
+    async def _delete_folder(self, folder_id: str) -> bool:
         """Delete a watched folder."""
         await self._ensure_db()
+        folder = await self.get_folder(folder_id)
+        if folder is None:
+            # Heal legacy/runtime drift even though the API still reports that
+            # no persisted row was deleted.
+            async with self._lifecycle_lock:
+                if folder_id in self._strategies:
+                    await self._stop_folder_watch(folder_id)
+                self._pending_files = {
+                    path: pending
+                    for path, pending in self._pending_files.items()
+                    if pending.folder.id != folder_id
+                }
+            return False
 
-        # 先停止该文件夹的监控
         async with self._lifecycle_lock:
-            if folder_id in self._strategies:
+            stopped = folder_id in self._strategies
+            if stopped:
                 await self._stop_folder_watch(folder_id)
+            try:
+                async with db_connection(self.db_path) as db:
+                    cursor = await db.execute(
+                        "DELETE FROM watched_folders WHERE id = ?",
+                        (folder_id,),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(
+                            f"Watcher folder disappeared during delete: {folder_id}"
+                        )
+                    await db.commit()
+            except BaseException:
+                if stopped and self._running and folder.enabled:
+                    try:
+                        await self._start_folder_watch(folder)
+                    except Exception:
+                        self._status = WatcherStatus.ERROR
+                        logger.exception(
+                            "Unable to restore watcher after delete failed: %s",
+                            folder_id,
+                        )
+                raise
+
             self._pending_files = {
                 path: pending
                 for path, pending in self._pending_files.items()
                 if pending.folder.id != folder_id
             }
-
-        async with db_connection(self.db_path) as db:
-            cursor = await db.execute(
-                "DELETE FROM watched_folders WHERE id = ?",
-                (folder_id,),
-            )
-            await db.commit()
-            return cursor.rowcount > 0
+        return True
 
     async def get_status(self) -> WatcherStatusResponse:
         """Get watcher status."""

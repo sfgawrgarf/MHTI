@@ -320,3 +320,152 @@ class TestAuthServiceAsync:
             count = (await cursor.fetchone())[0]
         assert sorted(results) == [False, True]
         assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_password_change_and_session_revocation_are_atomic(
+        self, auth_service, temp_db, monkeypatch
+    ):
+        async with aiosqlite.connect(temp_db) as db:
+            await configure_connection(db)
+            await create_all_tables(db)
+            password_hash, salt = auth_service._hash_password("old-password")
+            cursor = await db.execute(
+                "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
+                ("admin", f"{salt}${password_hash}"),
+            )
+            user_id = cursor.lastrowid
+            await db.executemany(
+                """INSERT INTO sessions
+                   (id, user_id, refresh_token_hash, expires_at)
+                   VALUES (?, ?, ?, '2099-01-01T00:00:00+00:00')""",
+                [
+                    ("current", user_id, "current-hash"),
+                    ("other", user_id, "other-hash"),
+                ],
+            )
+            await db.commit()
+
+        class IsolatedManager:
+            @asynccontextmanager
+            async def get_connection(self):
+                async with aiosqlite.connect(temp_db) as db:
+                    await configure_connection(db)
+                    yield db
+
+        async def get_manager():
+            return IsolatedManager()
+
+        monkeypatch.setattr(
+            "server.services.auth_service.get_db_manager", get_manager
+        )
+
+        success, revoked = await auth_service.change_password(
+            "admin",
+            "old-password",
+            "new-password",
+            except_session_id="current",
+        )
+
+        assert success is True
+        assert revoked == ["other"]
+        assert await auth_service.verify_credentials("admin", "new-password") is True
+        async with aiosqlite.connect(temp_db) as db:
+            cursor = await db.execute("SELECT id FROM sessions ORDER BY id")
+            assert await cursor.fetchall() == [("current",)]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_password_changes_only_accept_old_password_once(
+        self, auth_service, temp_db, monkeypatch
+    ):
+        async with aiosqlite.connect(temp_db) as db:
+            await configure_connection(db)
+            await create_all_tables(db)
+            password_hash, salt = auth_service._hash_password("old-password")
+            cursor = await db.execute(
+                "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
+                ("admin", f"{salt}${password_hash}"),
+            )
+            user_id = cursor.lastrowid
+            await db.execute(
+                """INSERT INTO sessions
+                   (id, user_id, refresh_token_hash, expires_at)
+                   VALUES ('current', ?, 'current-hash', '2099-01-01T00:00:00+00:00')""",
+                (user_id,),
+            )
+            await db.commit()
+
+        class IsolatedManager:
+            @asynccontextmanager
+            async def get_connection(self):
+                async with aiosqlite.connect(temp_db) as db:
+                    await configure_connection(db)
+                    yield db
+
+        async def get_manager():
+            return IsolatedManager()
+
+        monkeypatch.setattr(
+            "server.services.auth_service.get_db_manager", get_manager
+        )
+
+        results = await asyncio.gather(
+            auth_service.change_password(
+                "admin", "old-password", "first-password",
+                except_session_id="current",
+            ),
+            auth_service.change_password(
+                "admin", "old-password", "second-password",
+                except_session_id="current",
+            ),
+        )
+
+        assert sum(success for success, _ in results) == 1
+        valid_new_passwords = sum([
+            await auth_service.verify_credentials("admin", "first-password"),
+            await auth_service.verify_credentials("admin", "second-password"),
+        ])
+        assert valid_new_passwords == 1
+
+    @pytest.mark.asyncio
+    async def test_username_change_preserves_successful_history_without_rewriting_failures(
+        self, auth_service, temp_db, monkeypatch
+    ):
+        async with aiosqlite.connect(temp_db) as db:
+            await configure_connection(db)
+            await create_all_tables(db)
+            password_hash, salt = auth_service._hash_password("password")
+            await db.execute(
+                "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
+                ("old-name", f"{salt}${password_hash}"),
+            )
+            await db.executemany(
+                """INSERT INTO login_history (username, success)
+                   VALUES (?, ?)""",
+                [("old-name", 1), ("old-name", 0)],
+            )
+            await db.commit()
+
+        class IsolatedManager:
+            @asynccontextmanager
+            async def get_connection(self):
+                async with aiosqlite.connect(temp_db) as db:
+                    await configure_connection(db)
+                    yield db
+
+        async def get_manager():
+            return IsolatedManager()
+
+        monkeypatch.setattr(
+            "server.services.auth_service.get_db_manager", get_manager
+        )
+
+        success, _ = await auth_service.update_username(
+            "old-name", "new-name", "password"
+        )
+
+        assert success is True
+        async with aiosqlite.connect(temp_db) as db:
+            cursor = await db.execute(
+                "SELECT username, success FROM login_history ORDER BY id"
+            )
+            assert await cursor.fetchall() == [("new-name", 1), ("old-name", 0)]

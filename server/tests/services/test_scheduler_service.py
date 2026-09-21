@@ -297,6 +297,34 @@ async def test_running_task_is_recovered_after_restart(temp_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_disabled_running_task_is_not_requeued_after_restart(temp_db) -> None:
+    seed = SchedulerService(temp_db)
+    task = await seed.create_task(
+        ScheduledTaskCreate(
+            name="disabled interrupted",
+            folder_path="/media/tv",
+            cron_expression="* * * * *",
+        )
+    )
+    async with db_connection(temp_db) as db:
+        await db.execute(
+            """UPDATE scheduled_tasks
+               SET enabled = 0, last_status = 'running', next_run = NULL
+               WHERE id = ?""",
+            (task.id,),
+        )
+        await db.commit()
+
+    recovered = await SchedulerService(temp_db).get_task(task.id)
+
+    assert recovered is not None
+    assert recovered.enabled is False
+    assert recovered.last_status == "failed"
+    assert recovered.last_error == "上次执行因服务重启而中断"
+    assert recovered.next_run is None
+
+
+@pytest.mark.asyncio
 async def test_completion_uses_cron_updated_while_task_was_running(temp_db) -> None:
     service = SchedulerService(temp_db)
     task = await service.create_task(

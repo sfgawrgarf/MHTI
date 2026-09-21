@@ -22,10 +22,11 @@ class AuthContext:
 
 async def authenticate_access_token(token: str) -> AuthContext | None:
     """Validate the JWT and ensure its backing session has not been revoked."""
-    username, session_id = auth_service.verify_token(token)
-    if not username or not session_id:
+    token_username, session_id = auth_service.verify_token(token)
+    if not token_username or not session_id:
         return None
-    if not await session_service.is_session_active(session_id, username):
+    username = await session_service.get_active_session_username(session_id)
+    if username is None:
         return None
     return AuthContext(username=username, session_id=session_id)
 

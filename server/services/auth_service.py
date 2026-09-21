@@ -247,48 +247,92 @@ class AuthService:
         hours = EXPIRE_HOURS_MAP.get(expire_option, 24 * 7)
         return hours * 3600
 
-    async def change_password(self, username: str, old_password: str, new_password: str) -> bool:
-        """Change user password."""
-        if not await self.verify_credentials(username, old_password):
-            return False
-
+    async def change_password(
+        self,
+        username: str,
+        old_password: str,
+        new_password: str,
+        *,
+        except_session_id: str,
+    ) -> tuple[bool, list[str]]:
+        """Change a password and revoke other sessions in one transaction."""
         hash_value, salt = self._hash_password(new_password)
         password_hash = f"{salt}${hash_value}"
 
         manager = await get_db_manager()
         async with manager.get_connection() as db:
-            await db.execute(
-                "UPDATE admin SET password_hash = ? WHERE username = ?",
-                (password_hash, username)
-            )
-            await db.commit()
-            logger.info(f"Password changed for user: {username}")
-            return True
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute(
+                    "SELECT id, password_hash FROM admin WHERE username = ?",
+                    (username,),
+                )
+                row = await cursor.fetchone()
+                if row is None or not self._verify_password(old_password, row[1]):
+                    await db.rollback()
+                    return False, []
+
+                user_id = int(row[0])
+                cursor = await db.execute(
+                    "SELECT id FROM sessions WHERE user_id = ? AND id != ?",
+                    (user_id, except_session_id),
+                )
+                revoked_ids = [str(item[0]) for item in await cursor.fetchall()]
+                await db.execute(
+                    "UPDATE admin SET password_hash = ? WHERE id = ?",
+                    (password_hash, user_id),
+                )
+                await db.execute(
+                    "DELETE FROM sessions WHERE user_id = ? AND id != ?",
+                    (user_id, except_session_id),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+        logger.info("Password changed for user: %s", username)
+        return True, revoked_ids
 
     async def update_username(self, current_username: str, new_username: str, password: str) -> tuple[bool, str]:
         """Update username. Returns (success, message)."""
-        # 验证密码
-        if not await self.verify_credentials(current_username, password):
-            return False, "密码验证失败"
-
-        # 检查新用户名是否已存在
         manager = await get_db_manager()
         async with manager.get_connection() as db:
-            cursor = await db.execute(
-                "SELECT id FROM admin WHERE username = ? AND username != ?",
-                (new_username, current_username)
-            )
-            if await cursor.fetchone():
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute(
+                    "SELECT id, password_hash FROM admin WHERE username = ?",
+                    (current_username,),
+                )
+                row = await cursor.fetchone()
+                if row is None or not self._verify_password(password, row[1]):
+                    await db.rollback()
+                    return False, "密码验证失败"
+                cursor = await db.execute(
+                    "SELECT 1 FROM admin WHERE username = ? AND id != ?",
+                    (new_username, row[0]),
+                )
+                if await cursor.fetchone():
+                    await db.rollback()
+                    return False, "用户名已存在"
+                await db.execute(
+                    "UPDATE admin SET username = ? WHERE id = ?",
+                    (new_username, row[0]),
+                )
+                await db.execute(
+                    """UPDATE login_history SET username = ?
+                       WHERE username = ? AND success = 1""",
+                    (new_username, current_username),
+                )
+                await db.commit()
+            except aiosqlite.IntegrityError:
+                await db.rollback()
                 return False, "用户名已存在"
-
-            # 更新用户名
-            await db.execute(
-                "UPDATE admin SET username = ? WHERE username = ?",
-                (new_username, current_username)
-            )
-            await db.commit()
-            logger.info(f"Username changed from {current_username} to {new_username}")
-            return True, "用户名修改成功"
+            except BaseException:
+                await db.rollback()
+                raise
+        logger.info("Username changed from %s to %s", current_username, new_username)
+        return True, "用户名修改成功"
 
     async def get_user_profile(self, username: str) -> dict | None:
         """Get user profile including avatar."""

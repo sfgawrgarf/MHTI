@@ -58,14 +58,33 @@ async def test_access_token_requires_active_session(monkeypatch: pytest.MonkeyPa
         "server.core.auth.auth_service.verify_token",
         lambda _token: ("admin", "revoked-session"),
     )
-    active_check = AsyncMock(return_value=False)
+    active_check = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        "server.core.auth.session_service.is_session_active",
+        "server.core.auth.session_service.get_active_session_username",
         active_check,
     )
 
     assert await authenticate_access_token("signed-token") is None
-    active_check.assert_awaited_once_with("revoked-session", "admin")
+    active_check.assert_awaited_once_with("revoked-session")
+
+
+@pytest.mark.asyncio
+async def test_access_token_uses_current_username_after_rename(monkeypatch) -> None:
+    """A rename keeps the current session valid without trusting a stale JWT subject."""
+    monkeypatch.setattr(
+        "server.core.auth.auth_service.verify_token",
+        lambda _token: ("old-name", "active-session"),
+    )
+    monkeypatch.setattr(
+        "server.core.auth.session_service.get_active_session_username",
+        AsyncMock(return_value="new-name"),
+    )
+
+    auth = await authenticate_access_token("signed-token")
+
+    assert auth is not None
+    assert auth.username == "new-name"
+    assert auth.session_id == "active-session"
 
 
 def test_websocket_requires_authentication(client: TestClient) -> None:

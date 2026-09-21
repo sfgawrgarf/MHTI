@@ -60,21 +60,31 @@ def _generate_device_name(user_agent: str | None, ip_address: str | None) -> str
 class SessionService:
     """Service for managing user sessions with database connection pool."""
 
-    async def is_session_active(self, session_id: str, username: str) -> bool:
-        """Return whether a non-expired session still belongs to the JWT subject."""
+    async def get_active_session_username(self, session_id: str) -> str | None:
+        """Return the current username attached to an active session."""
         now = datetime.now(timezone.utc).isoformat()
         async with db_context() as db:
             cursor = await db.execute(
                 """
-                SELECT 1
+                SELECT a.username
                 FROM sessions AS s
                 JOIN admin AS a ON a.id = s.user_id
-                WHERE s.id = ? AND a.username = ? AND s.expires_at > ?
+                WHERE s.id = ? AND s.expires_at > ?
                 LIMIT 1
                 """,
-                (session_id, username, now),
+                (session_id, now),
             )
-            return await cursor.fetchone() is not None
+            row = await cursor.fetchone()
+            return str(row[0]) if row is not None else None
+
+    async def is_session_active(
+        self, session_id: str, username: str | None = None
+    ) -> bool:
+        """Return whether a non-expired session still belongs to the JWT subject."""
+        active_username = await self.get_active_session_username(session_id)
+        return active_username is not None and (
+            username is None or active_username == username
+        )
 
     async def _get_max_sessions(self) -> int:
         """Get max sessions from config."""
@@ -108,10 +118,24 @@ class SessionService:
         if not device_name:
             device_name = _generate_device_name(user_agent, ip_address)
 
-        # Cleanup excess sessions
-        await self._cleanup_excess_sessions(user_id)
+        max_sessions = max(1, await self._get_max_sessions())
 
         async with db_context() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                """SELECT id FROM sessions WHERE user_id = ?
+                   ORDER BY last_used_at ASC, created_at ASC""",
+                (user_id,),
+            )
+            existing_ids = [str(row[0]) for row in await cursor.fetchall()]
+            remove_count = max(0, len(existing_ids) - max_sessions + 1)
+            evicted_ids = existing_ids[:remove_count]
+            if evicted_ids:
+                placeholders = ",".join("?" * len(evicted_ids))
+                await db.execute(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})",
+                    evicted_ids,
+                )
             await db.execute(
                 """
                 INSERT INTO sessions
@@ -132,35 +156,23 @@ class SessionService:
             )
             await db.commit()
 
+        await self.close_session_connections(evicted_ids)
         logger.info(f"Session created: {session_id[:8]}... for user {user_id}")
         return session_id, refresh_token
 
-    async def _cleanup_excess_sessions(self, user_id: int) -> None:
-        """Remove oldest sessions if exceeding max limit."""
-        max_sessions = await self._get_max_sessions()
+    async def close_session_connections(self, session_ids: list[str]) -> None:
+        """Close live WebSockets after their backing sessions were deleted."""
+        if not session_ids:
+            return
+        from server.services.websocket_manager import get_ws_manager
 
-        async with db_context() as db:
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM sessions WHERE user_id = ?", (user_id,)
-            )
-            row = await cursor.fetchone()
-            count = row[0] if row else 0
-
-            if count >= max_sessions:
-                # Delete oldest sessions
-                await db.execute(
-                    """
-                    DELETE FROM sessions WHERE id IN (
-                        SELECT id FROM sessions
-                        WHERE user_id = ?
-                        ORDER BY last_used_at ASC
-                        LIMIT ?
-                    )
-                    """,
-                    (user_id, count - max_sessions + 1),
-                )
-                await db.commit()
-                logger.info(f"Cleaned up {count - max_sessions + 1} old sessions for user {user_id}")
+        manager = get_ws_manager()
+        results = await asyncio.gather(
+            *(manager.close_session(session_id) for session_id in session_ids),
+            return_exceptions=True,
+        )
+        if any(isinstance(result, BaseException) for result in results):
+            logger.error("Some revoked-session WebSockets could not be closed")
 
     async def verify_refresh_token(self, refresh_token: str) -> tuple[str | None, int | None]:
         """
@@ -220,15 +232,7 @@ class SessionService:
             if deleted:
                 logger.info(f"Session revoked: {session_id[:8]}...")
         if deleted:
-            from server.services.websocket_manager import get_ws_manager
-
-            try:
-                await get_ws_manager().close_session(session_id)
-            except Exception:
-                logger.exception(
-                    "Session %s was revoked but its WebSocket could not be closed",
-                    session_id[:8],
-                )
+            await self.close_session_connections([session_id])
         return deleted
 
     async def revoke_all_sessions(self, user_id: int, except_session_id: str | None = None) -> int:
@@ -260,16 +264,7 @@ class SessionService:
             await db.commit()
             count = cursor.rowcount
             logger.info(f"Revoked {count} sessions for user {user_id}")
-        if revoked_ids:
-            from server.services.websocket_manager import get_ws_manager
-
-            manager = get_ws_manager()
-            results = await asyncio.gather(
-                *(manager.close_session(session_id) for session_id in revoked_ids),
-                return_exceptions=True,
-            )
-            if any(isinstance(result, BaseException) for result in results):
-                logger.error("Some revoked-session WebSockets could not be closed")
+        await self.close_session_connections(revoked_ids)
         return count
 
     async def get_sessions(self, user_id: int, current_session_id: str | None = None) -> list[SessionInfo]:
