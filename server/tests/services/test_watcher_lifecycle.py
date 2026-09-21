@@ -330,6 +330,40 @@ async def test_explicit_null_clears_optional_folder_fields(temp_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_legacy_watcher_intervals_are_normalized_before_loading(temp_db) -> None:
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.execute(
+            """INSERT INTO watched_folders
+               (id, path, scan_interval_seconds, file_stable_seconds, created_at)
+               VALUES ('legacy-low', '/media/low', 1, -2, '2026-01-01')"""
+        )
+        await db.execute(
+            """INSERT INTO watched_folders
+               (id, path, scan_interval_seconds, file_stable_seconds, created_at)
+               VALUES ('legacy-high', '/media/high', 999999, 999999, '2026-01-01')"""
+        )
+        await db.execute(
+            """INSERT INTO watched_folders
+               (id, path, scan_interval_seconds, file_stable_seconds, created_at)
+               VALUES ('legacy-types', '/media/types', 'invalid', 5.5, '2026-01-01')"""
+        )
+        await db.commit()
+
+    folders, total = await WatcherService(temp_db).list_folders()
+    by_id = {folder.id: folder for folder in folders}
+
+    assert total == 3
+    assert by_id["legacy-low"].scan_interval_seconds == 5
+    assert by_id["legacy-low"].file_stable_seconds == 0
+    assert by_id["legacy-high"].scan_interval_seconds == 86400
+    assert by_id["legacy-high"].file_stable_seconds == 86400
+    assert by_id["legacy-types"].scan_interval_seconds == 60
+    assert by_id["legacy-types"].file_stable_seconds == 5
+
+
+@pytest.mark.asyncio
 async def test_pending_file_is_removed_only_after_job_creation_succeeds(
     temp_db,
     tmp_path,

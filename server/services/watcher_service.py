@@ -23,6 +23,9 @@ from server.models.organize import OrganizeMode
 from server.models.storage import is_p115_virtual_path
 from server.models.watcher import (
     DetectedFile,
+    MAX_WATCH_INTERVAL_SECONDS,
+    MIN_FILE_STABLE_SECONDS,
+    MIN_SCAN_INTERVAL_SECONDS,
     WatchedFolder,
     WatchedFolderCreate,
     WatchedFolderUpdate,
@@ -652,6 +655,47 @@ class WatcherService:
                 await db.execute("ALTER TABLE watched_folders ADD COLUMN provider TEXT DEFAULT 'local'")
             if "file_id" not in columns:
                 await db.execute("ALTER TABLE watched_folders ADD COLUMN file_id TEXT")
+            # Normalize legacy values before stricter model bounds deserialize
+            # persisted rows.
+            await db.execute(
+                """UPDATE watched_folders
+                       SET scan_interval_seconds = CASE
+                           WHEN scan_interval_seconds IS NULL THEN 60
+                           WHEN typeof(scan_interval_seconds) NOT IN ('integer', 'real') THEN 60
+                           WHEN scan_interval_seconds < ? THEN ?
+                           WHEN scan_interval_seconds > ? THEN ?
+                           ELSE CAST(scan_interval_seconds AS INTEGER)
+                       END,
+                       file_stable_seconds = CASE
+                           WHEN file_stable_seconds IS NULL THEN 30
+                           WHEN typeof(file_stable_seconds) NOT IN ('integer', 'real') THEN 30
+                           WHEN file_stable_seconds < ? THEN ?
+                           WHEN file_stable_seconds > ? THEN ?
+                           ELSE CAST(file_stable_seconds AS INTEGER)
+                       END
+                   WHERE scan_interval_seconds IS NULL
+                      OR typeof(scan_interval_seconds) != 'integer'
+                      OR scan_interval_seconds < ?
+                      OR scan_interval_seconds > ?
+                      OR file_stable_seconds IS NULL
+                      OR typeof(file_stable_seconds) != 'integer'
+                      OR file_stable_seconds < ?
+                      OR file_stable_seconds > ?""",
+                (
+                    MIN_SCAN_INTERVAL_SECONDS,
+                    MIN_SCAN_INTERVAL_SECONDS,
+                    MAX_WATCH_INTERVAL_SECONDS,
+                    MAX_WATCH_INTERVAL_SECONDS,
+                    MIN_FILE_STABLE_SECONDS,
+                    MIN_FILE_STABLE_SECONDS,
+                    MAX_WATCH_INTERVAL_SECONDS,
+                    MAX_WATCH_INTERVAL_SECONDS,
+                    MIN_SCAN_INTERVAL_SECONDS,
+                    MAX_WATCH_INTERVAL_SECONDS,
+                    MIN_FILE_STABLE_SECONDS,
+                    MAX_WATCH_INTERVAL_SECONDS,
+                ),
+            )
             await db.commit()
 
     async def create_folder(self, folder: WatchedFolderCreate) -> WatchedFolder:

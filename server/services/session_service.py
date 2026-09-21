@@ -234,6 +234,9 @@ class SessionService:
     async def revoke_all_sessions(self, user_id: int, except_session_id: str | None = None) -> int:
         """Revoke all sessions for a user, optionally except one."""
         async with db_context() as db:
+            # Lock before selecting IDs so every deleted session is included in
+            # the immediate WebSocket-close set.
+            await db.execute("BEGIN IMMEDIATE")
             if except_session_id:
                 cursor = await db.execute(
                     "SELECT id FROM sessions WHERE user_id = ? AND id != ?",
