@@ -52,7 +52,12 @@ describe('useWebSocket message lifecycle', () => {
     vi.useFakeTimers()
     FakeWebSocket.instances = []
     vi.stubGlobal('window', {
-      location: { protocol: 'http:', host: 'localhost', pathname: '/' },
+      location: {
+        protocol: 'http:',
+        host: 'localhost',
+        origin: 'http://localhost',
+        pathname: '/',
+      },
     })
     vi.stubGlobal('localStorage', createStorage())
     vi.stubGlobal('WebSocket', FakeWebSocket)
@@ -138,6 +143,16 @@ describe('useWebSocket message lifecycle', () => {
     vi.advanceTimersByTime(3000)
 
     expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('uses the runtime API origin for WebSocket connections', async () => {
+    const { default: api } = await import('@/api')
+    api.defaults.baseURL = 'https://api.example.test/api'
+    const { useWebSocket } = await import('./useWebSocket')
+
+    useWebSocket().connect()
+
+    expect(FakeWebSocket.instances[0]!.url).toBe('wss://api.example.test/ws')
   })
 
   it('ignores a stale close event after a newer connection is established', async () => {

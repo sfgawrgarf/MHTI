@@ -1,7 +1,9 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
 
+const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || '/api'
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: DEFAULT_API_BASE_URL,
   timeout: 60000, // 60秒，兼容长时间刮削操作
   headers: {
     'Content-Type': 'application/json',
@@ -16,6 +18,30 @@ const EXPIRES_AT_KEY = 'expires_at'
 
 // 所有并发请求共享同一次刷新，并且无论成功或失败都会被 settle。
 let refreshPromise: Promise<string | null> | null = null
+
+function normalizeBaseUrl(value: string): string {
+  const normalized = value.trim().replace(/\/+$/, '')
+  return normalized || DEFAULT_API_BASE_URL
+}
+
+export function getApiBaseUrl(): string {
+  return normalizeBaseUrl(api.defaults.baseURL || DEFAULT_API_BASE_URL)
+}
+
+export async function initializeApiBaseUrl(): Promise<void> {
+  try {
+    // This bootstrap endpoint is always served by the page origin so it can
+    // tell the already-built frontend where the API is exposed at runtime.
+    const response = await axios.get<{ apiBaseUrl?: string }>('/api/config/frontend', {
+      timeout: 5000,
+    })
+    if (response.data.apiBaseUrl?.trim()) {
+      api.defaults.baseURL = normalizeBaseUrl(response.data.apiBaseUrl)
+    }
+  } catch (error) {
+    console.warn('[API] 无法读取运行时配置，继续使用默认地址', error)
+  }
+}
 
 // 获取 token
 function getToken(): string | null {
@@ -67,7 +93,7 @@ async function refreshAccessToken(): Promise<string | null> {
   try {
     console.log('[API] 开始刷新 Token')
     // 使用原始 axios 避免拦截器循环
-    const response = await axios.post('/api/auth/refresh', {
+    const response = await axios.post(`${getApiBaseUrl()}/auth/refresh`, {
       refresh_token: refreshToken,
     })
 

@@ -49,10 +49,16 @@ class ScrapedFileService:
                     now.isoformat(), data.history_record_id,
                 ),
             )
+            cursor = await db.execute(
+                "SELECT id FROM scraped_files WHERE source_path = ?",
+                (data.source_path,),
+            )
+            row = await cursor.fetchone()
+            persisted_id = str(row[0]) if row is not None else record_id
             await db.commit()
 
         return ScrapedFile(
-            id=record_id,
+            id=persisted_id,
             source_path=data.source_path,
             target_path=data.target_path,
             file_size=data.file_size,

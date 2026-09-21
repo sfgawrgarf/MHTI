@@ -1,5 +1,6 @@
 """Session history field-mapping regressions."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock
@@ -87,3 +88,43 @@ async def test_revoking_sessions_immediately_closes_their_websockets(
     async with aiosqlite.connect(temp_db) as db:
         cursor = await db.execute("SELECT id FROM sessions ORDER BY id")
         assert await cursor.fetchall() == [("current",)]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_login_enforces_session_limit_and_closes_eviction(
+    temp_db, monkeypatch
+):
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        cursor = await db.execute(
+            "INSERT INTO admin (username, password_hash) VALUES ('admin', 'hash')"
+        )
+        user_id = cursor.lastrowid
+        await db.commit()
+
+    @asynccontextmanager
+    async def isolated_db_context():
+        async with aiosqlite.connect(temp_db) as db:
+            await configure_connection(db)
+            yield db
+
+    manager = Mock(close_session=AsyncMock(return_value=1))
+    service = SessionService()
+    monkeypatch.setattr(session_module, "db_context", isolated_db_context)
+    monkeypatch.setattr(service, "_get_max_sessions", AsyncMock(return_value=1))
+    monkeypatch.setattr(
+        "server.services.websocket_manager.get_ws_manager", lambda: manager
+    )
+
+    sessions = await asyncio.gather(
+        service.create_session(user_id, "7d", device_name="first"),
+        service.create_session(user_id, "7d", device_name="second"),
+    )
+
+    async with aiosqlite.connect(temp_db) as db:
+        cursor = await db.execute("SELECT id FROM sessions")
+        stored_ids = {str(row[0]) for row in await cursor.fetchall()}
+    assert len(stored_ids) == 1
+    assert stored_ids.issubset({sessions[0][0], sessions[1][0]})
+    manager.close_session.assert_awaited_once()

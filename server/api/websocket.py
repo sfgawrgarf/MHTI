@@ -187,13 +187,11 @@ async def _timeout_monitor(
     try:
         while True:
             await asyncio.sleep(10)  # 每10秒检查一次
-            if session_id and username:
+            if session_id:
                 from server.services.session_service import session_service
 
                 try:
-                    session_active = await session_service.is_session_active(
-                        session_id, username
-                    )
+                    session_active = await session_service.is_session_active(session_id)
                 except Exception:
                     logger.exception("[%s] 无法重新验证 WebSocket 会话", client_id)
                     await manager.close_client(

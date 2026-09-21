@@ -595,8 +595,9 @@ class ScrapeJobService:
         error_message: str | None = None,
         clear_error_message: bool = False,
         history_record_id: str | None = None,
-    ) -> None:
-        """更新刮削任务"""
+        expected_status: ScrapeJobStatus | None = None,
+    ) -> bool:
+        """Update a job, optionally only while it is in an expected state."""
         await self._ensure_db()
 
         updates = []
@@ -621,16 +622,21 @@ class ScrapeJobService:
             params.append(history_record_id)
 
         if not updates:
-            return
+            return False
 
         params.append(job_id)
+        where_clause = "id = ?"
+        if expected_status is not None:
+            where_clause += " AND status = ?"
+            params.append(expected_status.value)
 
         async with db_connection(self.db_path) as db:
-            await db.execute(
-                f"UPDATE scrape_jobs SET {', '.join(updates)} WHERE id = ?",
+            cursor = await db.execute(
+                f"UPDATE scrape_jobs SET {', '.join(updates)} WHERE {where_clause}",
                 params,
             )
             await db.commit()
+            return cursor.rowcount == 1
 
     async def delete_jobs(self, ids: list[str]) -> int:
         """Delete terminal jobs; active jobs must be cancelled first."""
@@ -980,7 +986,16 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     except asyncio.CancelledError:
         message = "任务已取消，文件操作已停止或完成安全收尾；请核对日志和目标文件"
         job = await service.get_job(job_id)
-        if job is not None and job.status != ScrapeJobStatus.CANCELLED:
+        transitioned = False
+        if job is not None and job.status == ScrapeJobStatus.RUNNING:
+            transitioned = await service.update_job(
+                job_id,
+                status=ScrapeJobStatus.CANCELLED,
+                finished_at=datetime.now(),
+                error_message=message,
+                expected_status=ScrapeJobStatus.RUNNING,
+            )
+        if transitioned and job is not None:
             history_id = job.history_record_id or job.continuation_history_id
             from server.services.history_service import HistoryService
 
@@ -992,24 +1007,22 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 except Exception:
                     logger.exception("Unable to locate history for cancelled scrape job: %s", job_id)
             if history_id is not None:
-                await history_service.update_record(
-                    history_id,
-                    status=TaskStatus.CANCELLED,
-                    error_message=message,
-                )
                 try:
+                    await history_service.update_record(
+                        history_id,
+                        status=TaskStatus.CANCELLED,
+                        error_message=message,
+                    )
                     await history_service.flush_and_clear_log_cache(history_id)
                 except Exception:
                     logger.exception(
-                        "Unable to flush logs for cancelled scrape job: %s", job_id
+                        "Unable to finalize history for cancelled scrape job: %s",
+                        job_id,
                     )
-            await service.update_job(
-                job_id,
-                status=ScrapeJobStatus.CANCELLED,
-                finished_at=datetime.now(),
-                error_message=message,
-            )
-        await get_notifier().notify_cancelled(job_id, message)
+            try:
+                await get_notifier().notify_cancelled(job_id, message)
+            except Exception:
+                logger.exception("Unable to notify cancelled scrape job: %s", job_id)
         raise
     except Exception as exc:
         # ``_run_scrape_job`` has detailed handling around the scraper itself,
@@ -1043,6 +1056,21 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
             except Exception:
                 logger.exception("Unable to locate history for failed scrape job: %s", job_id)
 
+        try:
+            transitioned = await service.update_job(
+                job_id,
+                status=ScrapeJobStatus.FAILED,
+                finished_at=datetime.now(),
+                error_message=message,
+                expected_status=ScrapeJobStatus.RUNNING,
+            )
+        except Exception:
+            logger.exception("Unable to persist failed scrape job state: %s", job_id)
+            return
+
+        if not transitioned:
+            return
+
         if history_id is not None:
             try:
                 await history_service.update_record(
@@ -1056,17 +1084,6 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 await history_service.flush_and_clear_log_cache(history_id)
             except Exception:
                 logger.exception("Unable to flush logs for failed scrape job: %s", job_id)
-
-        try:
-            await service.update_job(
-                job_id,
-                status=ScrapeJobStatus.FAILED,
-                finished_at=datetime.now(),
-                error_message=message,
-            )
-        except Exception:
-            logger.exception("Unable to persist failed scrape job state: %s", job_id)
-            return
 
         try:
             await get_notifier().notify_failed(job_id, message)
@@ -1233,48 +1250,71 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
         file_duration = (datetime.now() - started_at).total_seconds()
 
         if result.status == ScrapeStatus.SUCCESS:
-            # 更新历史记录为成功
             series = result.series_info
             episode = result.episode_info
-            await history_service.update_record_on_success(
-                record_id,
-                folder_path=f"{job.file_path} => {result.dest_path or job.output_dir}",
-                duration_seconds=file_duration,
-                title=series.name if series else None,
-                original_title=series.original_name if series else None,
-                plot=series.overview if series else None,
-                poster_url=f"https://image.tmdb.org/t/p/w500{series.poster_path}" if series and series.poster_path else None,
-                release_date=str(series.first_air_date) if series and series.first_air_date else None,
-                rating=series.vote_average if series else None,
-                tags=series.genres if series else None,
-                season_number=result.parsed_season,
-                episode_number=result.parsed_episode,
-                episode_title=episode.name if episode else None,
-                episode_overview=episode.overview if episode else None,
-                episode_still_url=f"https://image.tmdb.org/t/p/w500{episode.still_path}" if episode and episode.still_path else None,
-                episode_air_date=str(episode.air_date) if episode and episode.air_date else None,
-            )
-            await service.update_job(
-                job_id,
-                status=ScrapeJobStatus.SUCCESS,
-                finished_at=datetime.now(),
-                clear_error_message=True,
-            )
-            if job.correction_history_id:
-                old_record = await history_service.get_record(job.correction_history_id)
-                if old_record is not None:
-                    conflict_data = dict(old_record.conflict_data or {})
-                    conflict_data.update({
-                        "replaced_by_job_id": job_id,
-                        "replaced_by_history_id": record_id,
-                        "correction_backup_retention_days": 7,
-                    })
-                    await history_service.update_record(
-                        old_record.id,
-                        status=TaskStatus.REPLACED,
-                        error_message="已由成功记录纠正任务替代",
-                        conflict_data=conflict_data,
+
+            async def persist_success() -> None:
+                # Once the filesystem operation completed, drain the paired
+                # history/job writes even if shutdown cancellation arrives.
+                await history_service.update_record_on_success(
+                    record_id,
+                    folder_path=f"{job.file_path} => {result.dest_path or job.output_dir}",
+                    duration_seconds=file_duration,
+                    title=series.name if series else None,
+                    original_title=series.original_name if series else None,
+                    plot=series.overview if series else None,
+                    poster_url=f"https://image.tmdb.org/t/p/w500{series.poster_path}" if series and series.poster_path else None,
+                    release_date=str(series.first_air_date) if series and series.first_air_date else None,
+                    rating=series.vote_average if series else None,
+                    tags=series.genres if series else None,
+                    season_number=result.parsed_season,
+                    episode_number=result.parsed_episode,
+                    episode_title=episode.name if episode else None,
+                    episode_overview=episode.overview if episode else None,
+                    episode_still_url=f"https://image.tmdb.org/t/p/w500{episode.still_path}" if episode and episode.still_path else None,
+                    episode_air_date=str(episode.air_date) if episode and episode.air_date else None,
+                )
+                await service.update_job(
+                    job_id,
+                    status=ScrapeJobStatus.SUCCESS,
+                    finished_at=datetime.now(),
+                    clear_error_message=True,
+                    expected_status=ScrapeJobStatus.RUNNING,
+                )
+                if job.correction_history_id:
+                    old_record = await history_service.get_record(job.correction_history_id)
+                    if old_record is not None:
+                        conflict_data = dict(old_record.conflict_data or {})
+                        conflict_data.update({
+                            "replaced_by_job_id": job_id,
+                            "replaced_by_history_id": record_id,
+                            "correction_backup_retention_days": 7,
+                        })
+                        await history_service.update_record(
+                            old_record.id,
+                            status=TaskStatus.REPLACED,
+                            error_message="已由成功记录纠正任务替代",
+                            conflict_data=conflict_data,
+                        )
+
+            terminal_task = asyncio.create_task(persist_success())
+            try:
+                await asyncio.shield(terminal_task)
+            except asyncio.CancelledError:
+                terminal_result = (await asyncio.gather(
+                    terminal_task, return_exceptions=True
+                ))[0]
+                if isinstance(terminal_result, BaseException):
+                    logger.error(
+                        "Unable to persist successful scrape during cancellation: %s",
+                        job_id,
+                        exc_info=(
+                            type(terminal_result),
+                            terminal_result,
+                            terminal_result.__traceback__,
+                        ),
                     )
+                raise
             # 发送完成通知
             await notifier.notify_completed(job_id, {
                 "status": "success",
@@ -1431,46 +1471,70 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     except asyncio.TimeoutError:
         timeout_msg = f"任务超时（超过 {timeout_seconds} 秒），文件操作已停止或完成收尾；请先核对日志和目标文件再重试"
         logger.warning(f"ScrapeJob {job_id} timeout: {job.file_path}")
-        await history_service.update_record(
-            record_id,
-            status=TaskStatus.TIMEOUT,
-            error_message=timeout_msg,
-        )
-        await service.update_job(
+        transitioned = await service.update_job(
             job_id,
             status=ScrapeJobStatus.TIMEOUT,
             finished_at=datetime.now(),
             error_message=timeout_msg,
+            expected_status=ScrapeJobStatus.RUNNING,
         )
-        # 发送失败通知
-        await notifier.notify_failed(job_id, timeout_msg)
-        await history_service.flush_and_clear_log_cache(record_id)
+        if transitioned:
+            await history_service.update_record(
+                record_id,
+                status=TaskStatus.TIMEOUT,
+                error_message=timeout_msg,
+            )
+            # 发送失败通知
+            await notifier.notify_failed(job_id, timeout_msg)
+            await history_service.flush_and_clear_log_cache(record_id)
 
     except asyncio.CancelledError:
         message = "任务已取消，文件操作已停止或完成收尾；请核对日志和目标文件"
-        await history_service.update_record(record_id, status=TaskStatus.CANCELLED, error_message=message)
-        await service.update_job(job_id, status=ScrapeJobStatus.CANCELLED,
-                                 finished_at=datetime.now(), error_message=message)
-        await history_service.flush_and_clear_log_cache(record_id)
+        transitioned = await service.update_job(
+            job_id,
+            status=ScrapeJobStatus.CANCELLED,
+            finished_at=datetime.now(),
+            error_message=message,
+            expected_status=ScrapeJobStatus.RUNNING,
+        )
+        if transitioned:
+            try:
+                await history_service.update_record(
+                    record_id,
+                    status=TaskStatus.CANCELLED,
+                    error_message=message,
+                )
+                await history_service.flush_and_clear_log_cache(record_id)
+            except Exception:
+                logger.exception(
+                    "Unable to finalize history for cancelled scrape job: %s",
+                    job_id,
+                )
+            try:
+                await notifier.notify_cancelled(job_id, message)
+            except Exception:
+                logger.exception("Unable to notify cancelled scrape job: %s", job_id)
         raise
 
     except Exception as e:
         error_msg = str(e) or repr(e) or type(e).__name__
         logger.error(f"Error scraping {job.file_path}: {error_msg}")
-        await history_service.update_record(
-            record_id,
-            status=TaskStatus.FAILED,
-            error_message=error_msg,
-        )
-        await service.update_job(
+        transitioned = await service.update_job(
             job_id,
             status=ScrapeJobStatus.FAILED,
             finished_at=datetime.now(),
             error_message=error_msg,
+            expected_status=ScrapeJobStatus.RUNNING,
         )
-        # 发送失败通知
-        await notifier.notify_failed(job_id, error_msg)
-        await history_service.flush_and_clear_log_cache(record_id)
+        if transitioned:
+            await history_service.update_record(
+                record_id,
+                status=TaskStatus.FAILED,
+                error_message=error_msg,
+            )
+            # 发送失败通知
+            await notifier.notify_failed(job_id, error_msg)
+            await history_service.flush_and_clear_log_cache(record_id)
 
     # ``job`` is the snapshot loaded immediately after the claim and therefore
     # does not contain the terminal status persisted above.

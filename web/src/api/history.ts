@@ -4,14 +4,8 @@ import type {
   HistoryListResponse,
   ResolveConflictRequest,
   RetryRequest,
-  ScrapeLogStep,
   HistoryActionResponse,
 } from './types'
-
-// 获取 API 基础 URL
-const getBaseUrl = () => {
-  return api.defaults.baseURL || '/api'
-}
 
 /**
  * 历史记录相关 API
@@ -125,38 +119,5 @@ export const historyApi = {
       all_pending: request.allPending ?? false,
     })
     return response.data
-  },
-
-  /**
-   * 订阅日志更新 (SSE)
-   */
-  subscribeLogStream(
-    recordId: string,
-    onLogs: (logs: ScrapeLogStep[]) => void,
-    onError?: (error: Event) => void
-  ): EventSource {
-    const url = `${getBaseUrl()}/history/${recordId}/logs/stream`
-    const eventSource = new EventSource(url)
-
-    eventSource.addEventListener('logs', (event: MessageEvent) => {
-      try {
-        const logs = JSON.parse(event.data) as ScrapeLogStep[]
-        onLogs(logs)
-      } catch (e) {
-        console.error('Failed to parse logs:', e)
-      }
-    })
-
-    eventSource.addEventListener('ping', () => {
-      // 心跳，保持连接
-    })
-
-    eventSource.onerror = (error) => {
-      if (onError) {
-        onError(error)
-      }
-    }
-
-    return eventSource
   },
 }

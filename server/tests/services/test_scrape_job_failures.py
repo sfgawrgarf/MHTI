@@ -99,7 +99,7 @@ async def test_history_link_failure_finalizes_both_rows(worker):
     created_history = SimpleNamespace(id="test-history")
     history.create_record.return_value = created_history
     history.get_record_by_scrape_job_id.return_value = created_history
-    service.update_job.side_effect = [RuntimeError("link failed"), None]
+    service.update_job.side_effect = [RuntimeError("link failed"), True]
 
     await _execute_scrape_job(service, job.id)
 
@@ -122,7 +122,7 @@ async def test_history_link_cancellation_finalizes_both_rows(worker):
     created_history = SimpleNamespace(id="test-history")
     history.create_record.return_value = created_history
     history.get_record_by_scrape_job_id.return_value = created_history
-    service.update_job.side_effect = [asyncio.CancelledError, None]
+    service.update_job.side_effect = [asyncio.CancelledError, True]
 
     with pytest.raises(asyncio.CancelledError):
         await _execute_scrape_job(service, job.id)
@@ -230,6 +230,67 @@ async def test_cancelled_worker_records_cancellation(worker):
     assert history.update_record.call_args.kwargs["status"] == TaskStatus.CANCELLED
     history.flush_and_clear_log_cache.assert_awaited_once()
     notifier.notify_cancelled.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_after_success_does_not_replace_terminal_state(worker):
+    """Cancellation during notification must not turn committed success into cancelled."""
+    job, service, scraper, history, notifier = worker
+    job.status = ScrapeJobStatus.RUNNING
+    scraper.scrape_file.return_value = ScrapeResult(
+        file_path=job.file_path,
+        status=ScrapeStatus.SUCCESS,
+        dest_path="/library/show.strm",
+    )
+
+    async def update_job(_job_id, **kwargs):
+        expected = kwargs.get("expected_status")
+        if expected is not None and job.status != expected:
+            return False
+        if status := kwargs.get("status"):
+            job.status = status
+        return True
+
+    service.update_job.side_effect = update_job
+    notifier.notify_completed.side_effect = asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await _execute_scrape_job(service, job.id)
+
+    assert job.status == ScrapeJobStatus.SUCCESS
+    history.update_record_on_success.assert_awaited_once()
+    history.update_record.assert_not_awaited()
+    notifier.notify_cancelled.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notification_failure_does_not_replace_success_with_failed(worker):
+    """Notification delivery is ancillary after the terminal result is committed."""
+    job, service, scraper, history, notifier = worker
+    job.status = ScrapeJobStatus.RUNNING
+    scraper.scrape_file.return_value = ScrapeResult(
+        file_path=job.file_path,
+        status=ScrapeStatus.SUCCESS,
+        dest_path="/library/show.strm",
+    )
+
+    async def update_job(_job_id, **kwargs):
+        expected = kwargs.get("expected_status")
+        if expected is not None and job.status != expected:
+            return False
+        if status := kwargs.get("status"):
+            job.status = status
+        return True
+
+    service.update_job.side_effect = update_job
+    notifier.notify_completed.side_effect = RuntimeError("socket unavailable")
+
+    await _execute_scrape_job(service, job.id)
+
+    assert job.status == ScrapeJobStatus.SUCCESS
+    history.update_record_on_success.assert_awaited_once()
+    history.update_record.assert_not_awaited()
+    notifier.notify_failed.assert_not_awaited()
 
 
 @pytest.mark.asyncio

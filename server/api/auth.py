@@ -256,21 +256,17 @@ async def change_password(
     auth: AuthContext = Depends(require_auth),
 ) -> ChangePasswordResponse:
     """Change current user's password."""
-    success = await auth_service.change_password(
+    success, revoked_ids = await auth_service.change_password(
         auth.username,
         data.current_password,
         data.new_password,
+        except_session_id=auth.session_id,
     )
 
     if not success:
         return ChangePasswordResponse(success=False, message="当前密码错误")
 
-    user_id = await auth_service.get_user_id(auth.username)
-    if user_id:
-        await session_service.revoke_all_sessions(
-            user_id,
-            except_session_id=auth.session_id,
-        )
+    await session_service.close_session_connections(revoked_ids)
 
     return ChangePasswordResponse(success=True, message="密码修改成功")
 

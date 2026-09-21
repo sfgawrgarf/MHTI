@@ -11,12 +11,14 @@ from server.models.auth import ChangePasswordRequest
 
 @pytest.mark.asyncio
 async def test_password_change_revokes_every_other_session(monkeypatch) -> None:
-    change_password = AsyncMock(return_value=True)
-    get_user_id = AsyncMock(return_value=7)
-    revoke_all = AsyncMock(return_value=2)
+    change_password = AsyncMock(return_value=(True, ["other-session"]))
+    close_connections = AsyncMock()
     monkeypatch.setattr(auth_api.auth_service, "change_password", change_password)
-    monkeypatch.setattr(auth_api.auth_service, "get_user_id", get_user_id)
-    monkeypatch.setattr(auth_api.session_service, "revoke_all_sessions", revoke_all)
+    monkeypatch.setattr(
+        auth_api.session_service,
+        "close_session_connections",
+        close_connections,
+    )
 
     response = await auth_api.change_password(
         ChangePasswordRequest(
@@ -27,4 +29,10 @@ async def test_password_change_revokes_every_other_session(monkeypatch) -> None:
     )
 
     assert response.success is True
-    revoke_all.assert_awaited_once_with(7, except_session_id="current-session")
+    change_password.assert_awaited_once_with(
+        "admin",
+        "old-password",
+        "new-password",
+        except_session_id="current-session",
+    )
+    close_connections.assert_awaited_once_with(["other-session"])

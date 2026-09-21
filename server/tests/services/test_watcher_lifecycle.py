@@ -330,6 +330,91 @@ async def test_explicit_null_clears_optional_folder_fields(temp_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_folder_does_not_persist_when_runtime_start_fails(
+    temp_db, monkeypatch
+) -> None:
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.commit()
+    service = WatcherService(temp_db)
+    service._running = True
+    monkeypatch.setattr(
+        service,
+        "_start_folder_watch",
+        AsyncMock(side_effect=RuntimeError("start failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        await service.create_folder(WatchedFolderCreate(path="/media/new"))
+
+    folders, total = await service.list_folders()
+    assert folders == []
+    assert total == 0
+
+
+@pytest.mark.asyncio
+async def test_update_folder_restores_runtime_and_database_when_restart_fails(
+    temp_db, monkeypatch
+) -> None:
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.commit()
+    service = WatcherService(temp_db)
+    folder = await service.create_folder(WatchedFolderCreate(path="/media/original"))
+    service._running = True
+    restart = AsyncMock(side_effect=[RuntimeError("restart failed"), None])
+    monkeypatch.setattr(service, "_restart_folder_watch", restart)
+
+    with pytest.raises(RuntimeError, match="restart failed"):
+        await service.update_folder(
+            folder.id,
+            WatchedFolderUpdate(path="/media/replacement"),
+        )
+
+    persisted = await service.get_folder(folder.id)
+    assert persisted is not None
+    assert persisted.path == "/media/original"
+    assert restart.await_count == 2
+    assert restart.await_args_list[-1].args[0].path == "/media/original"
+
+
+@pytest.mark.asyncio
+async def test_delete_folder_restores_runtime_when_database_delete_fails(
+    temp_db, monkeypatch
+) -> None:
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        await db.commit()
+    service = WatcherService(temp_db)
+    folder = await service.create_folder(WatchedFolderCreate(path="/media/original"))
+    service._running = True
+    service._strategies[folder.id] = FakeStrategy(folder)
+
+    async with aiosqlite.connect(temp_db) as db:
+        await db.execute(
+            f"""CREATE TRIGGER reject_watcher_delete
+                BEFORE DELETE ON watched_folders
+                WHEN OLD.id = '{folder.id}'
+                BEGIN SELECT RAISE(ABORT, 'delete blocked'); END"""
+        )
+        await db.commit()
+
+    async def restore(folder_to_restore: WatchedFolder) -> None:
+        service._strategies[folder_to_restore.id] = FakeStrategy(folder_to_restore)
+
+    monkeypatch.setattr(service, "_start_folder_watch", restore)
+
+    with pytest.raises(aiosqlite.IntegrityError, match="delete blocked"):
+        await service.delete_folder(folder.id)
+
+    assert await service.get_folder(folder.id) is not None
+    assert folder.id in service._strategies
+
+
+@pytest.mark.asyncio
 async def test_legacy_watcher_intervals_are_normalized_before_loading(temp_db) -> None:
     async with aiosqlite.connect(temp_db) as db:
         await configure_connection(db)
