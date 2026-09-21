@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
+
+VIDEO_EXTENSION_PATTERN = re.compile(r"^\.[a-z0-9]{1,31}$")
+
 
 SUPPORTED_VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     {
@@ -42,3 +47,8 @@ def normalize_video_extensions(values: list[str]) -> set[str]:
         for value in values
         if (normalized := normalize_video_extension(value))
     }
+
+
+def is_valid_video_extension(value: str) -> bool:
+    """Return whether a normalized value can match ``Path.suffix``."""
+    return VIDEO_EXTENSION_PATTERN.fullmatch(value) is not None

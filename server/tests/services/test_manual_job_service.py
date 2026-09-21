@@ -120,6 +120,28 @@ def test_manual_job_rejects_unsupported_destructive_settings() -> None:
         )
 
 
+def test_manual_job_validates_only_active_scan_filter_extensions() -> None:
+    inactive = ManualJobCreate(
+        scan_path="/incoming",
+        target_folder="/library",
+        advanced_settings=ManualJobAdvancedSettings(
+            file_ext_whitelist=["*.mkv"],
+        ),
+    )
+    assert inactive.advanced_settings is not None
+
+    with pytest.raises(ValueError, match="扩展名格式无效"):
+        ManualJobCreate(
+            scan_path="/incoming",
+            target_folder="/library",
+            advanced_settings=ManualJobAdvancedSettings(
+                use_global_organize=False,
+                scan_filters_enabled=True,
+                file_ext_whitelist=["*.mkv"],
+            ),
+        )
+
+
 def test_manual_job_promotes_legacy_metadata_folder() -> None:
     job = ManualJobCreate(
         scan_path="/incoming",

@@ -205,16 +205,20 @@ class ManualJobCreate(BaseModel):
                 + ", ".join(unsupported)
             )
 
-        from server.core.media_extensions import normalize_video_extensions
+        if not settings.use_global_organize and settings.scan_filters_enabled:
+            from server.core.media_extensions import (
+                is_valid_video_extension,
+                normalize_video_extensions,
+            )
 
-        extensions = normalize_video_extensions(
-            settings.file_ext_whitelist + settings.extra_ext_whitelist
-        )
-        if any(
-            len(extension) > 32 or "/" in extension or "\\" in extension
-            for extension in extensions
-        ):
-            raise ValueError("文件扩展名格式无效")
+            extensions = normalize_video_extensions(
+                settings.file_ext_whitelist + settings.extra_ext_whitelist
+            )
+            if any(
+                not is_valid_video_extension(extension)
+                for extension in extensions
+            ):
+                raise ValueError("文件扩展名格式无效")
 
         if not settings.use_global_naming:
             from server.models.template import NamingTemplate
