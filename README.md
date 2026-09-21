@@ -334,7 +334,7 @@ cd MHTI
 mkdir -p data media output
 
 # 默认固定为当前发布版；升级时先修改为目标版本号
-export MHTI_VERSION=2.1.5
+export MHTI_VERSION=2.1.6
 
 # 拉取已发布镜像并启动服务（Docker Compose v2）
 docker compose pull
@@ -355,7 +355,7 @@ docker compose logs -f mhti
 ```yaml
 services:
   mhti:
-    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.1.5}
+    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.1.6}
     container_name: mhti
     restart: unless-stopped
     ports:
@@ -372,7 +372,7 @@ services:
 
 生产环境可将 `./media` 和 `./output` 替换为宿主机绝对路径，例如 `/srv/media:/media:ro` 与 `/srv/mhti-output:/output`。文件移动、重命名、字幕处理和图片写入只允许发生在 `MHTI_ALLOWED_MEDIA_ROOTS` 列出的容器内目录；使用 `/incoming`、`/library` 或其他自定义挂载时，需要把相应容器路径加入这个逗号分隔的变量。TMDB 图片默认只允许从 `image.tmdb.org` 下载，如确需其他可信图片域名，可通过 `MHTI_ALLOWED_IMAGE_HOSTS` 显式配置。不要把 API Key 写入 Compose 文件，请在网页“设置 → AI 识别”中保存。
 
-默认配置引用 GitHub Container Registry（GHCR）的当前稳定版 `2.1.5`，不会因新的 `latest` 镜像自动升级。升级前请先查看 Release，再在项目目录的 `.env` 写入目标版本，例如 `MHTI_VERSION=2.1.5`，然后执行 `docker compose pull && docker compose up -d`。如需回滚，只需将该值改回原版本并重新拉取启动。
+默认配置引用 GitHub Container Registry（GHCR）的当前稳定版 `2.1.6`，不会因新的 `latest` 镜像自动升级。升级前请先查看 Release，再在项目目录的 `.env` 写入目标版本，例如 `MHTI_VERSION=2.1.6`，然后执行 `docker compose pull && docker compose up -d`。如需回滚，只需将该值改回原版本并重新拉取启动。
 
 2.1.0 起，独立元数据目录也必须包含在 `MHTI_ALLOWED_MEDIA_ROOTS` 中。覆盖文件需要目标磁盘有足够空间暂存完整的新文件；准备或替换失败时保留原目标及源文件。字幕跟随视频整理模式，遇到同名目标不会自动覆盖。
 
@@ -382,7 +382,7 @@ services:
 
 2.1.4 统一自动与手动匹配的输出流程，修复任务状态、日志重试和 Emby 强制处理语义，并拆分冲突处理界面、清理不可达旧代码。升级时保留现有配置、任务和历史记录，无需清空数据或手动迁移。
 
-2.1.5 加强数据库日志失败重试与关闭排空，收敛 WebSocket 状态和后台任务，并新增 ESLint、增量 mypy、覆盖率防回退及固定版本的 CI 工具。升级无需清空数据或手动迁移。
+2.1.6 集中修复任务终态、115 与本地存储组合、Watcher 恢复与回滚、调度重试、会话并发及 WebSocket 生命周期问题，并让任务向导选项和运行时 API 地址真正生效。升级无需清空数据或手动迁移。
 
 当前开发中的 AI 辅助代码尚未发布时，使用本地构建覆盖文件测试：
 
