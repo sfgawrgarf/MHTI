@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from server.core.auth import require_auth
@@ -113,7 +113,7 @@ async def export_records(
 class AIRetryRequest(BaseModel):
     """Batch retry only unresolved no-match records through the AI pipeline."""
 
-    record_ids: list[str] | None = None
+    record_ids: list[str] | None = Field(default=None, max_length=500)
     limit: int = 100
     all_pending: bool = False
 

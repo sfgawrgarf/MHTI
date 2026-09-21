@@ -1,6 +1,6 @@
 """Authentication API routes."""
 
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from server.core.auth import require_auth, AuthContext, get_client_ip
 from server.models.auth import (
@@ -204,7 +204,11 @@ async def revoke_session(session_id: str, auth: AuthContext = Depends(require_au
     if session_id == auth.session_id:
         raise HTTPException(status_code=400, detail="不能注销当前会话，请使用登出接口")
 
-    success = await session_service.revoke_session(session_id)
+    user_id = await auth_service.get_user_id(auth.username)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="用户不存在")
+
+    success = await session_service.revoke_session(session_id, user_id=user_id)
     if not success:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -224,8 +228,8 @@ async def revoke_all_sessions(auth: AuthContext = Depends(require_auth)) -> dict
 
 @router.get("/history", response_model=LoginHistoryResponse)
 async def get_login_history(
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(require_auth),
 ) -> LoginHistoryResponse:
     """Get login history for current user."""

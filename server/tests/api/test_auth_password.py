@@ -36,3 +36,20 @@ async def test_password_change_revokes_every_other_session(monkeypatch) -> None:
         except_session_id="current-session",
     )
     close_connections.assert_awaited_once_with(["other-session"])
+
+
+@pytest.mark.asyncio
+async def test_session_revocation_is_scoped_to_current_user(monkeypatch) -> None:
+    get_user_id = AsyncMock(return_value=7)
+    revoke_session = AsyncMock(return_value=True)
+    monkeypatch.setattr(auth_api.auth_service, "get_user_id", get_user_id)
+    monkeypatch.setattr(auth_api.session_service, "revoke_session", revoke_session)
+
+    response = await auth_api.revoke_session(
+        "other-session",
+        AuthContext(username="admin", session_id="current-session"),
+    )
+
+    assert response == {"message": "会话已注销"}
+    get_user_id.assert_awaited_once_with("admin")
+    revoke_session.assert_awaited_once_with("other-session", user_id=7)

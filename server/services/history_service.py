@@ -12,6 +12,7 @@ from time import monotonic
 import aiosqlite
 
 from server.core.database import DATABASE_PATH
+from server.core.csv_security import neutralize_csv_formula
 from server.core.db.connection import DatabaseManager, db_connection
 from server.core.db.schema import migrate_history_table
 from server.models.history import (
@@ -604,15 +605,15 @@ class HistoryService:
         for record in records:
             writer.writerow([
                 record.id,
-                record.task_name,
-                record.folder_path,
+                neutralize_csv_formula(record.task_name),
+                neutralize_csv_formula(record.folder_path),
                 record.executed_at.isoformat(),
                 record.status.value,
                 record.total_files,
                 record.success_count,
                 record.failed_count,
                 record.duration_seconds,
-                record.error_message or "",
+                neutralize_csv_formula(record.error_message or ""),
             ])
 
         return output.getvalue()

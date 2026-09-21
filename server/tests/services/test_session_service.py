@@ -91,6 +91,51 @@ async def test_revoking_sessions_immediately_closes_their_websockets(
 
 
 @pytest.mark.asyncio
+async def test_revoke_session_requires_matching_user_when_scoped(temp_db, monkeypatch):
+    async with aiosqlite.connect(temp_db) as db:
+        await configure_connection(db)
+        await create_all_tables(db)
+        user = await db.execute(
+            "INSERT INTO admin (username, password_hash) VALUES ('admin', 'hash')"
+        )
+        user_id = user.lastrowid
+        expires = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        await db.execute(
+            """INSERT INTO sessions
+               (id, user_id, refresh_token_hash, expires_at)
+               VALUES ('second-session', ?, 'hash', ?)""",
+            (user_id, expires),
+        )
+        await db.commit()
+
+    @asynccontextmanager
+    async def isolated_db_context():
+        async with aiosqlite.connect(temp_db) as db:
+            await configure_connection(db)
+            yield db
+
+    manager = Mock(close_session=AsyncMock(return_value=1))
+    monkeypatch.setattr(session_module, "db_context", isolated_db_context)
+    monkeypatch.setattr(
+        "server.services.websocket_manager.get_ws_manager",
+        lambda: manager,
+    )
+
+    revoked = await SessionService().revoke_session(
+        "second-session",
+        user_id=int(user_id) + 1,
+    )
+
+    assert revoked is False
+    manager.close_session.assert_not_awaited()
+    async with aiosqlite.connect(temp_db) as db:
+        cursor = await db.execute(
+            "SELECT id FROM sessions WHERE id = 'second-session'"
+        )
+        assert await cursor.fetchone() == ("second-session",)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_login_enforces_session_limit_and_closes_eviction(
     temp_db, monkeypatch
 ):

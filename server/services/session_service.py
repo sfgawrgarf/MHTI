@@ -221,12 +221,24 @@ class SessionService:
             logger.debug(f"Refresh token verified: session_id={row[0]}, user_id={row[1]}")
             return row[0], row[1]
 
-    async def revoke_session(self, session_id: str) -> bool:
-        """Revoke a session by ID."""
+    async def revoke_session(
+        self,
+        session_id: str,
+        *,
+        user_id: int | None = None,
+    ) -> bool:
+        """Revoke a session, optionally requiring ownership by one user."""
         async with db_context() as db:
-            cursor = await db.execute(
-                "DELETE FROM sessions WHERE id = ?", (session_id,)
-            )
+            if user_id is None:
+                cursor = await db.execute(
+                    "DELETE FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+            else:
+                cursor = await db.execute(
+                    "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+                    (session_id, user_id),
+                )
             await db.commit()
             deleted = cursor.rowcount > 0
             if deleted:
