@@ -48,7 +48,6 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
-      changelog: ${{ steps.release-notes.outputs.changelog }}
     steps:
       - name: 检出发布源码
         uses: actions/checkout@v5
@@ -136,15 +135,13 @@ jobs:
           print(f"版本一致性验证通过: {version}")
           PY
 
-      - name: 读取本版本更新说明
-        id: release-notes
+      - name: 验证本版本更新说明
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           python - <<'PY'
           import os
           import re
-          import uuid
           from pathlib import Path
 
           version = os.environ["VERSION"]
@@ -156,9 +153,7 @@ jobs:
           notes = re.sub(r"\n---\s*$", "", notes).strip()
           if not notes:
               raise SystemExit(f"版本 {version} 的更新说明不能为空")
-          delimiter = "notes_" + uuid.uuid4().hex
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"changelog<<{delimiter}\n{notes}\n{delimiter}\n")
+          print(f"已验证版本 {version} 的更新说明")
           PY
 
   # ===========================================================================
@@ -300,63 +295,91 @@ jobs:
           echo "📦 发布文件:"
           ls -lh
 
+      - name: 生成 Release 说明
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          docker_image = os.environ["DOCKER_IMAGE"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          heading = re.search(
+              r"^## \[" + re.escape(version) + r"\][^\n]*\n",
+              changelog,
+              re.M,
+          )
+          if not heading:
+              raise SystemExit(f"找不到版本 {version} 的更新说明")
+          notes = re.split(
+              r"^## ", changelog[heading.end():], maxsplit=1, flags=re.M
+          )[0]
+          notes = re.sub(r"\n---\s*$", "", notes).strip()
+
+          body = f"""## 🎉 MHTI v{version}
+
+          **媒体文件刮削与整理工具** - 自动从 TMDB 获取元数据
+
+          ---
+
+          ### 🐳 Docker 部署
+
+          #### 从 GitHub Container Registry 拉取（推荐）
+
+          ```bash
+          # 拉取最新版本
+          docker pull {docker_image}:latest
+
+          # 拉取指定版本
+          docker pull {docker_image}:{version}
+
+          # 运行容器
+          docker run -d \\
+            --name mhti \\
+            -p 8000:8000 \\
+            -v ./data:/app/data \\
+            -v /path/to/media:/media:ro \\
+            -e TZ=Asia/Shanghai \\
+            {docker_image}:{version}
+          ```
+
+          ---
+
+          ### 📋 更新日志
+
+          {notes}
+
+          ---
+
+          ### 📦 下载说明
+
+          | 文件 | 说明 | 大小 |
+          |------|------|------|
+          | `mhti-frontend-*.zip` | 前端构建产物 | ~2MB |
+          | `mhti-source-*.zip` | 源代码 | ~1MB |
+          | `SHA256SUMS.txt` | 校验和 | - |
+
+          ---
+
+          ### 🔗 链接
+
+          - 📖 [使用文档](https://github.com/{repository}/blob/main/README.md)
+          - 🐳 [Container package](https://github.com/{repository}/pkgs/container/mhti)
+          - 🐛 [问题反馈](https://github.com/{repository}/issues)
+          """
+          Path("release-body.md").write_text(body, encoding="utf-8")
+          PY
+
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: MHTI ${{ needs.prepare.outputs.tag }}
-          body: |
-            ## 🎉 MHTI ${{ needs.prepare.outputs.tag }}
-
-            **媒体文件刮削与整理工具** - 自动从 TMDB 获取元数据
-
-            ---
-
-            ### 🐳 Docker 部署
-
-            #### 从 GitHub Container Registry 拉取（推荐）
-
-            ```bash
-            # 拉取最新版本
-            docker pull ${{ env.DOCKER_IMAGE }}:latest
-
-            # 拉取指定版本
-            docker pull ${{ env.DOCKER_IMAGE }}:${{ needs.prepare.outputs.version }}
-
-            # 运行容器
-            docker run -d \
-              --name mhti \
-              -p 8000:8000 \
-              -v ./data:/app/data \
-              -v /path/to/media:/media:ro \
-              -e TZ=Asia/Shanghai \
-              ${{ env.DOCKER_IMAGE }}:${{ needs.prepare.outputs.version }}
-            ```
-
-            ---
-
-            ### 📋 更新日志
-
-            ${{ needs.prepare.outputs.changelog }}
-
-            ---
-
-            ### 📦 下载说明
-
-            | 文件 | 说明 | 大小 |
-            |------|------|------|
-            | `mhti-frontend-*.zip` | 前端构建产物 | ~2MB |
-            | `mhti-source-*.zip` | 源代码 | ~1MB |
-            | `SHA256SUMS.txt` | 校验和 | - |
-
-            ---
-
-            ### 🔗 链接
-
-            - 📖 [使用文档](https://github.com/${{ github.repository }}/blob/main/README.md)
-            - 🐳 [Container package](https://github.com/${{ github.repository }}/pkgs/container/mhti)
-            - 🐛 [问题反馈](https://github.com/${{ github.repository }}/issues)
-
+          body_path: release-body.md
           files: release-files/*
           draft: false
           prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
