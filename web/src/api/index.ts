@@ -17,7 +17,12 @@ const SESSION_ID_KEY = 'session_id'
 const EXPIRES_AT_KEY = 'expires_at'
 
 // 所有并发请求共享同一次刷新，并且无论成功或失败都会被 settle。
-let refreshPromise: Promise<string | null> | null = null
+export interface AccessTokenRefreshResult {
+  accessToken: string
+  expiresIn: number
+}
+
+let refreshPromise: Promise<AccessTokenRefreshResult | null> | null = null
 
 function normalizeBaseUrl(value: string): string {
   const normalized = value.trim().replace(/\/+$/, '')
@@ -76,7 +81,7 @@ function updateTokens(accessToken: string, expiresIn: number) {
 }
 
 // 清除 token
-function clearTokens() {
+export function clearStoredAuthTokens() {
   localStorage.removeItem(ACCESS_TOKEN_KEY)
   localStorage.removeItem(REFRESH_TOKEN_KEY)
   localStorage.removeItem(SESSION_ID_KEY)
@@ -84,7 +89,7 @@ function clearTokens() {
 }
 
 // 刷新 token
-async function refreshAccessToken(): Promise<string | null> {
+async function refreshAccessToken(): Promise<AccessTokenRefreshResult | null> {
   const refreshToken = getRefreshToken()
   if (!refreshToken) {
     console.log('[API] 没有 Refresh Token，无法刷新')
@@ -101,14 +106,14 @@ async function refreshAccessToken(): Promise<string | null> {
     const { access_token, expires_in } = response.data
     updateTokens(access_token, expires_in)
     console.log('[API] Token 刷新成功，有效期', expires_in, '秒')
-    return access_token
+    return { accessToken: access_token, expiresIn: expires_in }
   } catch (error) {
     console.error('[API] Token 刷新失败', error)
     return null
   }
 }
 
-function getSharedRefresh(): Promise<string | null> {
+export function refreshStoredAccessToken(): Promise<AccessTokenRefreshResult | null> {
   if (!refreshPromise) {
     refreshPromise = refreshAccessToken().finally(() => {
       refreshPromise = null
@@ -138,9 +143,9 @@ api.interceptors.request.use(
     // 检查 token 是否即将过期
     if (isTokenExpiringSoon()) {
       console.log('[API] Token 即将过期，尝试刷新')
-      const newToken = await getSharedRefresh()
+      const refreshed = await refreshStoredAccessToken()
       // 刷新失败时使用旧 token 继续，让响应拦截器统一完成登出。
-      config.headers.Authorization = `Bearer ${newToken || token}`
+      config.headers.Authorization = `Bearer ${refreshed?.accessToken || token}`
     } else {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -165,7 +170,7 @@ api.interceptors.response.use(
       // 如果是 refresh 接口失败，清除 token 并跳转登录
       if (originalRequest.url?.includes('/auth/refresh')) {
         console.log('[API] Refresh Token 失效，跳转登录')
-        clearTokens()
+        clearStoredAuthTokens()
         if (window.location.pathname !== '/login') {
           window.location.href = '/login'
         }
@@ -175,14 +180,14 @@ api.interceptors.response.use(
       originalRequest._retry = true
 
       try {
-        const newToken = await getSharedRefresh()
-        if (newToken) {
-          originalRequest.headers.Authorization = `Bearer ${newToken}`
+        const refreshed = await refreshStoredAccessToken()
+        if (refreshed) {
+          originalRequest.headers.Authorization = `Bearer ${refreshed.accessToken}`
           return api(originalRequest)
         } else {
           // 刷新失败，跳转登录
           console.log('[API] 无法刷新 Token，跳转登录')
-          clearTokens()
+          clearStoredAuthTokens()
           if (window.location.pathname !== '/login') {
             window.location.href = '/login'
           }
@@ -190,7 +195,7 @@ api.interceptors.response.use(
         }
       } catch (refreshError) {
         console.error('[API] 刷新异常', refreshError)
-        clearTokens()
+        clearStoredAuthTokens()
         if (window.location.pathname !== '/login') {
           window.location.href = '/login'
         }

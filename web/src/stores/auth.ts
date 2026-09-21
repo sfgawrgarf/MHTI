@@ -11,6 +11,7 @@ import {
   type ChangePasswordRequest,
   type UpdateUsernameRequest,
 } from '@/api/auth'
+import { clearStoredAuthTokens, refreshStoredAccessToken } from '@/api'
 
 // Token 存储键
 const ACCESS_TOKEN_KEY = 'access_token'
@@ -76,10 +77,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function clearTokens() {
-    localStorage.removeItem(ACCESS_TOKEN_KEY)
-    localStorage.removeItem(REFRESH_TOKEN_KEY)
-    localStorage.removeItem(SESSION_ID_KEY)
-    localStorage.removeItem(EXPIRES_AT_KEY)
+    clearStoredAuthTokens()
     expiresAt.value = null
     sessionId.value = null
 
@@ -113,9 +111,12 @@ export const useAuthStore = defineStore('auth', () => {
 
     try {
       console.log('[Auth] 调用刷新 API')
-      const response = await authApi.refresh({ refresh_token: refreshToken })
-      updateAccessToken(response.data.access_token, response.data.expires_in)
-      console.log('[Auth] 刷新成功，新 Token 有效期', response.data.expires_in, '秒')
+      const refreshed = await refreshStoredAccessToken()
+      if (!refreshed) {
+        throw new Error('Refresh Token 无效或已过期')
+      }
+      updateAccessToken(refreshed.accessToken, refreshed.expiresIn)
+      console.log('[Auth] 刷新成功，新 Token 有效期', refreshed.expiresIn, '秒')
       return true
     } catch (error) {
       console.log('[Auth] 刷新 API 失败', error)

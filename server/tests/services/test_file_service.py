@@ -99,10 +99,12 @@ class TestFileService:
         (tmp_path / "video.MP4").touch()
         (tmp_path / "video.MKV").touch()
         (tmp_path / "video.Avi").touch()
+        (tmp_path / "video.M4V").touch()
+        (tmp_path / "video.STRM").touch()
 
         result = file_service.scan_folder(str(tmp_path))
 
-        assert len(result) == 3
+        assert len(result) == 5
 
     def test_scan_folder_allows_double_dot_inside_directory_name(
         self, tmp_path, file_service,
@@ -137,7 +139,7 @@ class TestFileService:
         expected = {
             ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv",
             ".rmvb", ".ts", ".m2ts", ".bdmv", ".webm",
-            ".3gp", ".mpg", ".mpeg", ".vob", ".iso", ".strm",
+            ".3gp", ".mpg", ".mpeg", ".vob", ".iso", ".m4v", ".strm",
         }
         assert SUPPORTED_VIDEO_EXTENSIONS == expected
 

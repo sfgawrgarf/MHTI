@@ -14,6 +14,7 @@ const defaultAdvancedSettings = (): ManualJobAdvancedSettings => ({
   use_global_download: true,
   use_global_naming: true,
   use_global_metadata: true,
+  scan_filters_enabled: false,
   metadata_folder: '',
   delete_metadata_on_fail: false,
   overwrite_video: false,

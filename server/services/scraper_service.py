@@ -35,6 +35,7 @@ from server.models.scraper import (
     ScrapeStatus,
 )
 from server.models.storage import StorageLocator, StorageProvider
+from server.models.template import NamingTemplate
 from server.models.tmdb import TMDBSearchResult, TMDBSeason, TMDBSeries
 from server.models.ai import AICandidate, AIRecognitionResult, AIUsageMode
 from server.services.ai_provider_service import AIProviderError, AIProviderService
@@ -58,6 +59,7 @@ from server.services.scraper_media import ScraperMediaMixin
 from server.services.scraper_metadata import ScraperMetadataMixin
 from server.services.subtitle_service import SubtitleService
 from server.services.tmdb_service import TMDBService
+from server.services.template_service import TemplateService
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,37 @@ def _resolve_task_output_preferences(
     effective_file_action = file_action or ("overwrite" if overwrite_video else None)
     process_subtitles = settings is None or settings.process_subtitle
     return effective_file_action, process_subtitles
+
+
+def _resolve_task_naming_template(
+    settings: ManualJobAdvancedSettings | None,
+) -> NamingTemplate | None:
+    """Build a validated per-task template or safely fall back to global naming."""
+    if settings is None or settings.use_global_naming:
+        return None
+
+    defaults = NamingTemplate()
+    candidate = NamingTemplate(
+        series_folder=settings.series_folder_template.strip()
+        or defaults.series_folder,
+        season_folder=settings.season_folder_template.strip()
+        or defaults.season_folder,
+        episode_file=settings.episode_file_template.strip()
+        or defaults.episode_file,
+    )
+    validator = TemplateService()
+    for template in (
+        candidate.series_folder,
+        candidate.season_folder,
+        candidate.episode_file,
+    ):
+        if not validator.validate_template(template).valid:
+            logger.warning(
+                "Ignoring invalid naming override from a legacy task: %s",
+                template,
+            )
+            return None
+    return candidate
 
 
 class _P115StorageProvider:
@@ -662,6 +695,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         output_dir: str | None,
         link_mode: OrganizeMode | None,
         year: int | None = None,
+        advanced_settings: ManualJobAdvancedSettings | None = None,
     ) -> RenameRequest:
         """构建统一的整理请求。"""
         return RenameRequest(
@@ -672,6 +706,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             year=year,
             output_dir=output_dir,
             link_mode=link_mode,
+            naming_template=_resolve_task_naming_template(advanced_settings),
         )
 
     async def _finalize_storage_output(
@@ -686,6 +721,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
         episode: int,
         source_path: str,
         year: int | None = None,
+        advanced_settings: ManualJobAdvancedSettings | None = None,
     ) -> StorageLocator:
         """处理 115 网盘输出分支。"""
         if file_locator.provider != StorageProvider.P115:
@@ -700,6 +736,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             output_dir=output_locator.path,
             link_mode=mode,
             year=year,
+            advanced_settings=advanced_settings,
         )
         preview = self.rename_service.preview_rename(rename_request)
         dest_path = Path(preview.dest_path)
@@ -764,6 +801,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     # links would become invalid when that directory is removed.
                     link_mode=OrganizeMode.MOVE,
                     year=year,
+                    advanced_settings=advanced_settings,
                 )
                 rename_result = await run_file_io(self.rename_service.execute_rename, local_request)
                 if not rename_result.success:
@@ -822,6 +860,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 year=year,
                 output_dir=output_dir_for_preview,
                 link_mode=link_mode,
+                advanced_settings=advanced_settings,
             )
             preview = self.rename_service.preview_rename(preview_request)
             dest_path = Path(preview.dest_path)
@@ -1338,6 +1377,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                         episode=episode,
                         source_path=source_display_path,
                         year=year,
+                        advanced_settings=task_settings,
                     )
                     result.dest_path = dest_locator.path
                     move_step.logs.append(
@@ -1379,6 +1419,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                             # Provider downloads are temporary. Publishing by
                             # move keeps the final file valid after cleanup.
                             link_mode=OrganizeMode.MOVE,
+                            advanced_settings=task_settings,
                         )
                         rename_request.conflict_action = effective_file_action
                         dest_file, _, _ = (
@@ -1415,6 +1456,7 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     year=year,
                     output_dir=effective_output_dir,
                     link_mode=request.link_mode,
+                    advanced_settings=task_settings,
                 )
                 rename_request.conflict_action = effective_file_action
                 dest_file, _, _ = (

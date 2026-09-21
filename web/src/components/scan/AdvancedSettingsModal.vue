@@ -15,10 +15,9 @@ import {
   NIcon,
   NTag,
 } from 'naive-ui'
-import { FolderOutline, CloseOutline } from '@vicons/ionicons5'
+import { CloseOutline } from '@vicons/ionicons5'
 import type { ManualJobAdvancedSettings } from '@/api/types'
 import { LinkMode } from '@/api/types'
-import FolderBrowserModal from './FolderBrowserModal.vue'
 
 const props = defineProps<{
   show: boolean
@@ -32,19 +31,15 @@ const emit = defineEmits<{
 }>()
 
 const activeTab = ref('organize')
-const showMetadataFolderBrowser = ref(false)
-
-// 默认文件类型白名单
-const defaultExtWhitelist = ['mp4', 'avi', 'rmvb', 'wmv', 'mov', 'mkv', 'webm', 'iso', 'mpg', 'm4v', 'ts', 'flv', 'strm', 'vob', 'm2ts']
-
 // 表单数据
 const formData = ref<Omit<ManualJobAdvancedSettings, 'use_global_organize' | 'use_global_download' | 'use_global_naming' | 'use_global_metadata'>>({
+  scan_filters_enabled: true,
   metadata_folder: '',
   delete_metadata_on_fail: false,
   overwrite_video: false,
   overwrite_image: false,
   file_size_filter: 100,
-  file_ext_whitelist: [...defaultExtWhitelist],
+  file_ext_whitelist: [],
   file_name_blacklist: [],
   file_sanitize_list: [],
   protect_ext_whitelist: false,
@@ -55,9 +50,9 @@ const formData = ref<Omit<ManualJobAdvancedSettings, 'use_global_organize' | 'us
   download_poster: true,
   download_thumb: true,
   download_fanart: false,
-  series_folder_template: '{series_name} ({year})',
+  series_folder_template: '{title} ({year})',
   season_folder_template: 'Season {season}',
-  episode_file_template: '{series_name} - S{season:02d}E{episode:02d}',
+  episode_file_template: '{title} - S{season:02d}E{episode:02d}',
   scrape_title: true,
   scrape_plot: true,
   nfo_enabled: true,
@@ -106,11 +101,6 @@ const handleConfirm = () => {
   handleClose()
 }
 
-// 处理元数据目录选择
-const handleMetadataFolderConfirm = (path: string) => {
-  formData.value.metadata_folder = path
-}
-
 // 监听显示状态重置标签页
 watch(() => props.show, (show) => {
   if (show) {
@@ -147,19 +137,6 @@ watch(() => props.show, (show) => {
           </div>
           <template v-if="!useGlobalOrganize">
             <NForm :model="formData" label-placement="left" label-width="auto" class="settings-form">
-              <NFormItem label="元数据目录">
-                <div class="path-input">
-                  <NInput
-                    v-model:value="formData.metadata_folder"
-                    placeholder="留空则跟随视频目录"
-                  />
-                  <NButton @click="showMetadataFolderBrowser = true">
-                    <template #icon>
-                      <NIcon :component="FolderOutline" />
-                    </template>
-                  </NButton>
-                </div>
-              </NFormItem>
               <NFormItem label="文件大小过滤">
                 <NSpace align="center">
                   <NInputNumber v-model:value="formData.file_size_filter" :min="0" style="width: 120px" />
@@ -171,6 +148,7 @@ watch(() => props.show, (show) => {
                   <NTag v-for="(ext, index) in formData.file_ext_whitelist" :key="ext" closable size="small" @close="removeTag(formData.file_ext_whitelist, index)">{{ ext }}</NTag>
                   <NInput v-model:value="newExtInput" placeholder="添加" size="small" class="tag-add-input" @keyup.enter="addTag(formData.file_ext_whitelist, { value: newExtInput }); newExtInput = ''" />
                 </div>
+                <template #feedback>留空表示使用系统支持的全部视频格式</template>
               </NFormItem>
               <NFormItem label="文件名黑名单">
                 <div class="tag-input-area">
@@ -212,15 +190,15 @@ watch(() => props.show, (show) => {
           <template v-if="!useGlobalNaming">
             <NForm :model="formData" label-placement="top" class="settings-form">
               <NFormItem label="剧集文件夹模板">
-                <NInput v-model:value="formData.series_folder_template" placeholder="{series_name} ({year})" />
+                <NInput v-model:value="formData.series_folder_template" placeholder="{title} ({year})" />
               </NFormItem>
               <NFormItem label="季文件夹模板">
                 <NInput v-model:value="formData.season_folder_template" placeholder="Season {season}" />
               </NFormItem>
               <NFormItem label="剧集文件模板">
-                <NInput v-model:value="formData.episode_file_template" placeholder="{series_name} - S{season:02d}E{episode:02d}" />
+                <NInput v-model:value="formData.episode_file_template" placeholder="{title} - S{season:02d}E{episode:02d}" />
               </NFormItem>
-              <div class="form-hint">可用变量: {series_name}, {year}, {season}, {episode}, {episode_title}</div>
+              <div class="form-hint">可用变量: {title}, {year}, {season}, {episode}, {episode_title}</div>
             </NForm>
           </template>
         </NTabPane>
@@ -233,12 +211,6 @@ watch(() => props.show, (show) => {
           </div>
           <template v-if="!useGlobalMetadata">
             <NForm :model="formData" label-placement="left" label-width="auto" class="settings-form">
-              <NFormItem label="刮削标题">
-                <NSwitch v-model:value="formData.scrape_title" />
-              </NFormItem>
-              <NFormItem label="刮削简介">
-                <NSwitch v-model:value="formData.scrape_plot" />
-              </NFormItem>
               <NFormItem label="生成NFO文件">
                 <NSwitch v-model:value="formData.nfo_enabled" />
               </NFormItem>
@@ -259,13 +231,6 @@ watch(() => props.show, (show) => {
     </NCard>
   </NModal>
 
-  <!-- 元数据目录选择弹窗 -->
-  <FolderBrowserModal
-    v-model:show="showMetadataFolderBrowser"
-    title="选择元数据目录"
-    :allow-p115="false"
-    @confirm="handleMetadataFolderConfirm"
-  />
 </template>
 
 <style scoped>

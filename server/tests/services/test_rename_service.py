@@ -136,6 +136,32 @@ class TestRenameServicePreview:
         assert preview.dest_folder.endswith(str(Path("Test Show") / "S02"))
         assert preview.new_filename == "Test Show.S02E05.mp4"
 
+    def test_preview_prefers_valid_task_naming_template(
+        self,
+        rename_service,
+        sample_video,
+        temp_dir,
+    ):
+        request = RenameRequest(
+            source_path=sample_video,
+            title="Test Show",
+            season=2,
+            episode=5,
+            output_dir=temp_dir,
+            naming_template=NamingTemplate(
+                series_folder="Task-{title}",
+                season_folder="Task-S{season:02d}",
+                episode_file="Task-{title}-{episode:03d}",
+            ),
+        )
+
+        preview = rename_service.preview_rename(request)
+
+        assert preview.dest_folder.endswith(
+            str(Path("Task-Test Show") / "Task-S02")
+        )
+        assert preview.new_filename == "Task-Test Show-005.mp4"
+
 
 class TestRenameServiceExecute:
     """Tests for execute_rename method."""

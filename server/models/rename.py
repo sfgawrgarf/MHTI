@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from server.models.organize import OrganizeMode
+from server.models.template import NamingTemplate
 
 
 class RenameRequest(BaseModel):
@@ -19,6 +20,7 @@ class RenameRequest(BaseModel):
     output_dir: str | None = None  # If None, rename in place
     link_mode: OrganizeMode | None = None  # 整理模式：copy/move/hardlink/symlink
     conflict_action: Literal["overwrite", "rename"] | None = None
+    naming_template: NamingTemplate | None = None
 
 
 class RenameResult(BaseModel):

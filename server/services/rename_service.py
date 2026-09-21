@@ -38,7 +38,9 @@ class RenameService:
         # never touches the filesystem.  Execution performs the strict checks.
         source_path = Path(request.source_path)
         extension = source_path.suffix
-        active_template = self._template_service.get_active_template()
+        active_template = (
+            request.naming_template or self._template_service.get_active_template()
+        )
 
         # Build template data
         data = self._build_template_data(request)

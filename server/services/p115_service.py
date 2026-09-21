@@ -12,6 +12,7 @@ from typing import Any
 
 from server.core.db.connection import db_connection
 from server.core.exceptions import ConfigurationError, FolderNotFoundError, InvalidFolderError
+from server.core.media_extensions import SUPPORTED_VIDEO_EXTENSIONS
 from server.models.cloud_115 import (
     Cloud115Config,
     Cloud115DeviceOption,
@@ -30,11 +31,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_APP = "alipaymini"
 PROJECT_P115_HOME = Path(__file__).resolve().parents[2] / "data" / "p115-home"
 QRCODE_PAYLOAD_PREFIX = "cloud_115_qr_payload:"
-# Mirrors file_service.SUPPORTED_VIDEO_EXTENSIONS (kept local to avoid a circular import).
-SCAN_VIDEO_EXTENSIONS = {
-    ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv", ".rmvb", ".ts",
-    ".m2ts", ".bdmv", ".webm", ".3gp", ".mpg", ".mpeg", ".vob", ".iso",
-}
 STANDARD_DEVICE_LABELS = {
     "web": "115生活_网页端",
     "ios": "115生活_苹果端",
@@ -297,6 +293,7 @@ class P115Service:
         *,
         path: str = VIRTUAL_115_ROOT_PATH,
         file_id: str | None = "0",
+        extensions: set[str] | frozenset[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Recursively scan a 115 directory for video files.
 
@@ -317,11 +314,15 @@ class P115Service:
             file_id=file_id,
         )
         collected: list[dict[str, Any]] = []
+        effective_extensions = (
+            SUPPORTED_VIDEO_EXTENSIONS if extensions is None else extensions
+        )
         await self._scan_recursive(
             client=client,
             directory_id=root_directory_id,
             current_path=normalized_path,
             collected=collected,
+            extensions=effective_extensions,
         )
         return collected
 
@@ -332,6 +333,7 @@ class P115Service:
         directory_id: str,
         current_path: str,
         collected: list[dict[str, Any]],
+        extensions: set[str] | frozenset[str],
     ) -> None:
         """Depth-first scan collecting video files and recursing into folders."""
         page_size = 100
@@ -378,6 +380,7 @@ class P115Service:
                         directory_id=child_id,
                         current_path=entry["path"],
                         collected=collected,
+                        extensions=extensions,
                     )
                 else:
                     file_id = entry.get("file_id") or "0"
@@ -386,7 +389,10 @@ class P115Service:
                             "115 扫描忽略缺少有效 ID 的文件: %s",
                             entry.get("path"),
                         )
-                    elif self._is_video_filename(entry.get("name") or ""):
+                    elif self._is_video_filename(
+                        entry.get("name") or "",
+                        extensions,
+                    ):
                         collected.append(entry)
 
             # Stop when the page is not full (last page) or total is exhausted.
@@ -395,12 +401,15 @@ class P115Service:
             offset += page_size
 
     @staticmethod
-    def _is_video_filename(name: str) -> bool:
+    def _is_video_filename(
+        name: str,
+        extensions: set[str] | frozenset[str] = SUPPORTED_VIDEO_EXTENSIONS,
+    ) -> bool:
         """Return True if the filename looks like a supported video file."""
         dot = name.rfind(".")
         if dot < 0:
             return False
-        return name[dot:].lower() in SCAN_VIDEO_EXTENSIONS
+        return name[dot:].lower() in extensions
 
     async def _load_p115_client_with_config(self, config: Cloud115Config) -> Any:
         """Build a configured P115Client from persisted login config."""

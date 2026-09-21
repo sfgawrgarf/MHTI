@@ -2,7 +2,11 @@
  * WebSocket 客户端 - 实时接收刮削进度
  */
 import { ref, computed } from 'vue'
-import { getApiBaseUrl } from '@/api'
+import {
+  clearStoredAuthTokens,
+  getApiBaseUrl,
+  refreshStoredAccessToken,
+} from '@/api'
 
 // WebSocket 消息类型
 export interface WSMessage {
@@ -23,6 +27,7 @@ interface WebSocketGlobalState {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   heartbeatTimer: ReturnType<typeof setInterval> | null
   reconnectEnabled: boolean
+  lifecycleGeneration: number
   isConnected: ReturnType<typeof ref<boolean>>
   handlers: Set<MessageHandler>
 }
@@ -42,9 +47,13 @@ function getGlobalState(): WebSocketGlobalState {
       reconnectTimer: null,
       heartbeatTimer: null,
       reconnectEnabled: false,
+      lifecycleGeneration: 0,
       isConnected: ref(false),
       handlers: new Set(),
     }
+  }
+  if (typeof window.__WS_STATE__.lifecycleGeneration !== 'number') {
+    window.__WS_STATE__.lifecycleGeneration = 0
   }
   return window.__WS_STATE__
 }
@@ -143,6 +152,7 @@ function connect(): void {
     return
   }
   state.reconnectEnabled = true
+  const lifecycleGeneration = state.lifecycleGeneration
 
   try {
     const socket = new WebSocket(getWebSocketUrl())
@@ -164,13 +174,7 @@ function connect(): void {
       stopHeartbeat()
       if (event.code === 4401) {
         state.reconnectEnabled = false
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('refresh_token')
-        localStorage.removeItem('session_id')
-        localStorage.removeItem('expires_at')
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login'
-        }
+        void recoverAuthentication(lifecycleGeneration)
         return
       }
       scheduleReconnect()
@@ -193,6 +197,23 @@ function connect(): void {
   } catch (e) {
     console.error('[WS] 创建连接失败:', e)
     scheduleReconnect()
+  }
+}
+
+async function recoverAuthentication(lifecycleGeneration: number): Promise<void> {
+  const refreshed = await refreshStoredAccessToken()
+  // Logout/login or an explicit disconnect superseded this recovery attempt.
+  if (state.lifecycleGeneration !== lifecycleGeneration) return
+
+  if (refreshed) {
+    state.reconnectEnabled = true
+    connect()
+    return
+  }
+
+  clearStoredAuthTokens()
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login'
   }
 }
 
@@ -313,6 +334,7 @@ function scheduleReconnect(): void {
  * 断开连接
  */
 function disconnect(): void {
+  state.lifecycleGeneration += 1
   state.reconnectEnabled = false
   if (state.reconnectTimer) {
     clearTimeout(state.reconnectTimer)

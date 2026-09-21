@@ -11,28 +11,8 @@ from server.core.exceptions import (
 )
 from server.models.file import DirectoryEntry, ScannedFile
 from server.models.storage import StorageLocator, StorageProvider
+from server.core.media_extensions import SUPPORTED_VIDEO_EXTENSIONS
 from server.services.file_io import check_file_cancelled, run_file_io
-
-# Supported video file extensions
-SUPPORTED_VIDEO_EXTENSIONS: set[str] = {
-    ".mp4",
-    ".mkv",
-    ".avi",
-    ".wmv",
-    ".mov",
-    ".flv",
-    ".rmvb",
-    ".ts",
-    ".m2ts",
-    ".bdmv",
-    ".webm",
-    ".3gp",
-    ".mpg",
-    ".mpeg",
-    ".vob",
-    ".iso",
-    ".strm",
-}
 
 # 禁止访问的系统目录（安全防护）
 BLOCKED_PATHS = {
@@ -89,6 +69,7 @@ class FileService:
         self,
         folder_path: str,
         locator: StorageLocator | None = None,
+        extensions: set[str] | frozenset[str] | None = None,
     ) -> list[ScannedFile]:
         """
         Scan a folder recursively for video files.
@@ -107,7 +88,7 @@ class FileService:
             PermissionDeniedError: If access to the folder is denied.
         """
         if locator is not None and locator.provider == StorageProvider.P115:
-            return self._scan_provider_p115(folder_path, locator)
+            return self._scan_provider_p115(folder_path, locator, extensions)
 
         # 路径安全验证
         path = _sanitize_path(folder_path)
@@ -122,7 +103,10 @@ class FileService:
 
         # Scan for video files
         try:
-            return self._scan_recursive(path)
+            effective_extensions = (
+                SUPPORTED_VIDEO_EXTENSIONS if extensions is None else extensions
+            )
+            return self._scan_recursive(path, effective_extensions)
         except PermissionError as e:
             raise PermissionDeniedError(folder_path) from e
 
@@ -130,6 +114,7 @@ class FileService:
         self,
         folder_path: str,
         locator: StorageLocator,
+        extensions: set[str] | frozenset[str] | None = None,
     ) -> list[ScannedFile]:
         """Scan a 115 cloud directory via the async provider service (sync wrapper)."""
         import asyncio
@@ -142,6 +127,7 @@ class FileService:
         coro = scan_method(
             path=locator.path or folder_path,
             file_id=locator.file_id,
+            extensions=extensions,
         )
         # Sync path only valid when no loop is running; otherwise use scan_folder_async.
         try:
@@ -159,6 +145,7 @@ class FileService:
         self,
         folder_path: str,
         locator: StorageLocator | None = None,
+        extensions: set[str] | frozenset[str] | None = None,
     ) -> list[ScannedFile]:
         """Async variant of :meth:`scan_folder` for provider-backed sources."""
         if locator is not None and locator.provider == StorageProvider.P115:
@@ -169,9 +156,15 @@ class FileService:
             entries = await scan_method(
                 path=locator.path or folder_path,
                 file_id=locator.file_id,
+                extensions=extensions,
             )
             return [self._p115_entry_to_scanned_file(entry) for entry in entries]
-        return await run_file_io(self.scan_folder, folder_path, locator=locator)
+        return await run_file_io(
+            self.scan_folder,
+            folder_path,
+            locator=locator,
+            extensions=extensions,
+        )
 
     @staticmethod
     def _p115_entry_to_scanned_file(entry: dict[str, Any]) -> ScannedFile:
@@ -188,7 +181,11 @@ class FileService:
             parent_id=entry.get("parent_id"),
         )
 
-    def _scan_recursive(self, folder: Path) -> list[ScannedFile]:
+    def _scan_recursive(
+        self,
+        folder: Path,
+        extensions: set[str] | frozenset[str] = SUPPORTED_VIDEO_EXTENSIONS,
+    ) -> list[ScannedFile]:
         """
         Recursively scan a folder for video files.
 
@@ -204,7 +201,7 @@ class FileService:
 
         for item in folder.rglob("*"):
             check_file_cancelled()
-            if item.is_file() and item.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS:
+            if item.is_file() and item.suffix.lower() in extensions:
                 stat = item.stat()
                 mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
                 video_files.append(

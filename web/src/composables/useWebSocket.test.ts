@@ -1,5 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const apiMocks = vi.hoisted(() => ({
+  api: { defaults: { baseURL: '/api' } },
+  refreshStoredAccessToken: vi.fn(),
+  clearStoredAuthTokens: vi.fn(),
+}))
+
+vi.mock('@/api', () => ({
+  default: apiMocks.api,
+  getApiBaseUrl: () => apiMocks.api.defaults.baseURL,
+  refreshStoredAccessToken: apiMocks.refreshStoredAccessToken,
+  clearStoredAuthTokens: apiMocks.clearStoredAuthTokens,
+}))
+
 type SocketHandler<T> = ((event: T) => void) | null
 type TestMessage = { type: string; job_id?: string; payload: any }
 
@@ -62,6 +75,13 @@ describe('useWebSocket message lifecycle', () => {
     vi.stubGlobal('localStorage', createStorage())
     vi.stubGlobal('WebSocket', FakeWebSocket)
     vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    apiMocks.api.defaults.baseURL = '/api'
+    apiMocks.refreshStoredAccessToken.mockReset().mockResolvedValue(null)
+    apiMocks.clearStoredAuthTokens.mockReset().mockImplementation(() => {
+      for (const key of ['access_token', 'refresh_token', 'session_id', 'expires_at']) {
+        localStorage.removeItem(key)
+      }
+    })
   })
 
   afterEach(() => {
@@ -173,5 +193,63 @@ describe('useWebSocket message lifecycle', () => {
     expect(client.clientId.value).toBe('new-client')
     vi.advanceTimersByTime(30000)
     expect(newSocket.sent).toContain(JSON.stringify({ type: 'ping' }))
+  })
+
+  it('refreshes an expired access token and reconnects without clearing the session', async () => {
+    localStorage.setItem('refresh_token', 'valid-refresh')
+    apiMocks.refreshStoredAccessToken.mockResolvedValue({
+      accessToken: 'new-access',
+      expiresIn: 900,
+    })
+    const { useWebSocket } = await import('./useWebSocket')
+    const client = useWebSocket()
+    client.connect()
+
+    FakeWebSocket.instances[0]!.onclose?.({ code: 4401 } as CloseEvent)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(apiMocks.refreshStoredAccessToken).toHaveBeenCalledTimes(1)
+    expect(apiMocks.clearStoredAuthTokens).not.toHaveBeenCalled()
+    expect(localStorage.getItem('refresh_token')).toBe('valid-refresh')
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('clears the session only after websocket authentication recovery fails', async () => {
+    localStorage.setItem('refresh_token', 'expired-refresh')
+    const { useWebSocket } = await import('./useWebSocket')
+    const client = useWebSocket()
+    client.connect()
+
+    FakeWebSocket.instances[0]!.onclose?.({ code: 4401 } as CloseEvent)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(apiMocks.refreshStoredAccessToken).toHaveBeenCalledTimes(1)
+    expect(apiMocks.clearStoredAuthTokens).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem('access_token')).toBeNull()
+    expect(window.location.href).toBe('/login')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('ignores a completed authentication refresh after an explicit disconnect', async () => {
+    let finishRefresh!: (value: { accessToken: string; expiresIn: number }) => void
+    apiMocks.refreshStoredAccessToken.mockReturnValue(
+      new Promise((resolve) => {
+        finishRefresh = resolve
+      })
+    )
+    const { useWebSocket } = await import('./useWebSocket')
+    const client = useWebSocket()
+    client.connect()
+
+    FakeWebSocket.instances[0]!.onclose?.({ code: 4401 } as CloseEvent)
+    client.disconnect()
+    finishRefresh({ accessToken: 'late-access', expiresIn: 900 })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(apiMocks.clearStoredAuthTokens).not.toHaveBeenCalled()
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 })

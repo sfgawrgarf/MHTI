@@ -102,6 +102,25 @@ def test_p115_event_strategy_fails_closed_without_scope_or_file_id() -> None:
     assert detected == ["/115网盘/待整理/episode.mkv"]
 
 
+def test_p115_event_strategy_accepts_uppercase_strm_extension() -> None:
+    detected: list[str] = []
+    strategy = P115EventStrategy(
+        _p115_folder(mode=WatcherMode.EVENT),
+        lambda path, _folder: detected.append(path),
+    )
+    strategy._watched_dir_ids.add("folder-1")
+
+    assert strategy._process_event_item(
+        {
+            "file_id": "file-strm",
+            "file_name": "episode.STRM",
+            "ico": "STRM",
+            "parent_id": "folder-1",
+        }
+    )
+    assert detected == ["/115网盘/待整理/episode.STRM"]
+
+
 def test_p115_event_deduplication_cache_is_bounded() -> None:
     strategy = P115EventStrategy(
         _p115_folder(mode=WatcherMode.EVENT),
