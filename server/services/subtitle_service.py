@@ -2,9 +2,9 @@
 
 import re
 import shutil
-from server.services.file_io import check_file_cancelled
 from pathlib import Path
 
+from server.core.media_extensions import SUPPORTED_VIDEO_EXTENSIONS
 from server.core.path_security import PathSecurityError, validate_media_path
 from server.models.subtitle import (
     BatchSubtitleRenameResponse,
@@ -15,15 +15,13 @@ from server.models.subtitle import (
     SubtitleScanResponse,
     VideoSubtitleAssociation,
 )
+from server.services.file_io import check_file_cancelled
 
 # Supported subtitle extensions
 SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".sup"}
 
 # Supported video extensions (for association)
-VIDEO_EXTENSIONS = {
-    ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv", ".rmvb",
-    ".ts", ".m2ts", ".webm", ".3gp", ".mpg", ".mpeg", ".vob",
-}
+VIDEO_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS
 
 # Language code mappings
 LANGUAGE_MAPPINGS: dict[str, SubtitleLanguage] = {

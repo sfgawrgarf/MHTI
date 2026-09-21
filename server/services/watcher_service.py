@@ -40,7 +40,10 @@ from server.services.file_io import check_file_cancelled, run_file_io
 logger = logging.getLogger(__name__)
 
 # Video file extensions to watch — 与 file_service.SUPPORTED_VIDEO_EXTENSIONS 保持一致
-from server.services.file_service import SUPPORTED_VIDEO_EXTENSIONS as VIDEO_EXTENSIONS
+from server.core.media_extensions import (
+    SUPPORTED_VIDEO_EXTENSIONS as VIDEO_EXTENSIONS,
+    normalize_video_extension,
+)
 
 
 def _report_background_failure(task: asyncio.Task, label: str) -> None:
@@ -601,7 +604,7 @@ class P115EventStrategy(WatchStrategy):
             return True
 
         # 检查是否视频文件（ico 字段是扩展名，如 "mp4"）
-        if f".{ico}" not in VIDEO_EXTENSIONS:
+        if normalize_video_extension(str(ico)) not in VIDEO_EXTENSIONS:
             return True
 
         # 路径匹配：parent_id 在监控目录的子目录 id 集合里才处理

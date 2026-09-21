@@ -12,6 +12,10 @@ import aiosqlite
 from server.core.db.connection import DatabaseManager, db_connection
 from server.core.db.schema import migrate_manual_jobs_table
 from server.core.database import DATABASE_PATH
+from server.core.media_extensions import (
+    SUPPORTED_VIDEO_EXTENSIONS,
+    normalize_video_extensions,
+)
 from server.models.manual_job import (
     JobSource,
     LinkMode,
@@ -24,6 +28,8 @@ from server.models.organize import OrganizeMode
 from server.models.storage import StorageLocator, StorageProvider
 
 logger = logging.getLogger(__name__)
+
+MEBIBYTE = 1024 * 1024
 
 
 def _link_mode_to_organize_mode(link_mode: LinkMode) -> OrganizeMode:
@@ -52,6 +58,62 @@ def _build_file_locator_from_scan(
         parent_id=scanned_file.parent_id or scan_locator.parent_id,
         is_dir=False,
     )
+
+
+def _get_scan_extensions(
+    settings: ManualJobAdvancedSettings | None,
+) -> set[str]:
+    """Return the canonical or task-specific extension set for one scan."""
+    extensions = set(SUPPORTED_VIDEO_EXTENSIONS)
+    if (
+        settings is None
+        or settings.use_global_organize
+        or not settings.scan_filters_enabled
+    ):
+        return extensions
+
+    configured = normalize_video_extensions(settings.file_ext_whitelist)
+    if configured:
+        extensions = configured
+    extensions.update(normalize_video_extensions(settings.extra_ext_whitelist))
+    return extensions
+
+
+def _passes_task_scan_filters(
+    *,
+    file_path: str,
+    file_size: int | None,
+    settings: ManualJobAdvancedSettings | None,
+) -> bool:
+    """Apply non-destructive task filters after provider/local discovery."""
+    if (
+        settings is None
+        or settings.use_global_organize
+        or not settings.scan_filters_enabled
+    ):
+        return True
+
+    filename = Path(file_path).name.casefold()
+    blacklist = [value.strip().casefold() for value in settings.file_name_blacklist]
+    if any(value and value in filename for value in blacklist):
+        return False
+
+    minimum_size = settings.file_size_filter * MEBIBYTE
+    # Provider APIs sometimes omit size. Unknown sizes must pass rather than
+    # silently dropping cloud files; a known zero-byte local file does not.
+    if minimum_size > 0 and file_size is not None and file_size < minimum_size:
+        return False
+    return True
+
+
+def _legacy_metadata_dir(job: ManualJob) -> str:
+    """Recover the old duplicate advanced metadata directory when necessary."""
+    if job.metadata_dir.strip():
+        return job.metadata_dir
+    settings = job.advanced_settings
+    if settings is not None and not settings.use_global_organize:
+        return settings.metadata_folder.strip()
+    return ""
 
 
 def _serialize_locator(locator: StorageLocator | None) -> str | None:
@@ -607,6 +669,7 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
         # 扫描文件
         file_service = FileService()
         scan_path = Path(job.scan_path)
+        scan_extensions = _get_scan_extensions(job.advanced_settings)
 
         is_p115_source = (
             job.scan_locator is not None
@@ -617,18 +680,59 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
             # A selected 115 file already carries the provider identifiers needed
             # by the scraper; treating its file_id as a directory would return an
             # empty or invalid provider scan.
-            files = [job.scan_path]
+            files = (
+                [job.scan_path]
+                if Path(job.scan_path).suffix.lower() in scan_extensions
+                and _passes_task_scan_filters(
+                    file_path=job.scan_path,
+                    file_size=None,
+                    settings=job.advanced_settings,
+                )
+                else []
+            )
             scan_result = []
         elif is_p115_source:
             scan_result = await file_service.scan_folder_async(
                 job.scan_locator.path or job.scan_path,
                 locator=job.scan_locator,
+                extensions=scan_extensions,
             )
+            scan_result = [
+                scanned
+                for scanned in scan_result
+                if _passes_task_scan_filters(
+                    file_path=scanned.path,
+                    file_size=scanned.size if scanned.size > 0 else None,
+                    settings=job.advanced_settings,
+                )
+            ]
             files = [f.path for f in scan_result]
         elif await run_file_io(scan_path.is_file):
-            files = [str(scan_path)]
+            stat = await run_file_io(scan_path.stat)
+            files = (
+                [str(scan_path)]
+                if scan_path.suffix.lower() in scan_extensions
+                and _passes_task_scan_filters(
+                    file_path=str(scan_path),
+                    file_size=stat.st_size,
+                    settings=job.advanced_settings,
+                )
+                else []
+            )
         else:
-            scan_result = await file_service.scan_folder_async(job.scan_path)
+            scan_result = await file_service.scan_folder_async(
+                job.scan_path,
+                extensions=scan_extensions,
+            )
+            scan_result = [
+                scanned
+                for scanned in scan_result
+                if _passes_task_scan_filters(
+                    file_path=scanned.path,
+                    file_size=scanned.size,
+                    settings=job.advanced_settings,
+                )
+            ]
             files = [f.path for f in scan_result]
 
         total_count = len(files)
@@ -646,6 +750,7 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
         # 为每个文件创建刮削任务
         scrape_service = ScrapeJobService()
         organize_mode = _link_mode_to_organize_mode(job.link_mode)
+        effective_metadata_dir = _legacy_metadata_dir(job)
         dispatched_count = 0
         skipped_count = 0
 
@@ -667,7 +772,7 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
             job_create = ScrapeJobCreate(
                 file_path=file_path,
                 output_dir=job.target_folder,
-                metadata_dir=job.metadata_dir or None,
+                metadata_dir=effective_metadata_dir or None,
                 file_locator=file_locator,
                 output_locator=job.target_locator,
                 metadata_locator=job.metadata_locator,
@@ -736,7 +841,7 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
                 conflict_type=ConflictType.NO_MATCH,
                 conflict_data={
                     "output_dir": job.target_folder,
-                    "metadata_dir": job.metadata_dir or None,
+                    "metadata_dir": _legacy_metadata_dir(job) or None,
                     "link_mode": _link_mode_to_organize_mode(job.link_mode).value,
                     "parsed_title": None,
                     "parsed_season": None,

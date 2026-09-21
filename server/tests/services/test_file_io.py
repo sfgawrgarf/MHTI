@@ -129,7 +129,7 @@ async def test_local_scan_uses_off_loop_path(monkeypatch, tmp_path):
     service = FileService()
     loop_thread = get_ident()
 
-    def scan(path, locator=None):
+    def scan(path, locator=None, extensions=None):
         assert get_ident() != loop_thread
         return []
 

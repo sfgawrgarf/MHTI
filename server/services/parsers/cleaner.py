@@ -11,12 +11,17 @@
 
 import re
 
+from server.core.media_extensions import SUPPORTED_VIDEO_EXTENSIONS
 from server.services.parsers.base import ParseContext, ParserPlugin
 
 # ============================================================================
 # 视频文件扩展名
 # ============================================================================
-VIDEO_EXTENSIONS = r"\.(mp4|mkv|avi|wmv|mov|flv|rmvb|ts|m2ts|webm|iso|m4v|strm)$"
+VIDEO_EXTENSIONS = (
+    "(?:"
+    + "|".join(re.escape(extension) for extension in sorted(SUPPORTED_VIDEO_EXTENSIONS))
+    + ")$"
+)
 
 # ============================================================================
 # 语言标识（扩展名前）

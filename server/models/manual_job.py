@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from server.models.storage import (
     StorageLocator,
     infer_directory_locator,
@@ -49,11 +49,12 @@ class ManualJobAdvancedSettings(BaseModel):
     use_global_metadata: bool = True
 
     # 整理设置（当 use_global_organize=False 时使用）
+    scan_filters_enabled: bool = False
     metadata_folder: str = ""
-    file_size_filter: int = 100
-    file_ext_whitelist: list[str] = []
-    file_name_blacklist: list[str] = []
-    file_sanitize_list: list[str] = []
+    file_size_filter: int = Field(100, ge=0)
+    file_ext_whitelist: list[str] = Field(default_factory=list, max_length=200)
+    file_name_blacklist: list[str] = Field(default_factory=list, max_length=200)
+    file_sanitize_list: list[str] = Field(default_factory=list, max_length=200)
     delete_metadata_on_fail: bool = False
     overwrite_video: bool = False
     overwrite_image: bool = False
@@ -61,7 +62,7 @@ class ManualJobAdvancedSettings(BaseModel):
     delete_by_size: bool = False
     delete_by_ext: bool = False
     delete_by_name: bool = False
-    extra_ext_whitelist: list[str] = []
+    extra_ext_whitelist: list[str] = Field(default_factory=list, max_length=200)
 
     # 下载设置（当 use_global_download=False 时使用）
     download_poster: bool = True
@@ -129,6 +130,16 @@ class ManualJobCreate(BaseModel):
     @model_validator(mode="after")
     def validate_storage_selection(self) -> "ManualJobCreate":
         """Normalize plain paths and reject unsupported provider combinations."""
+        self._validate_advanced_settings()
+        if (
+            not self.metadata_dir.strip()
+            and self.advanced_settings is not None
+            and not self.advanced_settings.use_global_organize
+            and self.advanced_settings.metadata_folder.strip()
+        ):
+            # Preserve old saved task settings without keeping two competing
+            # metadata-directory controls in the UI.
+            self.metadata_dir = self.advanced_settings.metadata_folder.strip()
         self.scan_locator = infer_directory_locator(
             self.scan_path, self.scan_locator, allow_file=True
         )
@@ -162,6 +173,71 @@ class ManualJobCreate(BaseModel):
             organize_mode=self.link_mode,
         )
         return self
+
+    def _validate_advanced_settings(self) -> None:
+        """Reject settings that the runtime cannot honor safely."""
+        settings = self.advanced_settings
+        if settings is None:
+            return
+
+        unsupported: list[str] = []
+        if not settings.use_global_organize:
+            if settings.delete_metadata_on_fail:
+                unsupported.append("delete_metadata_on_fail")
+            if settings.file_sanitize_list:
+                unsupported.append("file_sanitize_list")
+            if settings.protect_ext_whitelist:
+                unsupported.append("protect_ext_whitelist")
+            if settings.delete_by_size:
+                unsupported.append("delete_by_size")
+            if settings.delete_by_ext:
+                unsupported.append("delete_by_ext")
+            if settings.delete_by_name:
+                unsupported.append("delete_by_name")
+        if not settings.use_global_metadata:
+            if not settings.scrape_title:
+                unsupported.append("scrape_title=false")
+            if not settings.scrape_plot:
+                unsupported.append("scrape_plot=false")
+        if unsupported:
+            raise ValueError(
+                "以下高级设置尚不支持，为避免静默忽略已拒绝创建任务: "
+                + ", ".join(unsupported)
+            )
+
+        if not settings.use_global_organize and settings.scan_filters_enabled:
+            from server.core.media_extensions import (
+                is_valid_video_extension,
+                normalize_video_extensions,
+            )
+
+            extensions = normalize_video_extensions(
+                settings.file_ext_whitelist + settings.extra_ext_whitelist
+            )
+            if any(
+                not is_valid_video_extension(extension)
+                for extension in extensions
+            ):
+                raise ValueError("文件扩展名格式无效")
+
+        if not settings.use_global_naming:
+            from server.models.template import NamingTemplate
+            from server.services.template_service import TemplateService
+
+            defaults = NamingTemplate()
+            templates = {
+                "剧集文件夹": settings.series_folder_template.strip()
+                or defaults.series_folder,
+                "季文件夹": settings.season_folder_template.strip()
+                or defaults.season_folder,
+                "剧集文件": settings.episode_file_template.strip()
+                or defaults.episode_file,
+            }
+            validator = TemplateService()
+            for label, template in templates.items():
+                result = validator.validate_template(template)
+                if not result.valid:
+                    raise ValueError(f"{label}模板无效: {result.error}")
 
 
 class ManualJobListResponse(BaseModel):

@@ -11,13 +11,19 @@ import server.services.manual_job_service as manual_job_service_module
 import server.services.scrape_job_service as scrape_job_service_module
 from server.core.db import create_all_tables
 from server.models.history import HistoryRecordCreate, TaskStatus
-from server.models.manual_job import JobSource, LinkMode, ManualJobCreate
+from server.models.manual_job import (
+    JobSource,
+    LinkMode,
+    ManualJobAdvancedSettings,
+    ManualJobCreate,
+)
 from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
 from server.models.storage import StorageLocator, StorageProvider
 from server.services.fingerprint_service import calculate_fingerprint
 from server.services.history_service import HistoryService
 from server.services.manual_job_service import ManualJobService
 from server.services.scrape_job_service import ScrapeJobService
+from server.services.scraper_service import _resolve_task_naming_template
 
 
 async def _initialize_test_db(db_path: Path) -> None:
@@ -53,6 +59,142 @@ def test_p115_scan_result_requires_its_own_file_id() -> None:
             SimpleNamespace(file_id="0", parent_id="scan-root"),
             "/115网盘/待整理/S01E01.mkv",
         )
+
+
+def test_task_scan_extensions_use_canonical_defaults_and_custom_entries() -> None:
+    defaults = manual_job_service_module._get_scan_extensions(None)
+    assert ".strm" in defaults
+    assert ".m4v" in defaults
+
+    settings = ManualJobAdvancedSettings(
+        use_global_organize=False,
+        scan_filters_enabled=True,
+        file_ext_whitelist=["MKV"],
+        extra_ext_whitelist=[".custom"],
+    )
+    assert manual_job_service_module._get_scan_extensions(settings) == {
+        ".mkv",
+        ".custom",
+    }
+
+
+def test_task_scan_filters_apply_size_and_filename_without_dropping_unknown_size() -> None:
+    settings = ManualJobAdvancedSettings(
+        use_global_organize=False,
+        scan_filters_enabled=True,
+        file_size_filter=100,
+        file_name_blacklist=["sample"],
+    )
+
+    assert not manual_job_service_module._passes_task_scan_filters(
+        file_path="/incoming/Episode.sample.mkv",
+        file_size=200 * 1024 * 1024,
+        settings=settings,
+    )
+    assert not manual_job_service_module._passes_task_scan_filters(
+        file_path="/incoming/Episode.mkv",
+        file_size=99 * 1024 * 1024,
+        settings=settings,
+    )
+    assert manual_job_service_module._passes_task_scan_filters(
+        file_path="/115网盘/Episode.mkv",
+        file_size=None,
+        settings=settings,
+    )
+    assert not manual_job_service_module._passes_task_scan_filters(
+        file_path="/incoming/Empty.mkv",
+        file_size=0,
+        settings=settings,
+    )
+
+
+def test_manual_job_rejects_unsupported_destructive_settings() -> None:
+    with pytest.raises(ValueError, match="delete_by_ext"):
+        ManualJobCreate(
+            scan_path="/incoming",
+            target_folder="/library",
+            advanced_settings=ManualJobAdvancedSettings(
+                use_global_organize=False,
+                delete_by_ext=True,
+            ),
+        )
+
+
+def test_manual_job_validates_only_active_scan_filter_extensions() -> None:
+    inactive = ManualJobCreate(
+        scan_path="/incoming",
+        target_folder="/library",
+        advanced_settings=ManualJobAdvancedSettings(
+            file_ext_whitelist=["*.mkv"],
+        ),
+    )
+    assert inactive.advanced_settings is not None
+
+    with pytest.raises(ValueError, match="扩展名格式无效"):
+        ManualJobCreate(
+            scan_path="/incoming",
+            target_folder="/library",
+            advanced_settings=ManualJobAdvancedSettings(
+                use_global_organize=False,
+                scan_filters_enabled=True,
+                file_ext_whitelist=["*.mkv"],
+            ),
+        )
+
+
+def test_manual_job_promotes_legacy_metadata_folder() -> None:
+    job = ManualJobCreate(
+        scan_path="/incoming",
+        target_folder="/library",
+        advanced_settings=ManualJobAdvancedSettings(
+            use_global_organize=False,
+            metadata_folder="/output/metadata",
+        ),
+    )
+
+    assert job.metadata_dir == "/output/metadata"
+    assert job.metadata_locator is not None
+    assert job.metadata_locator.path == "/output/metadata"
+
+
+def test_manual_job_validates_task_naming_templates() -> None:
+    valid = ManualJobCreate(
+        scan_path="/incoming",
+        target_folder="/library",
+        advanced_settings=ManualJobAdvancedSettings(
+            use_global_naming=False,
+            series_folder_template="{title} ({year})",
+            season_folder_template="S{season:02d}",
+            episode_file_template="{title}-{episode:03d}",
+        ),
+    )
+    assert valid.advanced_settings is not None
+
+    with pytest.raises(ValueError, match="模板无效"):
+        ManualJobCreate(
+            scan_path="/incoming",
+            target_folder="/library",
+            advanced_settings=ManualJobAdvancedSettings(
+                use_global_naming=False,
+                series_folder_template="{series_name}",
+            ),
+        )
+
+
+def test_task_naming_settings_build_a_runtime_override() -> None:
+    template = _resolve_task_naming_template(
+        ManualJobAdvancedSettings(
+            use_global_naming=False,
+            series_folder_template="Task-{title}",
+            season_folder_template="Task-S{season:02d}",
+            episode_file_template="Task-{title}-{episode:03d}",
+        )
+    )
+
+    assert template is not None
+    assert template.series_folder == "Task-{title}"
+    assert template.season_folder == "Task-S{season:02d}"
+    assert template.episode_file == "Task-{title}-{episode:03d}"
 
 
 @pytest.mark.asyncio
@@ -540,9 +682,10 @@ async def test_execute_job_builds_file_locator_for_p115_source(
     ]
 
     class FakeFileService:
-        async def scan_folder_async(self, folder_path, locator=None):
+        async def scan_folder_async(self, folder_path, locator=None, extensions=None):
             assert locator is not None
             assert locator.provider == StorageProvider.P115
+            assert ".strm" in extensions
             return scanned
 
     monkeypatch.setattr(file_service_module, "FileService", FakeFileService)
@@ -583,6 +726,78 @@ async def test_execute_job_builds_file_locator_for_p115_source(
 
 
 @pytest.mark.asyncio
+async def test_execute_job_applies_task_scan_filters_before_dispatch(
+    temp_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _initialize_test_db(temp_db)
+    monkeypatch.setattr(manual_job_service_module, "_ensure_worker", lambda: None)
+
+    created_jobs: list[ScrapeJobCreate] = []
+
+    class FakeScrapeJobService:
+        async def create_job(self, job: ScrapeJobCreate):
+            created_jobs.append(job)
+            return SimpleNamespace(id="created")
+
+    monkeypatch.setattr(
+        scrape_job_service_module,
+        "ScrapeJobService",
+        FakeScrapeJobService,
+    )
+
+    from server.models.file import ScannedFile
+    from server.services import file_service as file_service_module
+
+    class FakeFileService:
+        async def scan_folder_async(self, folder_path, locator=None, extensions=None):
+            assert extensions == {".mkv", ".custom"}
+            return [
+                ScannedFile(
+                    filename="Episode.mkv",
+                    path="/incoming/Episode.mkv",
+                    size=200 * 1024 * 1024,
+                    extension=".mkv",
+                ),
+                ScannedFile(
+                    filename="Small.mkv",
+                    path="/incoming/Small.mkv",
+                    size=20 * 1024 * 1024,
+                    extension=".mkv",
+                ),
+                ScannedFile(
+                    filename="Episode.sample.custom",
+                    path="/incoming/Episode.sample.custom",
+                    size=200 * 1024 * 1024,
+                    extension=".custom",
+                ),
+            ]
+
+    monkeypatch.setattr(file_service_module, "FileService", FakeFileService)
+
+    service = ManualJobService(db_path=temp_db)
+    created = await service.create_job(
+        ManualJobCreate(
+            scan_path="/incoming",
+            target_folder="/library",
+            link_mode=LinkMode.COPY,
+            advanced_settings=ManualJobAdvancedSettings(
+                use_global_organize=False,
+                scan_filters_enabled=True,
+                file_size_filter=100,
+                file_ext_whitelist=["mkv"],
+                extra_ext_whitelist=["custom"],
+                file_name_blacklist=["sample"],
+            ),
+        )
+    )
+
+    await manual_job_service_module._execute_job(service, created.id)
+
+    assert [job.file_path for job in created_jobs] == ["/incoming/Episode.mkv"]
+
+
+@pytest.mark.asyncio
 async def test_execute_job_uses_selected_p115_file_without_directory_scan(
     temp_db: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -607,7 +822,7 @@ async def test_execute_job_uses_selected_p115_file_without_directory_scan(
     from server.services import file_service as file_service_module
 
     class FakeFileService:
-        async def scan_folder_async(self, folder_path, locator=None):
+        async def scan_folder_async(self, folder_path, locator=None, extensions=None):
             raise AssertionError("a selected provider file must not be scanned as a folder")
 
     monkeypatch.setattr(file_service_module, "FileService", FakeFileService)

@@ -152,6 +152,18 @@ class TestSubtitleServiceAssociate:
         assert result.associations[0].video == "EP01.mp4"
         assert len(result.associations[0].subtitles) == 2
 
+    def test_associate_uses_canonical_video_extensions(self, subtitle_service, temp_dir):
+        """Association recognizes formats accepted by the main scanner."""
+        (Path(temp_dir) / "EP01.M4V").write_bytes(b"video")
+        (Path(temp_dir) / "EP01.chs.srt").write_text("subtitle")
+        (Path(temp_dir) / "EP02.STRM").write_text("https://example.test/video")
+        (Path(temp_dir) / "EP02.eng.srt").write_text("subtitle")
+
+        result = subtitle_service.associate_subtitles(temp_dir)
+
+        assert {item.video for item in result.associations} == {"EP01.M4V", "EP02.STRM"}
+        assert all(len(item.subtitles) == 1 for item in result.associations)
+
     def test_associate_no_matches(self, subtitle_service, temp_dir):
         """Test when no subtitles match videos."""
         (Path(temp_dir) / "video1.mp4").write_bytes(b"video")

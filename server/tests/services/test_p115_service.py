@@ -970,10 +970,12 @@ class TestP115Service:
                 {"cid": "0", "pid": "0", "name": ""},
                 {"cid": "100", "pid": "0", "name": "剧集"},
             ],
-            "count": 4,
+            "count": 6,
             "data": [
                 {"fid": "300", "cid": "100", "n": "S01E01.mkv", "s": "12345", "te": "1710000001"},
                 {"fid": "301", "cid": "100", "n": "S01E02.mp4", "s": "12346", "te": "1710000002"},
+                {"fid": "302", "cid": "100", "n": "S01E03.strm", "s": "123", "te": "1710000003"},
+                {"fid": "303", "cid": "100", "n": "S01E04.M4V", "s": "12348", "te": "1710000004"},
                 {"fid": None, "cid": "100", "n": "missing-id.mkv", "s": "12347"},
                 {"cid": "100", "pid": "100", "n": "self-referencing-directory"},
             ],
@@ -1015,12 +1017,12 @@ class TestP115Service:
 
         # Only video files kept; readme.txt filtered out.
         names = [e["name"] for e in entries]
-        assert names == ["S01E01.mkv", "S01E02.mp4"]
+        assert names == ["S01E01.mkv", "S01E02.mp4", "S01E03.strm", "S01E04.M4V"]
         # Each entry carries enough to rebuild a StorageLocator.
         for entry in entries:
             assert entry["provider"] == "115"
             assert entry["is_dir"] is False
-            assert entry["file_id"] in {"300", "301"}
+            assert entry["file_id"] in {"300", "301", "302", "303"}
             assert entry["parent_id"] == "100"
             assert entry["path"].startswith("/115网盘/剧集/")
 

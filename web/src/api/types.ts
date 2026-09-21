@@ -626,6 +626,7 @@ export interface ManualJobAdvancedSettings {
   use_global_naming: boolean
   use_global_metadata: boolean
   // 整理设置（当 use_global_organize=false 时使用）
+  scan_filters_enabled: boolean
   metadata_folder: string
   delete_metadata_on_fail: boolean
   overwrite_video: boolean
