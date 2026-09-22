@@ -125,7 +125,7 @@ class AuthConfig(BaseModel):
 class ChangePasswordRequest(BaseModel):
     """修改密码请求模型。"""
 
-    current_password: str = Field(..., min_length=1)
+    current_password: str = Field(..., min_length=1, max_length=128)
     new_password: str = Field(..., min_length=6, max_length=128)
 
 

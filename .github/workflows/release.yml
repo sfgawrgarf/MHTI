@@ -70,6 +70,8 @@ jobs:
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
           DISPATCH_PRERELEASE: ${{ github.event.inputs.prerelease }}
         run: |
+          set -euo pipefail
+
           if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
             VERSION="$DISPATCH_VERSION"
             IS_PRERELEASE="$DISPATCH_PRERELEASE"
@@ -80,9 +82,20 @@ jobs:
               IS_PRERELEASE="true"
             fi
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
-          echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "版本号格式无效: $VERSION" >&2
+            exit 1
+          fi
+          if [[ "$IS_PRERELEASE" != "true" && "$IS_PRERELEASE" != "false" ]]; then
+            echo "预发布标记无效" >&2
+            exit 1
+          fi
+
+          printf '%s\n' \
+            "version=$VERSION" \
+            "tag=v$VERSION" \
+            "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "📦 版本: $VERSION"
           echo "🏷️ 标签: v$VERSION"
           echo "🚀 预发布: $IS_PRERELEASE"
@@ -94,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
             echo "版本号格式无效: $VERSION" >&2
             exit 1
           fi

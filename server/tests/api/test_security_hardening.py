@@ -18,7 +18,7 @@ from server.core.path_security import (
     validate_image_url,
     validate_media_path,
 )
-from server.models.auth import LoginRequest, RefreshRequest
+from server.models.auth import ChangePasswordRequest, LoginRequest, RefreshRequest
 from server.models.image import ImageDownloadRequest
 from server.models.manual_job import ManualJobDeleteRequest
 from server.models.parser import BatchParseRequest, ParseRequest
@@ -146,11 +146,17 @@ def test_auth_models_bound_untrusted_credential_fields() -> None:
         LoginRequest(username="admin", password="p" * 129)
     with pytest.raises(ValidationError):
         RefreshRequest(refresh_token="x" * 513)
+    with pytest.raises(ValidationError):
+        ChangePasswordRequest(current_password="p" * 129, new_password="new-password")
 
 
 def test_login_history_pagination_is_bounded(auth_client: TestClient) -> None:
     assert auth_client.get("/api/auth/history?limit=101").status_code == 422
     assert auth_client.get("/api/auth/history?offset=-1").status_code == 422
+
+
+def test_log_export_limit_is_bounded(auth_client: TestClient) -> None:
+    assert auth_client.get("/api/logs/export?limit=10001").status_code == 422
 
 
 def test_batch_request_models_reject_unbounded_work() -> None:

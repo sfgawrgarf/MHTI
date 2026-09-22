@@ -77,7 +77,7 @@ class LogQuery(BaseModel):
     end_time: datetime | None = None
     search: str | None = None
     # API list pagination is capped at 100; exports intentionally allow more.
-    limit: int = Field(default=100, ge=1, le=100000)
+    limit: int = Field(default=100, ge=1, le=10000)
     offset: int = Field(default=0, ge=0)
 
 
