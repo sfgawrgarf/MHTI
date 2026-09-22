@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from server.core.auth import require_auth
 from server.core.container import get_config_service, get_p115_service, get_tmdb_service
 from server.core.log_security import safe_log_value
-from server.core.path_security import validate_media_path
+from server.core.path_security import validate_media_directory
 from server.models.cloud_115 import Cloud115QrSession, Cloud115QrStatus, Cloud115Status
 from server.models.config import (
     ApiTokenSaveRequest,
@@ -332,10 +332,7 @@ async def save_watcher_config(
             if provider == "local":
                 try:
                     dir_path = str(
-                        validate_media_path(
-                            dir_path,
-                            must_exist=True,
-                        )
+                        validate_media_directory(dir_path)
                     )
                 except (OSError, RuntimeError, ValueError) as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -20,6 +20,7 @@ from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedE
 from server.core.db.connection import db_connection
 from server.core.database import DATABASE_PATH
 from server.core.log_security import safe_log_value
+from server.core.path_security import validate_media_directory
 from server.models.organize import OrganizeMode
 from server.models.storage import is_p115_virtual_path
 from server.models.watcher import (
@@ -1016,6 +1017,10 @@ class WatcherService:
         """启动单个文件夹的监控"""
         if folder.id in self._strategies:
             return
+        if folder.provider == "local":
+            folder = folder.model_copy(
+                update={"path": str(validate_media_directory(folder.path))}
+            )
         # 根据 provider + mode 选择策略
         if folder.provider == "115":
             if folder.mode == WatcherMode.EVENT:
@@ -1063,7 +1068,17 @@ class WatcherService:
             try:
                 # 获取所有启用的监控文件夹
                 folders, _ = await self.list_folders()
-                enabled_folders = [f for f in folders if f.enabled]
+                enabled_folders = [
+                    folder.model_copy(
+                        update={
+                            "path": str(validate_media_directory(folder.path))
+                        }
+                    )
+                    if folder.provider == "local"
+                    else folder
+                    for folder in folders
+                    if folder.enabled
+                ]
 
                 if not enabled_folders:
                     logger.warning("没有启用的监控文件夹")

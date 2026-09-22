@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from pydantic import DirectoryPath, TypeAdapter, ValidationError
+
 
 class PathSecurityError(ValueError):
     """Raised when an API-provided path escapes configured media roots."""
@@ -13,6 +15,7 @@ class PathSecurityError(ValueError):
 
 DEFAULT_MEDIA_ROOTS = ("/media", "/output", "/incoming", "/library")
 DEFAULT_IMAGE_HOSTS = ("image.tmdb.org",)
+_DIRECTORY_PATH_ADAPTER = TypeAdapter(DirectoryPath)
 
 
 def allowed_media_roots() -> tuple[Path, ...]:
@@ -59,6 +62,17 @@ def validate_media_path(
     if require_file and not resolved.is_file():
         raise PathSecurityError(f"路径不是文件: {resolved}")
     return resolved
+
+
+def validate_media_directory(raw_path: str) -> Path:
+    """Return an existing directory confined to an allowed media root."""
+    resolved = validate_media_path(raw_path, must_exist=True)
+    try:
+        # Pydantic performs the type check after our root and symlink boundary
+        # validation; callers only receive the canonical validated path.
+        return Path(_DIRECTORY_PATH_ADAPTER.validate_python(resolved))
+    except ValidationError as exc:
+        raise PathSecurityError(f"路径不是目录: {resolved}") from exc
 
 
 def validate_image_url(url: str) -> str:

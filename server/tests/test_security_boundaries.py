@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 
 from server.core.log_security import safe_log_value
-from server.core.path_security import PathSecurityError, validate_image_url
+from server.core.path_security import (
+    PathSecurityError,
+    validate_image_url,
+    validate_media_directory,
+)
 from server.services.media_identity_service import MediaIdentityService
 from server.services.tmdb_service import TMDBService
 
@@ -80,3 +84,15 @@ def test_fingerprint_does_not_read_outside_media_roots(
     outside.write_text("changed", encoding="utf-8")
 
     assert MediaIdentityService.fingerprint(str(outside)) == first
+
+
+def test_media_directory_rejects_regular_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    media_file = tmp_path / "episode.mkv"
+    media_file.write_bytes(b"video")
+    monkeypatch.setenv("MHTI_ALLOWED_MEDIA_ROOTS", str(tmp_path))
+
+    with pytest.raises(PathSecurityError, match="路径不是目录"):
+        validate_media_directory(str(media_file))

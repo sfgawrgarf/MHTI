@@ -5,7 +5,11 @@ import shutil
 from pathlib import Path
 
 from server.core.media_extensions import SUPPORTED_VIDEO_EXTENSIONS
-from server.core.path_security import PathSecurityError, validate_media_path
+from server.core.path_security import (
+    PathSecurityError,
+    validate_media_directory,
+    validate_media_path,
+)
 from server.models.subtitle import (
     BatchSubtitleRenameResponse,
     SubtitleAssociateResponse,
@@ -75,10 +79,7 @@ class SubtitleService:
             Response with list of found subtitle files.
         """
         try:
-            folder = validate_media_path(
-                folder_path,
-                must_exist=True,
-            )
+            folder = validate_media_directory(folder_path)
         except PathSecurityError:
             return SubtitleScanResponse(subtitles=[], total=0)
         subtitles = []
@@ -106,10 +107,7 @@ class SubtitleService:
             Response with video-subtitle associations.
         """
         try:
-            folder = validate_media_path(
-                folder_path,
-                must_exist=True,
-            )
+            folder = validate_media_directory(folder_path)
         except PathSecurityError:
             return SubtitleAssociateResponse(associations=[])
         # Get all subtitles
