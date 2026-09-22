@@ -44,6 +44,21 @@ jobs:
           queries: security-extended
 
       - name: 执行 CodeQL 分析
+        if: matrix.language != 'python'
         uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          category: /language:${{ matrix.language }}
+
+      - name: 执行 CodeQL 分析
+        if: matrix.language == 'python'
+        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        env:
+          # Load the repository-local path-validation model pack. The search
+          # path is the pack's parent; the activated name must match qlpack.yml.
+          # This adds a data-flow barrier without disabling any standard query.
+          CODEQL_ACTION_EXTRA_OPTIONS: >-
+            {"database":{"run-queries":[
+            "--additional-packs=${{ github.workspace }}/.github/codeql",
+            "--extension-packs=mhti/path-security-models"]}}
         with:
           category: /language:${{ matrix.language }}

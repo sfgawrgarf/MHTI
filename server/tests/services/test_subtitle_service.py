@@ -245,10 +245,11 @@ class TestSubtitleServiceRename:
         assert result.success is True
         assert result.dest_path.endswith("New Name.srt")
 
-    def test_rename_not_found(self, subtitle_service):
+    def test_rename_not_found(self, subtitle_service, temp_dir):
         """Test rename with non-existent file."""
+        missing_subtitle = Path(temp_dir) / "missing.srt"
         result = subtitle_service.rename_subtitle(
-            "/nonexistent/file.srt",
+            str(missing_subtitle),
             "New Name",
         )
 

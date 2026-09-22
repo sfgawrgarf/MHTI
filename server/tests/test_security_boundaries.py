@@ -9,6 +9,7 @@ from server.core.path_security import (
     PathSecurityError,
     validate_image_url,
     validate_media_directory,
+    validate_media_path,
 )
 from server.services.media_identity_service import MediaIdentityService
 from server.services.tmdb_service import TMDBService
@@ -96,3 +97,22 @@ def test_media_directory_rejects_regular_files(
 
     with pytest.raises(PathSecurityError, match="路径不是目录"):
         validate_media_directory(str(media_file))
+
+
+@pytest.mark.parametrize("name", ["existing.txt", "missing.txt"])
+def test_outside_media_paths_are_rejected_before_existence_is_disclosed(
+    name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    (outside / "existing.txt").write_text("secret", encoding="utf-8")
+    monkeypatch.setenv("MHTI_ALLOWED_MEDIA_ROOTS", str(allowed))
+
+    with pytest.raises(PathSecurityError) as exc_info:
+        validate_media_path(str(outside / name), must_exist=True)
+
+    assert str(exc_info.value).startswith("路径不在允许的媒体目录中:")
