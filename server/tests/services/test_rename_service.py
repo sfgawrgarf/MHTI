@@ -202,8 +202,9 @@ class TestRenameServiceExecute:
 
     def test_execute_rename_source_not_found(self, rename_service, temp_dir):
         """Test rename with non-existent source."""
+        missing_source = Path(temp_dir) / "missing.mp4"
         request = RenameRequest(
-            source_path="/nonexistent/video.mp4",
+            source_path=str(missing_source),
             title="Test Show",
             season=1,
             episode=1,

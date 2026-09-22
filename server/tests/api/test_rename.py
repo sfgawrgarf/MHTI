@@ -121,10 +121,11 @@ class TestRenameAPI:
 
     def test_execute_rename_not_found(self, client, temp_dir):
         """Test execute rename with non-existent file."""
+        missing_source = Path(temp_dir) / "missing.mp4"
         response = client.post(
             "/api/rename/execute",
             json={
-                "source_path": "/nonexistent/file.mp4",
+                "source_path": str(missing_source),
                 "title": "Test Show",
                 "season": 1,
                 "episode": 1,
