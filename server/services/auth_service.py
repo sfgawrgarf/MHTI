@@ -89,7 +89,6 @@ class AuthService:
                 )
                 await db.commit()
                 # username is converted to a bounded single-line value.
-                # codeql[py/log-injection]
                 logger.info("Admin account created: %s", safe_log_value(username))
                 return True
             except aiosqlite.IntegrityError:
@@ -335,7 +334,6 @@ class AuthService:
                 await db.rollback()
                 raise
         # Both usernames are converted to bounded single-line values.
-        # codeql[py/log-injection]
         logger.info(
             "Username changed from %s to %s",
             safe_log_value(current_username),

@@ -29,7 +29,6 @@ def validate_media_path(
     *,
     must_exist: bool = False,
     require_file: bool = False,
-    require_directory: bool = False,
 ) -> Path:
     """Resolve a path and ensure it stays under an explicitly allowed media root."""
     if not raw_path or "\x00" in raw_path:
@@ -39,13 +38,9 @@ def validate_media_path(
     if not path.is_absolute():
         raise PathSecurityError("只允许使用绝对路径")
 
-    if require_file and require_directory:
-        raise ValueError("require_file 与 require_directory 不能同时启用")
-
     try:
         # The resolved value is checked against configured roots before it is
         # returned to any caller that performs file I/O.
-        # codeql[py/path-injection]
         resolved = path.resolve(strict=must_exist)
     except FileNotFoundError as exc:
         raise PathSecurityError(f"Path not found: {raw_path}") from exc
@@ -59,15 +54,10 @@ def validate_media_path(
         raise PathSecurityError(f"路径不在允许的媒体目录中: {resolved}")
 
     # These probes only run after the resolved path is confined to an allowed root.
-    # codeql[py/path-injection]
     if must_exist and not resolved.exists():
         raise PathSecurityError(f"路径不存在: {resolved}")
-    # codeql[py/path-injection]
     if require_file and not resolved.is_file():
         raise PathSecurityError(f"路径不是文件: {resolved}")
-    # codeql[py/path-injection]
-    if require_directory and not resolved.is_dir():
-        raise PathSecurityError(f"路径不是目录: {resolved}")
     return resolved
 
 

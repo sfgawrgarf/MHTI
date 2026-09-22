@@ -932,7 +932,6 @@ class WatcherService:
                     except Exception:
                         self._status = WatcherStatus.ERROR
                         # folder_id is converted to a bounded single-line value.
-                        # codeql[py/log-injection]
                         logger.exception(
                             "Unable to restore previous watcher after update failed: %s",
                             safe_log_value(folder_id),
@@ -991,7 +990,6 @@ class WatcherService:
                     except Exception:
                         self._status = WatcherStatus.ERROR
                         # folder_id is converted to a bounded single-line value.
-                        # codeql[py/log-injection]
                         logger.exception(
                             "Unable to restore watcher after delete failed: %s",
                             safe_log_value(folder_id),

@@ -335,7 +335,6 @@ async def save_watcher_config(
                         validate_media_path(
                             dir_path,
                             must_exist=True,
-                            require_directory=True,
                         )
                     )
                 except (OSError, RuntimeError, ValueError) as exc:
@@ -361,7 +360,6 @@ async def save_watcher_config(
                     file_id = str(resolved_id)
                 except Exception as exc:
                     # Both external fields are converted to bounded single-line values.
-                    # codeql[py/log-injection]
                     logger.warning(
                         "115 监控目录预校验失败 path=%s: %s",
                         safe_log_value(dir_path),

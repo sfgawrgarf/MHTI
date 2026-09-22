@@ -155,7 +155,6 @@ class TMDBService:
                         try:
                             # The endpoint is constrained to the TMDB route grammar
                             # above and the origin is a compile-time constant.
-                            # codeql[py/partial-ssrf]
                             response = await client.get(
                                 url,
                                 headers=headers,

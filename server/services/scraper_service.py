@@ -274,7 +274,6 @@ class _P115StorageProvider:
                 )
             except Exception as exc:
                 # Every external field is converted to a bounded single-line value.
-                # codeql[py/log-injection]
                 logger.warning(
                     "115 子目录查询失败 parent_id=%s name=%s: %s",
                     safe_log_value(parent_pid),
@@ -1108,7 +1107,6 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             metadata_series_folder = validate_media_path(str(metadata_series_folder))
             metadata_season_folder = validate_media_path(str(metadata_season_folder))
             # metadata_season_folder is confined to an allowed media root.
-            # codeql[py/path-injection]
             metadata_season_folder.mkdir(parents=True, exist_ok=True)
             return metadata_series_folder, metadata_season_folder
 
@@ -1266,7 +1264,6 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 )
             except Exception:
                 # file_path is converted to a bounded single-line value.
-                # codeql[py/log-injection]
                 logger.exception(
                     "媒体已输出，但手动别名记录写入失败: %s",
                     safe_log_value(file_path),

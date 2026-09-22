@@ -244,7 +244,6 @@ class SessionService:
             deleted = cursor.rowcount > 0
             if deleted:
                 # session_id is converted to a bounded single-line value.
-                # codeql[py/log-injection]
                 logger.info("Session revoked: %s...", safe_log_value(session_id[:8]))
         if deleted:
             await self.close_session_connections([session_id])
@@ -351,7 +350,6 @@ class SessionService:
         if failure_reason:
             log_msg += f" ({safe_log_value(failure_reason)})"
         # Every external field in log_msg was normalized with safe_log_value.
-        # codeql[py/log-injection]
         logger.info(log_msg)
 
     async def get_login_history(

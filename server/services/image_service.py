@@ -116,7 +116,6 @@ class ImageService:
                 async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
                     # validate_image_url canonicalizes HTTPS URLs and confines the
                     # authority to the administrator-controlled host allowlist.
-                    # codeql[py/full-ssrf]
                     async with client.stream("GET", safe_url, headers=self._headers) as response:
                         if response.status_code == 404:
                             return ImageDownloadResult(
@@ -139,10 +138,8 @@ class ImageService:
                             )
 
                         # full_path was resolved inside an allowed media root above.
-                        # codeql[py/path-injection]
                         full_path.parent.mkdir(parents=True, exist_ok=True)
                         # The same directory makes the final replacement atomic.
-                        # codeql[py/path-injection]
                         with tempfile.NamedTemporaryFile(
                             mode="wb", dir=full_path.parent, prefix=".mhti-image-",
                             suffix=".part", delete=False,
@@ -160,10 +157,8 @@ class ImageService:
 
                         # Preserve existing permissions; new posters remain readable
                         # by media servers running under a different user.
-                        # codeql[py/path-injection]
                         mode = stat.S_IMODE(full_path.stat().st_mode) if full_path.exists() else 0o644
                         temporary_path.chmod(mode)
-                        # codeql[py/path-injection]
                         os.replace(temporary_path, full_path)
                         temporary_path = None
                         return ImageDownloadResult(

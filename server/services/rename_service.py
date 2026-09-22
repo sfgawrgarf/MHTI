@@ -83,10 +83,8 @@ class RenameService:
             dest_path = validate_media_path(str(dest_path))
             check_dir = dest_folder
             while check_dir.is_relative_to(safe_base_dir):
-                # Both paths are confined to an allowed root above.
-                # codeql[py/path-injection]
-                if check_dir.exists():
-                    break
+                # Preview the directories the operation will ensure without
+                # probing a user-selected filesystem location.
                 will_create_dirs.insert(0, str(check_dir))
                 if check_dir == safe_base_dir:
                     break

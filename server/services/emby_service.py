@@ -250,7 +250,6 @@ class EmbyService:
             resp.raise_for_status()
             items = resp.json().get("Items", [])
         # name is converted to a bounded single-line value.
-        # codeql[py/log-injection]
         logger.info("Emby 搜索 '%s' 找到 %d 个结果", safe_log_value(name), len(items))
 
         for item in items:
@@ -301,7 +300,6 @@ class EmbyService:
                 )
 
         # name is converted to a bounded single-line value.
-        # codeql[py/log-injection]
         logger.info("Emby 未找到匹配的剧集: %s", safe_log_value(name))
         return None
 
@@ -325,7 +323,6 @@ class EmbyService:
 
         items = data.get("Items", [])
         # series_id is converted to a bounded single-line value.
-        # codeql[py/log-injection]
         logger.info(
             "Emby 剧集 %s 共有 %d 集",
             safe_log_value(series_id),
@@ -337,7 +334,6 @@ class EmbyService:
             item_episode = item.get("IndexNumber")
             if item_season == season and item_episode == episode:
                 # Episode identifiers are converted to bounded single-line values.
-                # codeql[py/log-injection]
                 logger.info(
                     "Emby 找到匹配的集: S%sE%s",
                     safe_log_value(f"{season:02d}"),
@@ -354,7 +350,6 @@ class EmbyService:
                 )
 
         # Episode identifiers are converted to bounded single-line values.
-        # codeql[py/log-injection]
         logger.info(
             "Emby 未找到集: S%sE%s",
             safe_log_value(f"{season:02d}"),

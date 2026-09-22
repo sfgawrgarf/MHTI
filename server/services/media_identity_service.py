@@ -30,10 +30,8 @@ class MediaIdentityService:
             digest.update(path.encode("utf-8", errors="ignore"))
         else:
             # source is confined to an allowed media root by validate_media_path.
-            # codeql[py/path-injection]
             with source.open("rb") as handle:
                 digest.update(handle.read(1024 * 1024))
-            # codeql[py/path-injection]
             digest.update(str(source.stat().st_size).encode())
         return digest.hexdigest()
 

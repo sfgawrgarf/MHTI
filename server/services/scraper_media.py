@@ -120,7 +120,6 @@ class ScraperMediaMixin:
 
         if not still_path:
             # Episode identifiers are converted to bounded single-line values.
-            # codeql[py/log-injection]
             logger.info(
                 "S%sE%s 没有封面图",
                 safe_log_value(f"{season_num:02d}"),

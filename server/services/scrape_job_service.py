@@ -186,7 +186,6 @@ class ScrapeJobService:
             existing = await self.get_pending_job_by_path(job.file_path)
             if existing:
                 # file_path is converted to a bounded single-line value.
-                # codeql[py/log-injection]
                 logger.info("文件已有待处理任务，跳过: %s", safe_log_value(job.file_path))
                 return None
 
@@ -203,7 +202,6 @@ class ScrapeJobService:
                     job.file_path, file_fingerprint
                 ):
                     # file_path is converted to a bounded single-line value.
-                    # codeql[py/log-injection]
                     logger.info(
                         "文件已有用户跳过或删除记录，跳过监控重复任务: %s",
                         safe_log_value(job.file_path),
@@ -221,7 +219,6 @@ class ScrapeJobService:
                     already_recorded = await cursor.fetchone()
                 if already_recorded:
                     # file_path is converted to a bounded single-line value.
-                    # codeql[py/log-injection]
                     logger.info(
                         "文件已成功整理，跳过监控重复任务: %s",
                         safe_log_value(job.file_path),
@@ -322,7 +319,6 @@ class ScrapeJobService:
                 if await cursor.fetchone():
                     await db.rollback()
                     # file_path is converted to a bounded single-line value.
-                    # codeql[py/log-injection]
                     logger.info(
                         "文件已有并发创建的待处理任务，跳过: %s",
                         safe_log_value(job.file_path),
