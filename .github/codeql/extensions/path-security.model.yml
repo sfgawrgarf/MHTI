@@ -1,0 +1,12 @@
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierModel
+    data:
+      # These helpers return canonical paths only after enforcing both the
+      # configured media-root boundary and the resolved symlink boundary.
+      # The validation implementation remains visible to CodeQL; this model
+      # stops already-validated return values from being reported again at
+      # every downstream filesystem operation.
+      - ["server.core.path_security", "Member[validate_media_path].ReturnValue", "path-injection"]
+      - ["server.core.path_security", "Member[validate_media_directory].ReturnValue", "path-injection"]
