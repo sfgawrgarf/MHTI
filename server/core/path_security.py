@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import DirectoryPath, TypeAdapter, ValidationError
+from pydantic import DirectoryPath, FilePath, TypeAdapter, ValidationError
 
 
 class PathSecurityError(ValueError):
@@ -16,15 +16,28 @@ class PathSecurityError(ValueError):
 DEFAULT_MEDIA_ROOTS = ("/media", "/output", "/incoming", "/library")
 DEFAULT_IMAGE_HOSTS = ("image.tmdb.org",)
 _DIRECTORY_PATH_ADAPTER = TypeAdapter(DirectoryPath)
+_FILE_PATH_ADAPTER = TypeAdapter(FilePath)
+
+
+def _configured_media_root_values() -> tuple[str, ...]:
+    """Return configured root strings without touching user-selected paths."""
+    configured = os.getenv("MHTI_ALLOWED_MEDIA_ROOTS", "")
+    values = tuple(value.strip() for value in configured.split(",") if value.strip())
+    return values or DEFAULT_MEDIA_ROOTS
+
+
+def _is_within_root(path: str, root: str) -> bool:
+    """Compare normalized absolute path strings with a component boundary."""
+    root_prefix = f"{root.rstrip(os.sep)}{os.sep}"
+    return path == root or path.startswith(root_prefix)
 
 
 def allowed_media_roots() -> tuple[Path, ...]:
     """Return normalized roots that file-changing operations may access."""
-    configured = os.getenv("MHTI_ALLOWED_MEDIA_ROOTS", "")
-    values = [value.strip() for value in configured.split(",") if value.strip()]
-    if not values:
-        values = list(DEFAULT_MEDIA_ROOTS)
-    return tuple(Path(value).resolve(strict=False) for value in values)
+    return tuple(
+        Path(os.path.realpath(os.path.abspath(os.path.normpath(value))))
+        for value in _configured_media_root_values()
+    )
 
 
 def validate_media_path(
@@ -37,30 +50,43 @@ def validate_media_path(
     if not raw_path or "\x00" in raw_path:
         raise PathSecurityError("路径不能为空或包含非法字符")
 
-    path = Path(raw_path)
-    if not path.is_absolute():
+    if not os.path.isabs(raw_path):
         raise PathSecurityError("只允许使用绝对路径")
 
+    # Reject lexical escapes before resolving the user-selected path. This
+    # prevents different errors from revealing whether an out-of-scope path
+    # exists, while still accepting either spelling of a configured symlink root.
+    normalized = os.path.abspath(os.path.normpath(raw_path))
+    candidate_roots: list[str] = []
+    for configured_root in _configured_media_root_values():
+        lexical_root = os.path.abspath(os.path.normpath(configured_root))
+        resolved_root = os.path.realpath(lexical_root)
+        if _is_within_root(normalized, lexical_root) or _is_within_root(
+            normalized,
+            resolved_root,
+        ):
+            candidate_roots.append(resolved_root)
+    if not candidate_roots:
+        raise PathSecurityError(f"路径不在允许的媒体目录中: {normalized}")
+
     try:
-        # The resolved value is checked against configured roots before it is
-        # returned to any caller that performs file I/O.
-        resolved = path.resolve(strict=must_exist)
+        # realpath is the CodeQL-recommended normalization when symlinks are in
+        # scope. The lexical check above occurs before this filesystem probe.
+        resolved_text = os.path.realpath(normalized, strict=must_exist)
     except FileNotFoundError as exc:
         raise PathSecurityError(f"Path not found: {raw_path}") from exc
     except (OSError, RuntimeError) as exc:
         raise PathSecurityError(f"路径无效: {raw_path}") from exc
 
-    if not any(
-        resolved == root or resolved.is_relative_to(root)
-        for root in allowed_media_roots()
-    ):
-        raise PathSecurityError(f"路径不在允许的媒体目录中: {resolved}")
+    if not any(_is_within_root(resolved_text, root) for root in candidate_roots):
+        raise PathSecurityError(f"路径不在允许的媒体目录中: {resolved_text}")
 
-    # These probes only run after the resolved path is confined to an allowed root.
-    if must_exist and not resolved.exists():
-        raise PathSecurityError(f"路径不存在: {resolved}")
-    if require_file and not resolved.is_file():
-        raise PathSecurityError(f"路径不是文件: {resolved}")
+    resolved = Path(resolved_text)
+    if require_file:
+        try:
+            resolved = Path(_FILE_PATH_ADAPTER.validate_python(resolved))
+        except ValidationError as exc:
+            raise PathSecurityError(f"路径不是文件: {resolved}") from exc
     return resolved
 
 
