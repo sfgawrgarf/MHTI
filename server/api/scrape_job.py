@@ -89,7 +89,7 @@ async def cancel_job(
 
 @router.delete("")
 async def delete_jobs(
-    ids: list[str] = Query(...),
+    ids: list[str] = Query(..., max_length=500),
     service: ScrapeJobService = Depends(get_service),
 ) -> dict:
     """删除文件刮削任务"""

@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from server.models.emby import ConflictCheckResult
 from server.models.history import ScrapeLogStep
@@ -132,7 +132,7 @@ class ScrapeResult(BaseModel):
 class BatchScrapeRequest(BaseModel):
     """Request for batch scraping."""
 
-    file_paths: list[str]
+    file_paths: list[str] = Field(max_length=100)
     output_dir: str | None = None
     auto_select: bool = True
     dry_run: bool = False  # 预览模式，不实际执行

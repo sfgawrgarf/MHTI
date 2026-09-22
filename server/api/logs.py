@@ -200,7 +200,7 @@ async def export_logs(
     format: Annotated[str, Query(description="导出格式: json 或 csv")] = "json",
     start_time: Annotated[datetime | None, Query(description="开始时间")] = None,
     end_time: Annotated[datetime | None, Query(description="结束时间")] = None,
-    limit: Annotated[int, Query(ge=1, le=100000, description="最大导出数量")] = 10000,
+    limit: Annotated[int, Query(ge=1, le=10000, description="最大导出数量")] = 10000,
     log_service: LogService = Depends(get_log_service),
 ):
     """

@@ -22,10 +22,10 @@ EXPIRE_HOURS_MAP: dict[ExpireOption, int] = {
 class LoginRequest(BaseModel):
     """Login request model."""
 
-    username: str
-    password: str
+    username: str = Field(..., min_length=1, max_length=32)
+    password: str = Field(..., min_length=1, max_length=128)
     expire_option: ExpireOption = "7d"
-    device_name: str | None = None
+    device_name: str | None = Field(default=None, max_length=128)
 
 
 class RegisterRequest(BaseModel):
@@ -49,7 +49,7 @@ class TokenResponse(BaseModel):
 class RefreshRequest(BaseModel):
     """Token refresh request."""
 
-    refresh_token: str
+    refresh_token: str = Field(..., min_length=20, max_length=512)
 
 
 class RefreshResponse(BaseModel):
@@ -125,7 +125,7 @@ class AuthConfig(BaseModel):
 class ChangePasswordRequest(BaseModel):
     """修改密码请求模型。"""
 
-    current_password: str = Field(..., min_length=1)
+    current_password: str = Field(..., min_length=1, max_length=128)
     new_password: str = Field(..., min_length=6, max_length=128)
 
 
@@ -140,7 +140,7 @@ class UpdateUsernameRequest(BaseModel):
     """修改用户名请求模型。"""
 
     new_username: str = Field(..., min_length=3, max_length=32)
-    password: str = Field(..., min_length=1)  # 需要验证密码
+    password: str = Field(..., min_length=1, max_length=128)  # 需要验证密码
 
 
 class UpdateUsernameResponse(BaseModel):
@@ -162,7 +162,7 @@ class UserProfileResponse(BaseModel):
 class UpdateAvatarRequest(BaseModel):
     """更新头像请求模型。"""
 
-    avatar: str  # Base64 编码的图片数据
+    avatar: str = Field(..., min_length=1, max_length=500 * 1024)
 
 
 class UpdateAvatarResponse(BaseModel):

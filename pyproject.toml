@@ -20,11 +20,11 @@ pyjwt = ">=2.10,<3.0"
 p115client = "0.0.9.6.5.1"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.0.0"
-pytest-cov = "^4.1.0"
-pytest-asyncio = "^0.23.0"
-ruff = "^0.2.0"
-mypy = "^1.8.0"
+pytest = "9.1.1"
+pytest-cov = "7.1.0"
+pytest-asyncio = "1.4.0"
+ruff = "0.16.8"
+mypy = "2.3.1"
 
 [build-system]
 requires = ["poetry-core"]

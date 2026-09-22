@@ -250,4 +250,4 @@ class ManualJobListResponse(BaseModel):
 class ManualJobDeleteRequest(BaseModel):
     """Request for deleting manual jobs."""
 
-    ids: list[int]
+    ids: list[int] = Field(max_length=500)

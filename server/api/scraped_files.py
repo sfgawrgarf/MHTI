@@ -48,7 +48,7 @@ async def list_scraped_files(
 
 @router.delete("", response_model=DeleteResponse)
 async def delete_scraped_files(
-    ids: list[str] = Query(..., description="要删除的记录ID列表"),
+    ids: list[str] = Query(..., max_length=500, description="要删除的记录ID列表"),
     service: ScrapedFileService = Depends(get_service),
 ) -> DeleteResponse:
     """删除已刮削文件记录（允许文件重新刮削）"""
@@ -58,7 +58,7 @@ async def delete_scraped_files(
 
 @router.delete("/by-paths", response_model=DeleteResponse)
 async def delete_by_paths(
-    paths: list[str] = Query(..., description="要删除的文件路径列表"),
+    paths: list[str] = Query(..., max_length=500, description="要删除的文件路径列表"),
     service: ScrapedFileService = Depends(get_service),
 ) -> DeleteResponse:
     """根据文件路径删除记录"""

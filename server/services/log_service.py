@@ -1,11 +1,13 @@
 """日志服务 - 管理应用日志的存储、查询和配置。"""
 
+import csv
+import io
 import json
 from datetime import datetime, timedelta
 from typing import Any
 
-
 from server.core.db.connection import get_db_manager
+from server.core.csv_security import neutralize_csv_formula
 from server.models.log import (
     LogConfig,
     LogConfigUpdate,
@@ -295,14 +297,23 @@ class LogService:
         items, _ = await self.get_logs(query)
 
         if format == "csv":
-            lines = ["timestamp,level,logger,message,request_id,user_id"]
+            output = io.StringIO()
+            writer = csv.writer(output, lineterminator="\n")
+            writer.writerow(
+                ["timestamp", "level", "logger", "message", "request_id", "user_id"]
+            )
             for item in items:
-                # 转义 CSV 中的特殊字符
-                message = item.message.replace('"', '""')
-                lines.append(
-                    f'"{item.timestamp.isoformat()}","{item.level.value}","{item.logger}","{message}","{item.request_id or ""}","{item.user_id or ""}"'
+                writer.writerow(
+                    [
+                        item.timestamp.isoformat(),
+                        item.level.value,
+                        neutralize_csv_formula(item.logger),
+                        neutralize_csv_formula(item.message),
+                        neutralize_csv_formula(item.request_id or ""),
+                        item.user_id if item.user_id is not None else "",
+                    ]
                 )
-            return "\n".join(lines)
+            return output.getvalue()
         else:
             # JSON 格式
             return json.dumps(

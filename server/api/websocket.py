@@ -67,7 +67,11 @@ async def websocket_endpoint(websocket: WebSocket):
     if not isinstance(auth_message, dict) or auth_message.get("type") != "auth":
         await websocket.close(code=4401, reason="Authentication required")
         return
-    auth = await authenticate_access_token(str(auth_message.get("token") or ""))
+    raw_token = auth_message.get("token")
+    if not isinstance(raw_token, str) or not raw_token or len(raw_token) > 4096:
+        await websocket.close(code=4401, reason="Invalid authentication token")
+        return
+    auth = await authenticate_access_token(raw_token)
     if auth is None:
         await websocket.close(code=4401, reason="Invalid or revoked token")
         return

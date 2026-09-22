@@ -5,10 +5,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
 from server import __version__
+from server.api.history import AIRetryRequest
 from server.core import security as security_module
 from server.core.auth import AuthContext, authenticate_access_token, get_client_ip
 from server.core.path_security import (
@@ -16,7 +18,11 @@ from server.core.path_security import (
     validate_image_url,
     validate_media_path,
 )
+from server.models.auth import ChangePasswordRequest, LoginRequest, RefreshRequest
 from server.models.image import ImageDownloadRequest
+from server.models.manual_job import ManualJobDeleteRequest
+from server.models.parser import BatchParseRequest, ParseRequest
+from server.models.scraper import BatchScrapeRequest
 from server.models.subtitle import SubtitleRenameRequest
 
 
@@ -112,6 +118,56 @@ def test_websocket_accepts_active_session(
         message = websocket.receive_json()
         assert message["type"] == "connected"
     auth_check.assert_awaited_once_with("valid-token")
+
+
+def test_websocket_rejects_oversized_auth_token_before_verification(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_check = AsyncMock()
+    monkeypatch.setattr(
+        "server.api.websocket.authenticate_access_token",
+        auth_check,
+    )
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"type": "auth", "token": "x" * 4097})
+            websocket.receive_json()
+
+    assert exc_info.value.code == 4401
+    auth_check.assert_not_awaited()
+
+
+def test_auth_models_bound_untrusted_credential_fields() -> None:
+    with pytest.raises(ValidationError):
+        LoginRequest(username="u" * 33, password="password")
+    with pytest.raises(ValidationError):
+        LoginRequest(username="admin", password="p" * 129)
+    with pytest.raises(ValidationError):
+        RefreshRequest(refresh_token="x" * 513)
+    with pytest.raises(ValidationError):
+        ChangePasswordRequest(current_password="p" * 129, new_password="new-password")
+
+
+def test_login_history_pagination_is_bounded(auth_client: TestClient) -> None:
+    assert auth_client.get("/api/auth/history?limit=101").status_code == 422
+    assert auth_client.get("/api/auth/history?offset=-1").status_code == 422
+
+
+def test_log_export_limit_is_bounded(auth_client: TestClient) -> None:
+    assert auth_client.get("/api/logs/export?limit=10001").status_code == 422
+
+
+def test_batch_request_models_reject_unbounded_work() -> None:
+    with pytest.raises(ValidationError):
+        BatchParseRequest(files=[ParseRequest(filename="episode.mkv")] * 501)
+    with pytest.raises(ValidationError):
+        BatchScrapeRequest(file_paths=["/media/episode.mkv"] * 101)
+    with pytest.raises(ValidationError):
+        ManualJobDeleteRequest(ids=list(range(501)))
+    with pytest.raises(ValidationError):
+        AIRetryRequest(record_ids=[str(index) for index in range(501)])
 
 
 def test_file_paths_stay_inside_configured_roots(
