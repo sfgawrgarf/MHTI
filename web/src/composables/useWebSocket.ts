@@ -228,7 +228,6 @@ function handleMessage(msg: WSMessage): void {
       state.clientId = payload?.client_id || msg.client_id
       state.isConnected.value = true
       startHeartbeat()
-      console.log('[WS] 客户端 ID:', state.clientId)
       break
 
     case 'pong':
@@ -236,23 +235,17 @@ function handleMessage(msg: WSMessage): void {
       break
 
     case 'job_created':
-      console.log('[WS] 任务创建:', job_id)
       break
 
     case 'log':
-      // 日志消息，可以在控制台输出或存储
-      if (job_id && payload) {
-        console.log(`[WS] [${job_id}] ${payload.level}: ${payload.message}`)
-      }
+      // 日志内容由注册的处理器消费；不把服务端数据写入浏览器控制台。
       break
 
     // 历史记录详情页实时更新（由注册的 handler 处理，这里只做日志）
     case 'history_detail_update':
-      console.log('[WS] 历史记录详情更新:', job_id, payload)
       break
 
     case 'history_detail_log':
-      console.log('[WS] 历史记录详情日志:', job_id, payload)
       break
   }
 

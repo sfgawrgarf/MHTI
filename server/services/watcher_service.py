@@ -19,6 +19,7 @@ from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedE
 
 from server.core.db.connection import db_connection
 from server.core.database import DATABASE_PATH
+from server.core.log_security import safe_log_value
 from server.models.organize import OrganizeMode
 from server.models.storage import is_p115_virtual_path
 from server.models.watcher import (
@@ -930,9 +931,11 @@ class WatcherService:
                         await self._restart_folder_watch(folder)
                     except Exception:
                         self._status = WatcherStatus.ERROR
+                        # folder_id is converted to a bounded single-line value.
+                        # codeql[py/log-injection]
                         logger.exception(
                             "Unable to restore previous watcher after update failed: %s",
-                            folder_id,
+                            safe_log_value(folder_id),
                         )
                 raise
 
@@ -987,9 +990,11 @@ class WatcherService:
                         await self._start_folder_watch(folder)
                     except Exception:
                         self._status = WatcherStatus.ERROR
+                        # folder_id is converted to a bounded single-line value.
+                        # codeql[py/log-injection]
                         logger.exception(
                             "Unable to restore watcher after delete failed: %s",
-                            folder_id,
+                            safe_log_value(folder_id),
                         )
                 raise
 

@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from server.core.db import db_context
+from server.core.log_security import safe_log_value
 from server.models.auth import SessionInfo, LoginHistoryItem, EXPIRE_HOURS_MAP, ExpireOption
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,9 @@ class SessionService:
             await db.commit()
             deleted = cursor.rowcount > 0
             if deleted:
-                logger.info(f"Session revoked: {session_id[:8]}...")
+                # session_id is converted to a bounded single-line value.
+                # codeql[py/log-injection]
+                logger.info("Session revoked: %s...", safe_log_value(session_id[:8]))
         if deleted:
             await self.close_session_connections([session_id])
         return deleted
@@ -341,9 +344,14 @@ class SessionService:
             )
             await db.commit()
 
-        log_msg = f"Login {'success' if success else 'failed'}: {username} from {ip_address}"
+        log_msg = (
+            f"Login {'success' if success else 'failed'}: "
+            f"{safe_log_value(username)} from {safe_log_value(ip_address)}"
+        )
         if failure_reason:
-            log_msg += f" ({failure_reason})"
+            log_msg += f" ({safe_log_value(failure_reason)})"
+        # Every external field in log_msg was normalized with safe_log_value.
+        # codeql[py/log-injection]
         logger.info(log_msg)
 
     async def get_login_history(

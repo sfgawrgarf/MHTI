@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from server.core.exceptions import TMDBError
+from server.core.log_security import safe_log_value
 from server.core.path_security import PathSecurityError, validate_media_path
 from server.services.file_operations import write_metadata_text
 from server.services.file_io import run_file_io
@@ -272,11 +273,13 @@ class _P115StorageProvider:
                     async_=True,
                 )
             except Exception as exc:
+                # Every external field is converted to a bounded single-line value.
+                # codeql[py/log-injection]
                 logger.warning(
                     "115 子目录查询失败 parent_id=%s name=%s: %s",
-                    parent_pid,
-                    name,
-                    exc,
+                    safe_log_value(parent_pid),
+                    safe_log_value(name),
+                    safe_log_value(exc),
                     exc_info=True,
                 )
                 return None
@@ -1102,8 +1105,10 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             metadata_base = validate_media_path(metadata_dir)
             metadata_series_folder = metadata_base / series_folder.name
             metadata_season_folder = metadata_series_folder / season_folder.name
-            validate_media_path(str(metadata_series_folder))
-            validate_media_path(str(metadata_season_folder))
+            metadata_series_folder = validate_media_path(str(metadata_series_folder))
+            metadata_season_folder = validate_media_path(str(metadata_season_folder))
+            # metadata_season_folder is confined to an allowed media root.
+            # codeql[py/path-injection]
             metadata_season_folder.mkdir(parents=True, exist_ok=True)
             return metadata_series_folder, metadata_season_folder
 
@@ -1260,7 +1265,12 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                     source="manual",
                 )
             except Exception:
-                logger.exception("媒体已输出，但手动别名记录写入失败: %s", file_path)
+                # file_path is converted to a bounded single-line value.
+                # codeql[py/log-injection]
+                logger.exception(
+                    "媒体已输出，但手动别名记录写入失败: %s",
+                    safe_log_value(file_path),
+                )
                 finalization_warnings.append("手动别名记录写入失败")
 
         if finalization_warnings:
@@ -1606,12 +1616,19 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
                 await on_log_update(scrape_logs)
 
         # Check file exists
-        if not self._is_provider_source(request.file_locator) and not path.exists():
-            return ScrapeResult(
-                file_path=file_path,
-                status=ScrapeStatus.MOVE_FAILED,
-                message=f"文件不存在: {file_path}",
-            )
+        if not self._is_provider_source(request.file_locator):
+            try:
+                path = validate_media_path(
+                    file_path,
+                    must_exist=True,
+                    require_file=True,
+                )
+            except PathSecurityError as exc:
+                return ScrapeResult(
+                    file_path=file_path,
+                    status=ScrapeStatus.MOVE_FAILED,
+                    message=str(exc),
+                )
 
         # Step 1: Parse filename
         parse_step = ScrapeLogStep(name="解析文件名", logs=[])
@@ -2177,12 +2194,19 @@ class ScraperService(ScraperConfigMixin, ScraperMetadataMixin, ScraperMediaMixin
             if on_log_update:
                 await on_log_update(scrape_logs)
 
-        if not self._is_provider_source(request.file_locator) and not path.exists():
-            return ScrapeResult(
-                file_path=file_path,
-                status=ScrapeStatus.MOVE_FAILED,
-                message=f"文件不存在: {file_path}",
-            )
+        if not self._is_provider_source(request.file_locator):
+            try:
+                path = validate_media_path(
+                    file_path,
+                    must_exist=True,
+                    require_file=True,
+                )
+            except PathSecurityError as exc:
+                return ScrapeResult(
+                    file_path=file_path,
+                    status=ScrapeStatus.MOVE_FAILED,
+                    message=str(exc),
+                )
 
         result = ScrapeResult(
             file_path=file_path,

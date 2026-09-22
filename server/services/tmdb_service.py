@@ -1,6 +1,7 @@
 """TMDB service for API-based metadata retrieval."""
 
 import asyncio
+import re
 import unicodedata
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -30,6 +31,9 @@ from server.services.config_service import ConfigService
 TMDB_BASE_URL = "https://www.themoviedb.org"
 TMDB_API_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
+TMDB_API_ENDPOINT_PATTERN = re.compile(
+    r"\A(?:/search/tv|/tv/[1-9]\d*(?:/season/\d+)?)\Z"
+)
 
 
 class TMDBService:
@@ -121,6 +125,9 @@ class TMDBService:
             TMDBTimeoutError: 请求超时
             TMDBConnectionError: 连接失败
         """
+        if not TMDB_API_ENDPOINT_PATTERN.fullmatch(endpoint):
+            raise ValueError("Invalid TMDB API endpoint")
+
         token = await self._get_api_token()
         if not token:
             raise TMDBNotConfiguredError("API Token")
@@ -146,7 +153,14 @@ class TMDBService:
                     for attempt in range(retries + 1):
                         retry_after = None
                         try:
-                            response = await client.get(url, headers=headers, params=api_params)
+                            # The endpoint is constrained to the TMDB route grammar
+                            # above and the origin is a compile-time constant.
+                            # codeql[py/partial-ssrf]
+                            response = await client.get(
+                                url,
+                                headers=headers,
+                                params=api_params,
+                            )
                             self._check_api_response(response, allow_not_found=True)
                             return response
                         except httpx.TimeoutException:

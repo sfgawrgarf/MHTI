@@ -3,13 +3,14 @@
 import logging
 import uuid
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from server.core.auth import require_auth
 from server.core.container import get_config_service, get_p115_service, get_tmdb_service
+from server.core.log_security import safe_log_value
+from server.core.path_security import validate_media_path
 from server.models.cloud_115 import Cloud115QrSession, Cloud115QrStatus, Cloud115Status
 from server.models.config import (
     ApiTokenSaveRequest,
@@ -312,12 +313,6 @@ async def save_watcher_config(
     config_service: ConfigService = Depends(get_config_service),
 ) -> WatcherConfigResponse:
     """Save watcher configuration and sync to watcher service."""
-    config = WatcherConfig(
-        enabled=request.enabled,
-        mode=request.mode,
-        performance_mode=request.performance_mode,
-        watch_dirs=request.watch_dirs,
-    )
     watcher_service = get_watcher_service()
     existing_folders, _ = await watcher_service.list_folders()
     old_config = await config_service.get_watcher_config()
@@ -328,21 +323,25 @@ async def save_watcher_config(
     scan_interval = _watch_scan_interval(request.performance_mode)
     p115_service: P115Service | None = None
     p115_client = None
-    for dir_path in request.watch_dirs:
+    for requested_dir_path in request.watch_dirs:
+        dir_path = requested_dir_path
         provider = "115" if is_p115_virtual_path(dir_path) else "local"
         existing = existing_by_path.get(dir_path)
-        file_id: str | None = existing.file_id if existing else None
+        file_id: str | None = None
         if request.enabled:
             if provider == "local":
                 try:
-                    local_path = Path(dir_path)
-                    if not local_path.is_absolute():
-                        raise ValueError("监控路径必须是绝对路径")
-                    local_path = local_path.resolve(strict=True)
-                    if not local_path.is_dir():
-                        raise ValueError("监控路径不是目录")
+                    dir_path = str(
+                        validate_media_path(
+                            dir_path,
+                            must_exist=True,
+                            require_directory=True,
+                        )
+                    )
                 except (OSError, RuntimeError, ValueError) as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
+                if existing is None:
+                    existing = existing_by_path.get(dir_path)
             else:
                 try:
                     if p115_service is None:
@@ -361,15 +360,20 @@ async def save_watcher_config(
                     )
                     file_id = str(resolved_id)
                 except Exception as exc:
+                    # Both external fields are converted to bounded single-line values.
+                    # codeql[py/log-injection]
                     logger.warning(
                         "115 监控目录预校验失败 path=%s: %s",
-                        dir_path,
-                        exc,
+                        safe_log_value(dir_path),
+                        safe_log_value(exc),
                     )
                     raise HTTPException(
                         status_code=400,
                         detail=f"无法访问 115 监控目录: {dir_path}",
                     ) from exc
+
+        if existing is not None and file_id is None:
+            file_id = existing.file_id
 
         desired_folders.append(
             WatchedFolder(
@@ -387,6 +391,13 @@ async def save_watcher_config(
                 created_at=existing.created_at if existing else datetime.now(),
             )
         )
+
+    config = WatcherConfig(
+        enabled=request.enabled,
+        mode=request.mode,
+        performance_mode=request.performance_mode,
+        watch_dirs=[folder.path for folder in desired_folders],
+    )
 
     try:
         await watcher_service.stop(require_clean=True)

@@ -9,10 +9,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from server.models.emby import ConflictCheckRequest, ConflictCheckResult, ConflictType
-from server.models.tmdb import TMDBSeason, TMDBSeries
-from server.models.organize import OrganizeMode
+from server.core.log_security import safe_log_value
 from server.core.path_security import validate_media_path
+from server.models.emby import ConflictCheckRequest, ConflictCheckResult, ConflictType
+from server.models.organize import OrganizeMode
+from server.models.tmdb import TMDBSeason, TMDBSeries
 from server.services.file_operations import publish_file
 
 if TYPE_CHECKING:
@@ -118,7 +119,13 @@ class ScraperMediaMixin:
                 break
 
         if not still_path:
-            logger.info(f"S{season_num:02d}E{episode_num:02d} 没有封面图")
+            # Episode identifiers are converted to bounded single-line values.
+            # codeql[py/log-injection]
+            logger.info(
+                "S%sE%s 没有封面图",
+                safe_log_value(f"{season_num:02d}"),
+                safe_log_value(f"{episode_num:02d}"),
+            )
             return
 
         # 使用与视频文件相同的文件名

@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from server.core.db.connection import db_context
+from server.core.path_security import PathSecurityError, validate_media_path
 from server.models.ai import VersionPolicy, VersionPreview
 
 
@@ -15,15 +16,25 @@ class MediaIdentityService:
 
     @staticmethod
     def fingerprint(path: str) -> str:
-        source = Path(path)
         digest = hashlib.blake2s()
-        digest.update(source.name.encode("utf-8", errors="ignore"))
-        if source.exists() and source.is_file():
+        digest.update(Path(path).name.encode("utf-8", errors="ignore"))
+        try:
+            source = validate_media_path(
+                path,
+                must_exist=True,
+                require_file=True,
+            )
+        except PathSecurityError:
+            # Provider-native and missing paths have no readable local content;
+            # retain the stable path-only identity without probing elsewhere.
+            digest.update(path.encode("utf-8", errors="ignore"))
+        else:
+            # source is confined to an allowed media root by validate_media_path.
+            # codeql[py/path-injection]
             with source.open("rb") as handle:
                 digest.update(handle.read(1024 * 1024))
+            # codeql[py/path-injection]
             digest.update(str(source.stat().st_size).encode())
-        else:
-            digest.update(path.encode("utf-8", errors="ignore"))
         return digest.hexdigest()
 
     @staticmethod

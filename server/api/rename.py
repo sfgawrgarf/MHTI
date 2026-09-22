@@ -1,9 +1,10 @@
 """Rename API endpoints."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from server.core.auth import require_auth
 from server.core.container import get_rename_service
+from server.core.path_security import PathSecurityError
 from server.models.rename import (
     BatchRenameRequest,
     BatchRenameResponse,
@@ -35,7 +36,10 @@ def preview_rename(
     Returns:
         Preview of the rename operation with destination path.
     """
-    return rename_service.preview_rename(request)
+    try:
+        return rename_service.preview_rename(request)
+    except PathSecurityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/execute", response_model=RenameResult)

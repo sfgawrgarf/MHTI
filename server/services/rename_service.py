@@ -12,6 +12,7 @@ from server.models.rename import (
     RenameRequest,
     RenameResult,
 )
+from server.models.storage import is_p115_virtual_path
 from server.services.template_service import TemplateService
 from server.services.file_operations import publish_file
 
@@ -73,12 +74,23 @@ class RenameService:
         dest_folder = base_dir / series_folder / season_folder
         dest_path = dest_folder / new_filename
 
-        # Determine which directories need to be created
+        # Determine which directories need to be created. Provider-native paths
+        # are previews only and must never be probed on the local filesystem.
         will_create_dirs = []
-        check_dir = dest_folder
-        while not check_dir.exists() and check_dir != base_dir.parent:
-            will_create_dirs.insert(0, str(check_dir))
-            check_dir = check_dir.parent
+        if not is_p115_virtual_path(str(dest_folder)):
+            safe_base_dir = validate_media_path(str(base_dir))
+            dest_folder = validate_media_path(str(dest_folder))
+            dest_path = validate_media_path(str(dest_path))
+            check_dir = dest_folder
+            while check_dir.is_relative_to(safe_base_dir):
+                # Both paths are confined to an allowed root above.
+                # codeql[py/path-injection]
+                if check_dir.exists():
+                    break
+                will_create_dirs.insert(0, str(check_dir))
+                if check_dir == safe_base_dir:
+                    break
+                check_dir = check_dir.parent
 
         return RenamePreview(
             source_path=str(source_path),

@@ -75,13 +75,16 @@ class SubtitleService:
             Response with list of found subtitle files.
         """
         try:
-            folder = validate_media_path(folder_path, must_exist=True)
+            folder = validate_media_path(
+                folder_path,
+                must_exist=True,
+                require_directory=True,
+            )
         except PathSecurityError:
             return SubtitleScanResponse(subtitles=[], total=0)
-        if not folder.exists() or not folder.is_dir():
-            return SubtitleScanResponse(subtitles=[], total=0)
-
         subtitles = []
+        # folder is an existing directory confined to an allowed media root.
+        # codeql[py/path-injection]
         for file_path in folder.rglob("*"):
             check_file_cancelled()
             if file_path.is_file() and file_path.suffix.lower() in SUBTITLE_EXTENSIONS:
@@ -105,12 +108,13 @@ class SubtitleService:
             Response with video-subtitle associations.
         """
         try:
-            folder = validate_media_path(folder_path, must_exist=True)
+            folder = validate_media_path(
+                folder_path,
+                must_exist=True,
+                require_directory=True,
+            )
         except PathSecurityError:
             return SubtitleAssociateResponse(associations=[])
-        if not folder.exists():
-            return SubtitleAssociateResponse(associations=[])
-
         # Get all subtitles
         scan_result = self.scan_subtitles(folder_path)
         subtitles = scan_result.subtitles
@@ -118,6 +122,7 @@ class SubtitleService:
         # Get video files
         if video_files is None:
             video_files = []
+            # codeql[py/path-injection]
             for file_path in folder.rglob("*"):
                 check_file_cancelled()
                 if file_path.is_file() and file_path.suffix.lower() in VIDEO_EXTENSIONS:
@@ -207,6 +212,8 @@ class SubtitleService:
             )
 
         # Check if destination exists
+        # source and dest are confined to the same allowed media root.
+        # codeql[py/path-injection]
         if dest.exists() and dest != source:
             return SubtitleRenameResult(
                 source_path=subtitle_path,
@@ -216,6 +223,7 @@ class SubtitleService:
             )
 
         try:
+            # codeql[py/path-injection]
             shutil.move(str(source), str(dest))
             return SubtitleRenameResult(
                 source_path=subtitle_path,
