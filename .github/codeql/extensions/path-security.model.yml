@@ -8,5 +8,13 @@ extensions:
       # The validation implementation remains visible to CodeQL; this model
       # stops already-validated return values from being reported again at
       # every downstream filesystem operation.
-      - ["server.core.path_security", "Member[validate_media_path].ReturnValue", "path-injection"]
-      - ["server.core.path_security", "Member[validate_media_directory].ReturnValue", "path-injection"]
+      - [
+          "server",
+          "Member[core].Member[path_security].Member[validate_media_path].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "server",
+          "Member[core].Member[path_security].Member[validate_media_directory].ReturnValue",
+          "path-injection",
+        ]
