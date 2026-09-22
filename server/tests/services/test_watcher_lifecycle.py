@@ -591,8 +591,12 @@ async def test_failed_start_rolls_back_partial_watcher_state(
     temp_db, monkeypatch
 ) -> None:
     service = WatcherService(temp_db)
-    first = WatchedFolder(id="first", path="/first")
-    second = WatchedFolder(id="second", path="/second")
+    first_path = temp_db.parent / "first"
+    second_path = temp_db.parent / "second"
+    first_path.mkdir()
+    second_path.mkdir()
+    first = WatchedFolder(id="first", path=str(first_path))
+    second = WatchedFolder(id="second", path=str(second_path))
     strategy = FakeStrategy(first)
     monkeypatch.setattr(
         service,
