@@ -5,7 +5,11 @@ import shutil
 from pathlib import Path
 
 from server.core.media_extensions import SUPPORTED_VIDEO_EXTENSIONS
-from server.core.path_security import PathSecurityError, validate_media_path
+from server.core.path_security import (
+    PathSecurityError,
+    validate_media_directory,
+    validate_media_path,
+)
 from server.models.subtitle import (
     BatchSubtitleRenameResponse,
     SubtitleAssociateResponse,
@@ -75,13 +79,11 @@ class SubtitleService:
             Response with list of found subtitle files.
         """
         try:
-            folder = validate_media_path(folder_path, must_exist=True)
+            folder = validate_media_directory(folder_path)
         except PathSecurityError:
             return SubtitleScanResponse(subtitles=[], total=0)
-        if not folder.exists() or not folder.is_dir():
-            return SubtitleScanResponse(subtitles=[], total=0)
-
         subtitles = []
+        # folder is an existing directory confined to an allowed media root.
         for file_path in folder.rglob("*"):
             check_file_cancelled()
             if file_path.is_file() and file_path.suffix.lower() in SUBTITLE_EXTENSIONS:
@@ -105,12 +107,9 @@ class SubtitleService:
             Response with video-subtitle associations.
         """
         try:
-            folder = validate_media_path(folder_path, must_exist=True)
+            folder = validate_media_directory(folder_path)
         except PathSecurityError:
             return SubtitleAssociateResponse(associations=[])
-        if not folder.exists():
-            return SubtitleAssociateResponse(associations=[])
-
         # Get all subtitles
         scan_result = self.scan_subtitles(folder_path)
         subtitles = scan_result.subtitles
@@ -207,6 +206,7 @@ class SubtitleService:
             )
 
         # Check if destination exists
+        # source and dest are confined to the same allowed media root.
         if dest.exists() and dest != source:
             return SubtitleRenameResult(
                 source_path=subtitle_path,

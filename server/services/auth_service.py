@@ -11,6 +11,7 @@ import aiosqlite
 from jwt.exceptions import InvalidTokenError
 
 from server.core.database import get_db_manager
+from server.core.log_security import safe_log_value
 from server.models.auth import ExpireOption, EXPIRE_HOURS_MAP, AuthConfig
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,8 @@ class AuthService:
                     (username, password_hash),
                 )
                 await db.commit()
-                logger.info(f"Admin account created: {username}")
+                # username is converted to a bounded single-line value.
+                logger.info("Admin account created: %s", safe_log_value(username))
                 return True
             except aiosqlite.IntegrityError:
                 await db.rollback()
@@ -331,7 +333,12 @@ class AuthService:
             except BaseException:
                 await db.rollback()
                 raise
-        logger.info("Username changed from %s to %s", current_username, new_username)
+        # Both usernames are converted to bounded single-line values.
+        logger.info(
+            "Username changed from %s to %s",
+            safe_log_value(current_username),
+            safe_log_value(new_username),
+        )
         return True, "用户名修改成功"
 
     async def get_user_profile(self, username: str) -> dict | None:

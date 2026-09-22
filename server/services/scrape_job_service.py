@@ -13,6 +13,7 @@ import aiosqlite
 from server.core.db.connection import DatabaseManager, db_connection
 from server.core.db.schema import migrate_scrape_jobs_table
 from server.core.database import DATABASE_PATH
+from server.core.log_security import safe_log_value
 from server.models.history import TaskStatus
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.scrape_job import (
@@ -184,7 +185,8 @@ class ScrapeJobService:
         if not skip_duplicate_check:
             existing = await self.get_pending_job_by_path(job.file_path)
             if existing:
-                logger.info(f"文件已有待处理任务，跳过: {job.file_path}")
+                # file_path is converted to a bounded single-line value.
+                logger.info("文件已有待处理任务，跳过: %s", safe_log_value(job.file_path))
                 return None
 
             # Skipped/deleted records keep an audit row and remain explicitly
@@ -199,8 +201,10 @@ class ScrapeJobService:
                 if await history_service.is_auto_scrape_blocked_by_user_suppressed_record(
                     job.file_path, file_fingerprint
                 ):
+                    # file_path is converted to a bounded single-line value.
                     logger.info(
-                        f"文件已有用户跳过或删除记录，跳过监控重复任务: {job.file_path}"
+                        "文件已有用户跳过或删除记录，跳过监控重复任务: %s",
+                        safe_log_value(job.file_path),
                     )
                     return None
 
@@ -214,7 +218,11 @@ class ScrapeJobService:
                     )
                     already_recorded = await cursor.fetchone()
                 if already_recorded:
-                    logger.info(f"文件已成功整理，跳过监控重复任务: {job.file_path}")
+                    # file_path is converted to a bounded single-line value.
+                    logger.info(
+                        "文件已成功整理，跳过监控重复任务: %s",
+                        safe_log_value(job.file_path),
+                    )
                     return None
 
         job_id = str(uuid.uuid4())[:8]
@@ -310,7 +318,11 @@ class ScrapeJobService:
                 )
                 if await cursor.fetchone():
                     await db.rollback()
-                    logger.info(f"文件已有并发创建的待处理任务，跳过: {job.file_path}")
+                    # file_path is converted to a bounded single-line value.
+                    logger.info(
+                        "文件已有并发创建的待处理任务，跳过: %s",
+                        safe_log_value(job.file_path),
+                    )
                     return None
             await db.execute(
                 """

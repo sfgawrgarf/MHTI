@@ -5,6 +5,7 @@ import time
 
 import httpx
 
+from server.core.log_security import safe_log_value
 from server.models.emby import (
     ConflictCheckRequest,
     ConflictCheckResult,
@@ -248,7 +249,8 @@ class EmbyService:
             resp = await client.get("/Items", params=params)
             resp.raise_for_status()
             items = resp.json().get("Items", [])
-        logger.info(f"Emby 搜索 '{name}' 找到 {len(items)} 个结果")
+        # name is converted to a bounded single-line value.
+        logger.info("Emby 搜索 '%s' 找到 %d 个结果", safe_log_value(name), len(items))
 
         for item in items:
             provider_ids = item.get("ProviderIds", {})
@@ -297,7 +299,8 @@ class EmbyService:
                     tmdb_id=int(tmdb_str) if tmdb_str else None,
                 )
 
-        logger.info(f"Emby 未找到匹配的剧集: {name}")
+        # name is converted to a bounded single-line value.
+        logger.info("Emby 未找到匹配的剧集: %s", safe_log_value(name))
         return None
 
     async def _check_episode(
@@ -319,13 +322,23 @@ class EmbyService:
         data = resp.json()
 
         items = data.get("Items", [])
-        logger.info(f"Emby 剧集 {series_id} 共有 {len(items)} 集")
+        # series_id is converted to a bounded single-line value.
+        logger.info(
+            "Emby 剧集 %s 共有 %d 集",
+            safe_log_value(series_id),
+            len(items),
+        )
 
         for item in items:
             item_season = item.get("ParentIndexNumber")
             item_episode = item.get("IndexNumber")
             if item_season == season and item_episode == episode:
-                logger.info(f"Emby 找到匹配的集: S{season:02d}E{episode:02d}")
+                # Episode identifiers are converted to bounded single-line values.
+                logger.info(
+                    "Emby 找到匹配的集: S%sE%s",
+                    safe_log_value(f"{season:02d}"),
+                    safe_log_value(f"{episode:02d}"),
+                )
                 return EmbyEpisodeMatch(
                     id=item["Id"],
                     name=item["Name"],
@@ -336,5 +349,10 @@ class EmbyService:
                     series_name=item.get("SeriesName", ""),
                 )
 
-        logger.info(f"Emby 未找到集: S{season:02d}E{episode:02d}")
+        # Episode identifiers are converted to bounded single-line values.
+        logger.info(
+            "Emby 未找到集: S%sE%s",
+            safe_log_value(f"{season:02d}"),
+            safe_log_value(f"{episode:02d}"),
+        )
         return None
