@@ -27,7 +27,7 @@ API_PID=$!
 # Wait for API to be ready
 log "Waiting for API to be ready..."
 for i in {1..30}; do
-    if curl -sf http://127.0.0.1:8001/health > /dev/null 2>&1; then
+    if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)" > /dev/null 2>&1; then
         log "API is ready"
         break
     fi

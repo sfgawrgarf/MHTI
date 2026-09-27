@@ -16,6 +16,12 @@
 
 ## 发布流程
 
+发布前必须在 `CHANGELOG.md` 添加目标版本章节（例如 `## [2.0.10] - 2026-09-08`），
+用中文写清本次改动、用户可见的收益及升级注意事项。发布工作流会在构建前检查该章节，
+并自动将其内容写入 GitHub Release；缺少说明或内容为空时停止发布。
+
+项目的测试、依赖安装与镜像构建统一在 GitHub Actions 执行，低内存服务器仅用于编辑和 Git 操作。
+
 ### 1. 创建版本标签
 
 ```bash
@@ -36,8 +42,14 @@ git push origin v1.0.0
 
 1. ✅ 构建前端 (Vue.js)
 2. ✅ 构建 Docker 多架构镜像 (amd64, arm64)
-3. ✅ 推送到 Docker Hub (`xiyan520/mhti:latest` 和版本标签)
-4. ✅ 创建 GitHub Release
+3. ✅ 推送到 GitHub Container Registry（`ghcr.io/sfgawrgarf/mhti:latest` 和版本标签）
+4. ✅ 打包前端和源代码，并生成校验和
+5. ✅ 创建 GitHub Release
+
+工作流不会生成或上传 AMD64/ARM64 Docker 离线镜像大包；多架构镜像只保留在 GHCR。
+
+当前迁移分支的 Compose 默认值继续指向已发布稳定版 `2.1.6`，用于保护现有部署的可回滚性。
+正式发布新版本前，需要在同一个版本变更中更新源码版本和 Compose 默认版本；本次迁移不创建 Tag 或 Release。
 
 ### 3. 手动触发发布
 
@@ -63,26 +75,16 @@ git push origin v1.0.0
 
 | 标签 | 说明 |
 |------|------|
-| `xiyan520/mhti:1.2.3` | 完整版本号 |
-| `xiyan520/mhti:1.2` | 主次版本号 |
-| `xiyan520/mhti:1` | 主版本号 |
-| `xiyan520/mhti:latest` | 最新稳定版（非预发布） |
+| `ghcr.io/sfgawrgarf/mhti:1.2.3` | 完整版本号 |
+| `ghcr.io/sfgawrgarf/mhti:1.2` | 主次版本号 |
+| `ghcr.io/sfgawrgarf/mhti:1` | 主版本号 |
+| `ghcr.io/sfgawrgarf/mhti:latest` | 最新稳定版（非预发布） |
 
-## 必需的 Secrets 配置
+## 必需的 GitHub 配置
 
-在 GitHub 仓库设置中配置以下 Secrets：
+无需配置 Docker Hub 用户名或访问令牌。发布工作流使用仓库内置的 `GITHUB_TOKEN` 推送至 GHCR；工作流已授予 `packages: write` 权限。
 
-| Secret 名称 | 说明 |
-|------------|------|
-| `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
-| `DOCKERHUB_TOKEN` | Docker Hub 访问令牌 |
-
-### 获取 Docker Hub Token
-
-1. 登录 [Docker Hub](https://hub.docker.com/)
-2. 进入 Account Settings → Security
-3. 创建 Access Token（选择 Read & Write 权限）
-4. 复制 Token 到 GitHub Secrets
+首次发布后，请在 GitHub 的 **Packages** 页面将 `mhti` 容器包可见性设为 **Public**，这样其他用户无需登录 GitHub 即可执行 `docker compose pull`。
 
 ## 发布检查清单
 
@@ -92,4 +94,4 @@ git push origin v1.0.0
 - [ ] 文档已更新
 - [ ] CHANGELOG 已更新（如有）
 - [ ] 版本号符合语义化规范
-- [ ] Secrets 已正确配置
+- [ ] GitHub Actions 的 `packages: write` 权限可用
