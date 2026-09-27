@@ -213,16 +213,33 @@ class RenameService:
             if create_backup:
                 backup_path = self._create_backup(source_path)
 
-            # Check if destination already exists
-            if dest_path.exists() and dest_path != source_path:
-                logger.warning(f"目标文件已存在: {dest_path}")
-                return RenameResult(
-                    source_path=str(source_path),
-                    dest_path=str(dest_path),
-                    success=False,
-                    error=f"Destination file already exists: {dest_path}",
-                    backup_path=backup_path,
-                )
+            # A conflict is safe-by-default. Only an explicit user action may
+            # replace the target or select the next available filename.
+            target_exists = dest_path.exists() or dest_path.is_symlink()
+            if target_exists and dest_path != source_path:
+                if request.conflict_action == "rename":
+                    dest_path = self._next_available_path(dest_path)
+                    logger.info(f"目标文件已存在，使用重命名目标: {dest_path}")
+                elif request.conflict_action == "overwrite":
+                    if dest_path.is_dir() and not dest_path.is_symlink():
+                        return RenameResult(
+                            source_path=str(source_path),
+                            dest_path=str(dest_path),
+                            success=False,
+                            error=f"Destination path is a directory: {dest_path}",
+                            backup_path=backup_path,
+                        )
+                    dest_path.unlink()
+                    logger.warning(f"用户确认覆盖目标文件: {dest_path}")
+                else:
+                    logger.warning(f"目标文件已存在: {dest_path}")
+                    return RenameResult(
+                        source_path=str(source_path),
+                        dest_path=str(dest_path),
+                        success=False,
+                        error=f"Destination file already exists: {dest_path}",
+                        backup_path=backup_path,
+                    )
 
             # Move/rename the file based on link_mode
             logger.info(f"execute_rename: 正在处理文件，模式: {request.link_mode or 'move(默认)'}...")
@@ -252,6 +269,16 @@ class RenameService:
                 success=False,
                 error=f"OS error: {e}",
             )
+
+    @staticmethod
+    def _next_available_path(path: Path) -> Path:
+        """Choose a sibling filename without overwriting an existing path."""
+        counter = 1
+        candidate = path
+        while candidate.exists() or candidate.is_symlink():
+            candidate = path.with_name(f"{path.stem} ({counter}){path.suffix}")
+            counter += 1
+        return candidate
 
     def batch_rename(self, request: BatchRenameRequest) -> BatchRenameResponse:
         """Execute batch rename operations.

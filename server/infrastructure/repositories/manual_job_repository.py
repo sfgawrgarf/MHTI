@@ -163,6 +163,28 @@ class ManualJobRepository(BaseRepository):
             "SELECT * FROM manual_jobs WHERE id = ?", (job_id,)
         )
 
+    async def get_child_counts(
+        self,
+        job_ids: list[int],
+    ) -> dict[int, dict[str, int]]:
+        """Load scrape-job status counts for manual jobs in one query."""
+        if not job_ids:
+            return {}
+        placeholders = ",".join("?" * len(job_ids))
+        rows = await self._fetch_all(
+            f"""
+            SELECT source_id, status, COUNT(*) AS count
+            FROM scrape_jobs
+            WHERE source = 'manual' AND source_id IN ({placeholders})
+            GROUP BY source_id, status
+            """,
+            tuple(job_ids),
+        )
+        counts: dict[int, dict[str, int]] = {}
+        for row in rows:
+            counts.setdefault(int(row["source_id"]), {})[str(row["status"])] = int(row["count"])
+        return counts
+
     async def delete_jobs(self, ids: list[int]) -> int:
         """删除任务并级联删除关联的刮削记录（history_records.manual_job_id）。"""
         if not ids:

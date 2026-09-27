@@ -18,6 +18,7 @@ from server.common.path_security import PathSecurityError, validate_media_path
 from server.models.emby import ConflictCheckResult, ConflictType
 from server.models.history import ScrapeLogLevel, ScrapeLogEntry, ScrapeLogStep
 from server.models.manual_job import ManualJobAdvancedSettings
+from server.models.ai import AICandidate, AIUsageMode
 from server.models.nfo import SeasonNFO
 from server.models.organize import OrganizeMode
 from server.models.rename import RenameRequest
@@ -47,6 +48,10 @@ from server.application.scraping.media_pipeline import ScraperMediaPipeline
 from server.application.scraping.metadata_resolver import ScraperMetadataResolver
 from server.application.scraping.output_writer import OutputWriter, _get_mode_name
 from server.application.scraping.p115_storage_provider import P115StorageProvider
+from server.application.ai_provider_service import AIProviderError, AIProviderService
+from server.application.media_alias_service import MediaAliasMatch, MediaAliasService
+from server.application.media_identity_service import MediaIdentityService
+from server.application.recognition import build_search_title_variants
 from server.domain.artifacts.subtitle_service import SubtitleService
 from server.domain.metadata.tmdb_service import TMDBService
 
@@ -97,11 +102,48 @@ class ScraperService:
         self.image_service = image_service
         self.subtitle_service = subtitle_service
         self.emby_service = emby_service
+        self.ai_provider = AIProviderService(config_service)
+        self.media_alias_service = MediaAliasService()
 
         self._config_resolver = ScraperConfigResolver(config_service, tmdb_service)
         self._metadata_resolver = ScraperMetadataResolver(tmdb_service, nfo_service)
         self._media_pipeline = ScraperMediaPipeline(image_service, subtitle_service, emby_service)
         self._output_writer = OutputWriter(self)
+
+    async def _record_success_identity(
+        self,
+        *,
+        source_path: str,
+        target_path: str | None,
+        series: TMDBSeries,
+        season: int,
+        episode: int,
+        parsed_title: str | None,
+    ) -> None:
+        """Persist version and confirmed alias data after a successful output."""
+        try:
+            await MediaIdentityService().record(
+                file_path=source_path,
+                target_path=target_path,
+                tmdb_id=series.id,
+                season=season,
+                episode=episode,
+                title=series.name,
+            )
+        except Exception as exc:  # registration must not undo a successful scrape
+            logger.warning("记录媒体版本失败: %s", exc)
+        try:
+            await self.media_alias_service.remember_confirmed(
+                file_path=source_path,
+                parsed_title=parsed_title,
+                tmdb_id=series.id,
+                season=season,
+                episode=episode,
+                canonical_titles=[series.name, series.original_name],
+                source="scrape_success",
+            )
+        except Exception as exc:
+            logger.warning("记录媒体别名失败: %s", exc)
 
     # ---- 配置检查与有效配置（转发到 ScraperConfigResolver，保持原方法面）----
 
@@ -263,6 +305,7 @@ class ScraperService:
         output_dir: str | None,
         link_mode: OrganizeMode | None,
         year: int | None = None,
+        conflict_action: str | None = None,
     ) -> RenameRequest:
         return self._output_writer.build_rename_request(
             source_path=source_path,
@@ -272,6 +315,7 @@ class ScraperService:
             output_dir=output_dir,
             link_mode=link_mode,
             year=year,
+            conflict_action=conflict_action,
         )
 
     async def _finalize_storage_output(
@@ -422,7 +466,19 @@ class ScraperService:
                 metadata_locator=request.metadata_locator,
             )
 
-            should_process_subtitles = True
+            file_action = getattr(request, "file_action", None)
+            if (
+                file_action is None
+                and request.advanced_settings is not None
+                and not request.advanced_settings.use_global_organize
+                and request.advanced_settings.overwrite_video
+            ):
+                file_action = "overwrite"
+
+            should_process_subtitles = (
+                request.advanced_settings is None
+                or request.advanced_settings.process_subtitle
+            )
 
             if request.file_locator and request.output_locator:
                 move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
@@ -466,6 +522,14 @@ class ScraperService:
                     result.status = ScrapeStatus.SUCCESS
                     result.message = "刮削完成"
                     result.scrape_logs = scrape_logs
+                    await self._record_success_identity(
+                        source_path=file_path,
+                        target_path=result.dest_path,
+                        series=series,
+                        season=season_num,
+                        episode=episode_num,
+                        parsed_title=result.parsed_title,
+                    )
                     await notify_log_update()
                     return result
 
@@ -484,6 +548,7 @@ class ScraperService:
                             year=year,
                             output_dir=effective_output_dir,
                             link_mode=request.link_mode,
+                            conflict_action=file_action,
                         )
 
                         dest_file, season_folder, series_folder = await self._organize_local_output(
@@ -509,6 +574,7 @@ class ScraperService:
                     year=year,
                     output_dir=effective_output_dir,
                     link_mode=request.link_mode,
+                    conflict_action=file_action,
                 )
 
                 dest_file, season_folder, series_folder = await self._organize_local_output(
@@ -618,6 +684,14 @@ class ScraperService:
         result.status = ScrapeStatus.SUCCESS
         result.message = "刮削完成"
         result.scrape_logs = scrape_logs
+        await self._record_success_identity(
+            source_path=file_path,
+            target_path=result.dest_path,
+            series=series,
+            season=season_num,
+            episode=episode_num,
+            parsed_title=result.parsed_title,
+        )
         await notify_log_update()
         return result
 
@@ -734,6 +808,23 @@ class ScraperService:
         scrape_logs.append(parse_step)
         await notify_log_update()
 
+        # A confirmed local alias is stronger than a fuzzy title search and
+        # lets repeat scrapes keep the user's prior TMDB decision.
+        alias_match: MediaAliasMatch | None = None
+        try:
+            alias_match = await self.media_alias_service.lookup(
+                file_path=file_path,
+                parsed_title=parsed.series_name,
+            )
+        except Exception as exc:
+            logger.warning("读取媒体别名失败，继续常规匹配: %s", exc)
+        if alias_match is not None:
+            result.selected_id = alias_match.tmdb_id
+            if alias_match.season is not None:
+                parsed.season = alias_match.season
+            if alias_match.episode is not None:
+                parsed.episode = alias_match.episode
+
         # Step 2: Search TMDB using API
         search_step = ScrapeLogStep(name="搜索 TMDB", logs=[])
         search_step.logs.append(ScrapeLogEntry(message=f"搜索关键词: {parsed.series_name}"))
@@ -764,7 +855,87 @@ class ScraperService:
             result.scrape_logs = scrape_logs
             return result
 
-        if not adult_results:
+        # AI is advisory by default. It may expand a difficult title search,
+        # but it may only auto-select a candidate when its confidence policy
+        # allows it; otherwise the existing manual-selection path remains.
+        ai_requires_confirmation = False
+        if alias_match is None:
+            ai_config = await self.ai_provider.get_config()
+            if ai_config.enabled:
+                ai_step = ScrapeLogStep(
+                    name="AI 强制识别" if ai_config.usage_mode == AIUsageMode.FORCE_USE else "AI 辅助识别",
+                    logs=[],
+                )
+                scrape_logs.append(ai_step)
+                try:
+                    candidates = [
+                        AICandidate(
+                            id=item.id,
+                            title=item.name,
+                            original_title=item.original_name,
+                            year=item.first_air_date.year if item.first_air_date else None,
+                            overview=item.overview,
+                        )
+                        for item in adult_results
+                    ]
+                    evidence = {
+                        "filename": path.name,
+                        "parsed_title": parsed.series_name,
+                        "parsed_season": parsed.season,
+                        "parsed_episode": parsed.episode,
+                        "parser_confidence": parsed.confidence,
+                        "suffix": path.suffix.lower(),
+                    }
+                    ai_result = await self.ai_provider.recognize(
+                        file_path=file_path,
+                        evidence=evidence,
+                        candidates=candidates,
+                    )
+                    ai_requires_confirmation = ai_result.needs_confirmation
+                    if ai_result.selected_candidate_id is not None and not ai_result.needs_confirmation:
+                        selected_id = str(ai_result.selected_candidate_id)
+                        selected = next(
+                            (item for item in adult_results if str(item.id) == selected_id),
+                            None,
+                        )
+                        if selected is not None:
+                            result.selected_id = selected.id
+                            ai_step.logs.append(
+                                ScrapeLogEntry(message=f"AI 高置信度选择 TMDB 候选: {selected.name}")
+                            )
+                    if not adult_results and ai_result.search_titles:
+                        for title in build_search_title_variants(ai_result.search_titles[0]):
+                            retry_response = await self.tmdb_service.search_series_by_api(title)
+                            adult_results = [
+                                item for item in retry_response.results if item.adult
+                            ]
+                            if adult_results:
+                                result.search_results = adult_results
+                                break
+                    ai_step.logs.append(
+                        ScrapeLogEntry(message=ai_result.reason or "AI 已返回识别建议")
+                    )
+                except AIProviderError as exc:
+                    ai_requires_confirmation = ai_config.usage_mode == AIUsageMode.FORCE_USE
+                    ai_step.completed = False
+                    ai_step.logs.append(
+                        ScrapeLogEntry(
+                            message=f"AI 识别失败: {exc}",
+                            level=ScrapeLogLevel.WARNING,
+                        )
+                    )
+                except (httpx.RequestError, ValueError) as exc:
+                    ai_requires_confirmation = ai_config.usage_mode == AIUsageMode.FORCE_USE
+                    ai_step.completed = False
+                    ai_step.logs.append(
+                        ScrapeLogEntry(
+                            message=f"AI 建议标题搜索失败: {exc}",
+                            level=ScrapeLogLevel.WARNING,
+                        )
+                    )
+                await notify_log_update()
+
+        if not adult_results and alias_match is None:
             search_step.logs.append(ScrapeLogEntry(message="未找到匹配的成人剧集", level=ScrapeLogLevel.WARNING))
             search_step.completed = False
             await notify_log_update()
@@ -776,7 +947,9 @@ class ScraperService:
         # Step 3: Select match
         result.search_results = adult_results
 
-        if request.auto_select and len(adult_results) == 1:
+        if result.selected_id is not None:
+            pass
+        elif request.auto_select and len(adult_results) == 1 and not ai_requires_confirmation:
             # 只有一个结果时自动选择
             selected = adult_results[0]
             result.selected_id = selected.id
@@ -952,17 +1125,20 @@ class ScraperService:
         # Step 5.5: Emby 冲突检查
         emby_step = ScrapeLogStep(name="Emby 冲突检查", logs=[])
         scrape_logs.append(emby_step)
-        try:
-            conflict_result = await self._check_emby_conflict(
-                series_name=series.name,
-                tmdb_id=result.selected_id,
-                season=season_num,
-                episode=episode_num,
-            )
-        except Exception as e:
-            logger.warning(f"Emby 冲突检查异常: {e}")
-            from server.models.emby import ConflictCheckResult
+        if request.skip_emby_check:
             conflict_result = ConflictCheckResult(conflict_type=ConflictType.NO_CONFLICT)
+            emby_step.logs.append(ScrapeLogEntry(message="已按请求跳过 Emby 冲突检查"))
+        else:
+            try:
+                conflict_result = await self._check_emby_conflict(
+                    series_name=series.name,
+                    tmdb_id=result.selected_id,
+                    season=season_num,
+                    episode=episode_num,
+                )
+            except Exception as e:
+                logger.warning(f"Emby 冲突检查异常: {e}")
+                conflict_result = ConflictCheckResult(conflict_type=ConflictType.NO_CONFLICT)
 
         if conflict_result.conflict_type == ConflictType.EPISODE_EXISTS:
             emby_step.logs.append(ScrapeLogEntry(

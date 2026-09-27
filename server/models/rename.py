@@ -1,5 +1,7 @@
 """Data models for file renaming operations."""
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 from server.models.organize import OrganizeMode
@@ -16,6 +18,7 @@ class RenameRequest(BaseModel):
     year: int | None = None
     output_dir: str | None = None  # If None, rename in place
     link_mode: OrganizeMode | None = None  # 整理模式：copy/move/hardlink/symlink
+    conflict_action: Literal["overwrite", "rename"] | None = None
 
 
 class RenameResult(BaseModel):

@@ -104,6 +104,58 @@ class ScrapedFileRepository(BaseRepository):
             (history_record_id,),
         )
 
+    async def get_by_source_path(self, source_path: str) -> aiosqlite.Row | None:
+        """Return the registration for one source path, if present."""
+        return await self._fetch_one(
+            "SELECT * FROM scraped_files WHERE source_path = ?",
+            (source_path,),
+        )
+
+    async def list_records(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        search: str | None,
+    ) -> tuple[list[aiosqlite.Row], int]:
+        """List registrations with optional path/title search."""
+        conditions: list[str] = []
+        params: list[object] = []
+        if search:
+            conditions.append("(source_path LIKE ? OR target_path LIKE ? OR title LIKE ?)")
+            pattern = f"%{search}%"
+            params.extend((pattern, pattern, pattern))
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"SELECT COUNT(*) AS count FROM scraped_files {where}", params
+            )
+            row = await cursor.fetchone()
+            total = int(row["count"]) if row else 0
+            cursor = await db.execute(
+                f"""
+                SELECT * FROM scraped_files {where}
+                ORDER BY scraped_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                params + [limit, offset],
+            )
+            return list(await cursor.fetchall()), total
+
+    async def delete_records(self, ids: list[str]) -> int:
+        """Delete registrations by their IDs."""
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        return await self._execute(
+            f"DELETE FROM scraped_files WHERE id IN ({placeholders})",
+            tuple(ids),
+        )
+
+    async def clear_all(self) -> int:
+        """Delete all registrations."""
+        return await self._execute("DELETE FROM scraped_files")
+
     async def delete_by_any_paths(self, paths: list[str]) -> int:
         """按源路径或产物路径删除登记行。
 

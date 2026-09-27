@@ -21,6 +21,7 @@ class Services:
     FILE = "file_service"
     P115 = "p115_service"
     SCRAPED_FILE = "scraped_file_service"
+    JOB_MONITOR = "job_monitor_service"
     MANUAL_JOB = "manual_job_service"
     SCRAPE_JOB = "scrape_job_service"
     SCHEDULER = "scheduler_service"

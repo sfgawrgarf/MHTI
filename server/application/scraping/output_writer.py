@@ -64,6 +64,7 @@ class OutputWriter:
         output_dir: str | None,
         link_mode: OrganizeMode | None,
         year: int | None = None,
+        conflict_action: str | None = None,
     ) -> RenameRequest:
         """构建统一的整理请求。"""
         return RenameRequest(
@@ -74,6 +75,7 @@ class OutputWriter:
             year=year,
             output_dir=output_dir,
             link_mode=link_mode,
+            conflict_action=conflict_action,
         )
 
     async def finalize_storage_output(

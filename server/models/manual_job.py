@@ -3,8 +3,14 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel
-from server.models.storage import StorageLocator
+from pydantic import BaseModel, Field, model_validator
+from server.models.storage import (
+    StorageLocator,
+    infer_directory_locator,
+    is_p115_to_local,
+    normalize_file_locator,
+    validate_storage_capabilities,
+)
 
 
 class ManualJobStatus(str, Enum):
@@ -43,11 +49,12 @@ class ManualJobAdvancedSettings(BaseModel):
     use_global_metadata: bool = True
 
     # 整理设置（当 use_global_organize=False 时使用）
+    scan_filters_enabled: bool = False
     metadata_folder: str = ""
-    file_size_filter: int = 100
-    file_ext_whitelist: list[str] = []
-    file_name_blacklist: list[str] = []
-    file_sanitize_list: list[str] = []
+    file_size_filter: int = Field(100, ge=0)
+    file_ext_whitelist: list[str] = Field(default_factory=list, max_length=200)
+    file_name_blacklist: list[str] = Field(default_factory=list, max_length=200)
+    file_sanitize_list: list[str] = Field(default_factory=list, max_length=200)
     delete_metadata_on_fail: bool = False
     overwrite_video: bool = False
     overwrite_image: bool = False
@@ -55,7 +62,7 @@ class ManualJobAdvancedSettings(BaseModel):
     delete_by_size: bool = False
     delete_by_ext: bool = False
     delete_by_name: bool = False
-    extra_ext_whitelist: list[str] = []
+    extra_ext_whitelist: list[str] = Field(default_factory=list, max_length=200)
 
     # 下载设置（当 use_global_download=False 时使用）
     download_poster: bool = True
@@ -71,6 +78,7 @@ class ManualJobAdvancedSettings(BaseModel):
     scrape_title: bool = True
     scrape_plot: bool = True
     nfo_enabled: bool = True
+    process_subtitle: bool = True
 
 
 class ManualJob(BaseModel):
@@ -98,6 +106,9 @@ class ManualJob(BaseModel):
     error_count: int = 0
     total_count: int = 0
     error_message: str | None = None
+    child_pending_count: int = 0
+    child_running_count: int = 0
+    child_pending_action_count: int = 0
 
 
 class ManualJobCreate(BaseModel):
@@ -115,6 +126,118 @@ class ManualJobCreate(BaseModel):
     config_reuse_id: int | None = None
     source: JobSource = JobSource.MANUAL  # 任务来源
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
+
+    @model_validator(mode="after")
+    def validate_storage_selection(self) -> "ManualJobCreate":
+        """Normalize provider paths before the job reaches the worker."""
+        self._validate_advanced_settings()
+        if (
+            not self.metadata_dir.strip()
+            and self.advanced_settings is not None
+            and not self.advanced_settings.use_global_organize
+            and self.advanced_settings.metadata_folder.strip()
+        ):
+            self.metadata_dir = self.advanced_settings.metadata_folder.strip()
+
+        self.scan_locator = infer_directory_locator(
+            self.scan_path, self.scan_locator, allow_file=True
+        )
+        if self.scan_locator is not None and not self.scan_locator.is_dir:
+            self.scan_locator = normalize_file_locator(
+                self.scan_path, self.scan_locator
+            )
+        self.target_locator = infer_directory_locator(
+            self.target_folder, self.target_locator
+        )
+        self.metadata_locator = infer_directory_locator(
+            self.metadata_dir or None, self.metadata_locator
+        )
+
+        if (
+            is_p115_to_local(
+                source_path=self.scan_path,
+                source_locator=self.scan_locator,
+                target_path=self.target_folder,
+                target_locator=self.target_locator,
+            )
+            and self.link_mode == LinkMode.MOVE
+        ):
+            self.link_mode = LinkMode.COPY
+        validate_storage_capabilities(
+            source_path=self.scan_path,
+            source_locator=self.scan_locator,
+            target_path=self.target_folder,
+            target_locator=self.target_locator,
+            metadata_locator=self.metadata_locator,
+            allow_local_output=self.allow_local_output,
+            organize_mode=self.link_mode,
+        )
+        return self
+
+    def _validate_advanced_settings(self) -> None:
+        """Reject settings that the runtime cannot silently ignore."""
+        settings = self.advanced_settings
+        if settings is None:
+            return
+
+        unsupported: list[str] = []
+        if not settings.use_global_organize:
+            if settings.delete_metadata_on_fail:
+                unsupported.append("delete_metadata_on_fail")
+            if settings.file_sanitize_list:
+                unsupported.append("file_sanitize_list")
+            if settings.protect_ext_whitelist:
+                unsupported.append("protect_ext_whitelist")
+            if settings.delete_by_size:
+                unsupported.append("delete_by_size")
+            if settings.delete_by_ext:
+                unsupported.append("delete_by_ext")
+            if settings.delete_by_name:
+                unsupported.append("delete_by_name")
+        if not settings.use_global_metadata:
+            if not settings.scrape_title:
+                unsupported.append("scrape_title=false")
+            if not settings.scrape_plot:
+                unsupported.append("scrape_plot=false")
+        if unsupported:
+            raise ValueError(
+                "以下高级设置尚不支持，为避免静默忽略已拒绝创建任务: "
+                + ", ".join(unsupported)
+            )
+
+        if not settings.use_global_organize and settings.scan_filters_enabled:
+            extensions = {
+                extension.strip().lower().lstrip(".")
+                for extension in (
+                    settings.file_ext_whitelist + settings.extra_ext_whitelist
+                )
+                if extension.strip()
+            }
+            valid_extensions = {
+                "mp4", "mkv", "avi", "wmv", "mov", "flv", "rmvb", "ts",
+                "m2ts", "bdmv", "webm", "3gp", "mpg", "mpeg", "vob", "iso",
+            }
+            if any(extension not in valid_extensions for extension in extensions):
+                raise ValueError("文件扩展名格式无效")
+
+        if not settings.use_global_naming:
+            from server.domain.system.template_service import TemplateService
+            from server.models.template import NamingTemplate
+
+            defaults = NamingTemplate()
+            templates = {
+                "剧集文件夹": settings.series_folder_template.strip()
+                or defaults.series_folder,
+                "季文件夹": settings.season_folder_template.strip()
+                or defaults.season_folder,
+                "剧集文件": settings.episode_file_template.strip()
+                or defaults.episode_file,
+            }
+            validator = TemplateService()
+            for label, template in templates.items():
+                result = validator.validate_template(template)
+                if not result.valid:
+                    raise ValueError(f"{label}模板无效: {result.error}")
 
 
 class ManualJobListResponse(BaseModel):

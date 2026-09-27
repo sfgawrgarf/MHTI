@@ -82,6 +82,7 @@ _SERVICE_REGISTRY: dict[str, tuple[str, str]] = {
     Services.MANUAL_JOB: ("server.application.manual_job_service", "ManualJobService"),
     Services.SCRAPE_JOB: ("server.application.scrape_job_service", "ScrapeJobService"),
     Services.SCRAPED_FILE: ("server.application.scraped_file_service", "ScrapedFileService"),
+    Services.JOB_MONITOR: ("server.application.job_monitor_service", "JobMonitorService"),
     Services.WEBSOCKET: ("server.infrastructure.realtime", "ConnectionManager"),
     Services.WATCHER: ("server.application.watcher_service", "WatcherService"),
     Services.LOG: ("server.domain.system.log_service", "LogService"),
@@ -310,6 +311,15 @@ def get_scraped_file_service():
         Services.SCRAPED_FILE,
         "server.application.scraped_file_service",
         "ScrapedFileService"
+    )
+
+
+def get_job_monitor_service():
+    """FastAPI dependency for JobMonitorService."""
+    return _get_simple_service(
+        Services.JOB_MONITOR,
+        "server.application.job_monitor_service",
+        "JobMonitorService",
     )
 
 

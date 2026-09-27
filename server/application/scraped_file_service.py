@@ -112,6 +112,42 @@ class ScrapedFileService:
         rows = await self._repo.list_by_history_record(history_record_id)
         return [self._row_to_record(row) for row in rows]
 
+    async def is_scraped(self, source_path: str) -> bool:
+        """Check whether a source path already has a registration."""
+        return await self._repo.get_by_source_path(source_path) is not None
+
+    async def get_record(self, source_path: str) -> ScrapedFile | None:
+        """Return a registration by source path."""
+        row = await self._repo.get_by_source_path(source_path)
+        return self._row_to_record(row) if row is not None else None
+
+    async def list_records(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        search: str | None = None,
+    ) -> tuple[list[ScrapedFile], int]:
+        """List registrations for the administration UI."""
+        rows, total = await self._repo.list_records(
+            limit=limit,
+            offset=offset,
+            search=search,
+        )
+        return [self._row_to_record(row) for row in rows], total
+
+    async def delete_records(self, ids: list[str]) -> int:
+        """Delete registrations by ID so a source can be scraped again."""
+        return await self._repo.delete_records(ids)
+
+    async def delete_by_paths(self, paths: list[str]) -> int:
+        """Delete registrations matching either source or output paths."""
+        return await self._repo.delete_by_any_paths(paths)
+
+    async def clear_all(self) -> int:
+        """Clear all registrations."""
+        return await self._repo.clear_all()
+
     async def delete_by_any_paths(self, paths: list[str]) -> int:
         """按源路径或产物路径删除记录（物理删除文件后清登记用）。"""
         return await self._repo.delete_by_any_paths(paths)

@@ -3,11 +3,17 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
 from server.models.storage import StorageLocator
+from server.models.storage import (
+    infer_directory_locator,
+    is_p115_to_local,
+    normalize_file_locator,
+    validate_storage_capabilities,
+)
 
 
 class ScrapeJobSource(str, Enum):
@@ -25,6 +31,10 @@ class ScrapeJobStatus(str, Enum):
     SUCCESS = "success"  # 成功
     FAILED = "failed"  # 失败
     TIMEOUT = "timeout"  # 超时
+    CANCELLED = "cancelled"  # 已取消
+    SKIPPED = "skipped"  # 用户跳过
+    DELETED = "deleted"  # 用户删除关联历史（保留审计状态）
+    REPLACED = "replaced"  # 已由新的重试任务替代
     PENDING_ACTION = "pending_action"  # 需要用户处理
 
 
@@ -49,6 +59,16 @@ class ScrapeJob(BaseModel):
     finished_at: datetime | None = None
     error_message: str | None = None
     history_record_id: str | None = None  # 关联的历史记录ID
+    replaces_job_id: str | None = None
+    replaced_by_job_id: str | None = None
+    correction_history_id: str | None = None
+    correction_tmdb_id: int | None = None
+    correction_season: int | None = None
+    correction_episode: int | None = None
+    continuation_history_id: str | None = None
+    file_action: str | None = None
+    selection_log: str | None = None
+    skip_emby_check: bool = False
 
 
 class ScrapeJobCreate(BaseModel):
@@ -65,6 +85,46 @@ class ScrapeJobCreate(BaseModel):
     source: ScrapeJobSource = ScrapeJobSource.MANUAL
     source_id: int | None = None
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
+    replaces_job_id: str | None = None
+    correction_history_id: str | None = None
+    correction_tmdb_id: int | None = None
+    correction_season: int | None = None
+    correction_episode: int | None = None
+    continuation_history_id: str | None = None
+    file_action: str | None = None
+    selection_log: str | None = None
+    skip_emby_check: bool = False
+
+    @model_validator(mode="after")
+    def validate_storage_selection(self) -> "ScrapeJobCreate":
+        """Normalize storage locators and reject unsupported combinations."""
+        self.file_locator = normalize_file_locator(self.file_path, self.file_locator)
+        self.output_locator = infer_directory_locator(
+            self.output_dir, self.output_locator
+        )
+        self.metadata_locator = infer_directory_locator(
+            self.metadata_dir, self.metadata_locator
+        )
+        if (
+            is_p115_to_local(
+                source_path=self.file_path,
+                source_locator=self.file_locator,
+                target_path=self.output_dir,
+                target_locator=self.output_locator,
+            )
+            and self.link_mode in (None, OrganizeMode.MOVE)
+        ):
+            self.link_mode = OrganizeMode.COPY
+        validate_storage_capabilities(
+            source_path=self.file_path,
+            source_locator=self.file_locator,
+            target_path=self.output_dir,
+            target_locator=self.output_locator,
+            metadata_locator=self.metadata_locator,
+            allow_local_output=self.allow_local_output,
+            organize_mode=self.link_mode,
+        )
+        return self
 
 
 class ScrapeJobListResponse(BaseModel):

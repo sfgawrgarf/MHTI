@@ -84,6 +84,9 @@ from server.api.v1.watcher import router as watcher_router
 from server.api.v1.websocket import router as websocket_router
 from server.api.v1.frontend_config import router as frontend_config_router
 from server.api.v1.logs import router as logs_router
+from server.api.v1.job_runtime import router as job_runtime_router
+from server.api.v1.scraped_files import router as scraped_files_router
+from server.api.v1.ai import router as ai_router
 
 # Core components
 from server.bootstrap import init_services, cleanup_services, get_watcher_service
@@ -120,6 +123,11 @@ async def lifespan(app: FastAPI):
     # Initialize service container
     await init_services()
 
+    # Learn only confirmed aliases from existing successful history. This is
+    # idempotent and never rewrites source media or removes user data.
+    from server.application.media_alias_service import MediaAliasService
+    await MediaAliasService().backfill_confirmed_history()
+
     # Initialize and start log service
     from server.bootstrap import get_log_service
     log_service = get_log_service()
@@ -152,8 +160,10 @@ async def lifespan(app: FastAPI):
     # 取消后台 worker（刮削 + 手动任务），避免它们阻塞在队列上导致退出卡顿
     from server.application.scrape_job_service import shutdown_workers as shutdown_scrape_workers
     from server.application.manual_job_service import shutdown_workers as shutdown_manual_workers
+    from server.application.file_io import shutdown_file_io
     await shutdown_scrape_workers()
     await shutdown_manual_workers()
+    shutdown_file_io()
 
     # Stop watcher service
     if watcher._running:
@@ -230,6 +240,9 @@ app.include_router(scrape_job_router)
 app.include_router(websocket_router)  # WebSocket at /ws
 app.include_router(frontend_config_router)  # Frontend runtime config
 app.include_router(logs_router)  # Logs management API
+app.include_router(scraped_files_router)
+app.include_router(job_runtime_router)
+app.include_router(ai_router)
 
 
 @app.get("/health")

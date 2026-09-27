@@ -28,7 +28,17 @@ _SCRAPE_JOBS_DDL = """
         started_at TEXT,
         finished_at TEXT,
         error_message TEXT,
-        history_record_id TEXT
+        history_record_id TEXT,
+        replaces_job_id TEXT,
+        replaced_by_job_id TEXT,
+        correction_history_id TEXT,
+        correction_tmdb_id INTEGER,
+        correction_season INTEGER,
+        correction_episode INTEGER,
+        continuation_history_id TEXT,
+        file_action TEXT,
+        selection_log TEXT,
+        skip_emby_check INTEGER DEFAULT 0
     )
 """
 
@@ -42,30 +52,33 @@ class ScrapeJobRepository(BaseRepository):
     async def ensure_schema(self) -> None:
         """兼容旧数据库：补齐缺失列（幂等）。"""
         async with self._connect() as db:
-            try:
-                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN link_mode TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN advanced_settings TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN file_locator TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN output_locator TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN metadata_locator TEXT")
-            except Exception:
-                pass  # 列已存在
-            try:
-                await db.execute("ALTER TABLE scrape_jobs ADD COLUMN allow_local_output INTEGER DEFAULT 0")
-            except Exception:
-                pass  # 列已存在
+            async with db.execute("PRAGMA table_info(scrape_jobs)") as cursor:
+                columns = {row[1] for row in await cursor.fetchall()}
+            if not columns:
+                raise aiosqlite.OperationalError("Missing scrape_jobs table")
+            missing = {
+                "link_mode": "TEXT",
+                "advanced_settings": "TEXT",
+                "file_locator": "TEXT",
+                "output_locator": "TEXT",
+                "metadata_locator": "TEXT",
+                "allow_local_output": "INTEGER DEFAULT 0",
+                "replaces_job_id": "TEXT",
+                "replaced_by_job_id": "TEXT",
+                "correction_history_id": "TEXT",
+                "correction_tmdb_id": "INTEGER",
+                "correction_season": "INTEGER",
+                "correction_episode": "INTEGER",
+                "continuation_history_id": "TEXT",
+                "file_action": "TEXT",
+                "selection_log": "TEXT",
+                "skip_emby_check": "INTEGER DEFAULT 0",
+            }
+            for name, column_type in missing.items():
+                if name not in columns:
+                    await db.execute(
+                        f"ALTER TABLE scrape_jobs ADD COLUMN {name} {column_type}"
+                    )
             await db.commit()
 
     async def get_pending_by_path(self, file_path: str) -> aiosqlite.Row | None:
@@ -100,8 +113,11 @@ class ScrapeJobRepository(BaseRepository):
                 INSERT INTO scrape_jobs
                 (id, file_path, output_dir, metadata_dir, link_mode, source, source_id,
                  advanced_settings, file_locator, output_locator, metadata_locator,
-                 allow_local_output, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 allow_local_output, status, created_at, replaces_job_id,
+                 correction_history_id, correction_tmdb_id, correction_season,
+                 correction_episode, continuation_history_id, file_action,
+                 selection_log, skip_emby_check)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -118,6 +134,15 @@ class ScrapeJobRepository(BaseRepository):
                     1 if data.allow_local_output else 0,
                     ScrapeJobStatus.PENDING.value,
                     created_at,
+                    data.replaces_job_id,
+                    data.correction_history_id,
+                    data.correction_tmdb_id,
+                    data.correction_season,
+                    data.correction_episode,
+                    data.continuation_history_id,
+                    data.file_action,
+                    data.selection_log,
+                    1 if data.skip_emby_check else 0,
                 ),
             )
             await db.commit()
@@ -178,6 +203,7 @@ class ScrapeJobRepository(BaseRepository):
         finished_at: datetime | None = None,
         error_message: str | None = None,
         history_record_id: str | None = None,
+        replaced_by_job_id: str | None = None,
     ) -> None:
         updates = []
         params = []
@@ -197,6 +223,9 @@ class ScrapeJobRepository(BaseRepository):
         if history_record_id is not None:
             updates.append("history_record_id = ?")
             params.append(history_record_id)
+        if replaced_by_job_id is not None:
+            updates.append("replaced_by_job_id = ?")
+            params.append(replaced_by_job_id)
 
         if not updates:
             return

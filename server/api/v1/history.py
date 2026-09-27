@@ -3,7 +3,7 @@
 import asyncio
 import json
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
@@ -37,6 +37,7 @@ from server.models.scraper import ScrapeByIdRequest
 from server.application.history_service import HistoryService
 from server.application.manual_job_service import ManualJobService
 from server.application.scrape_job_service import ScrapeJobService
+from server.common.path_security import PathSecurityError, validate_media_path
 
 router = APIRouter(prefix="/api/history", tags=["history"], dependencies=[Depends(require_auth)])
 
@@ -93,6 +94,90 @@ async def export_records(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=history.csv"},
     )
+
+
+class AIRetryRequest(BaseModel):
+    """Batch retry unresolved no-match records through the AI-enabled worker."""
+
+    record_ids: list[str] | None = Field(default=None, max_length=500)
+    limit: int = Field(default=100, ge=1, le=500)
+    all_pending: bool = False
+
+
+async def _list_all_pending_record_ids(history_service: HistoryService) -> list[str]:
+    """Collect all pending-action IDs without inheriting UI pagination."""
+    batch_size = 500
+    offset = 0
+    record_ids: list[str] = []
+    while True:
+        records, total = await history_service.list_records(
+            limit=batch_size,
+            offset=offset,
+            status=TaskStatus.PENDING_ACTION,
+        )
+        record_ids.extend(record.id for record in records)
+        offset += len(records)
+        if not records or offset >= total:
+            break
+    return record_ids
+
+
+@router.post("/ai-retry")
+async def retry_no_match_with_ai(
+    request: AIRetryRequest,
+    history_service: HistoryService = Depends(get_history_service),
+) -> dict:
+    """Queue fresh replacement jobs; do not overwrite the old history record."""
+    if request.all_pending and request.record_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="all_pending 与 record_ids 不能同时使用",
+        )
+    if request.all_pending:
+        candidate_ids = (await _list_all_pending_record_ids(history_service))[: request.limit]
+    elif request.record_ids:
+        candidate_ids = request.record_ids[: request.limit]
+    else:
+        records, _ = await history_service.list_records(
+            limit=request.limit,
+            status=TaskStatus.PENDING_ACTION,
+        )
+        candidate_ids = [record.id for record in records]
+
+    jobs = ScrapeJobService()
+    queued: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for record_id in candidate_ids:
+        record = await history_service.get_record(record_id)
+        if record is None:
+            skipped.append({"id": record_id, "reason": "记录不存在"})
+            continue
+        if record.status != TaskStatus.PENDING_ACTION or record.conflict_type != HistoryConflictType.NO_MATCH:
+            skipped.append({"id": record.id, "reason": "仅支持待处理的 no_match 记录"})
+            continue
+        if not record.scrape_job_id:
+            skipped.append({"id": record.id, "reason": "缺少原始任务"})
+            continue
+        old_job = await jobs.get_job(record.scrape_job_id)
+        if old_job is None:
+            skipped.append({"id": record.id, "reason": "原始任务不存在"})
+            continue
+        if old_job.file_locator is None:
+            try:
+                validate_media_path(old_job.file_path, must_exist=True, require_file=True)
+            except PathSecurityError:
+                skipped.append({"id": record.id, "reason": "源文件不存在或不在允许目录"})
+                continue
+        replacement = await jobs.create_replacement_job(
+            old_job,
+            replacement_history_id=record.id,
+        )
+        if replacement is None:
+            skipped.append({"id": record.id, "reason": "记录已被处理或文件已有运行中任务"})
+            continue
+        queued.append(replacement.id)
+
+    return {"queued_job_ids": queued, "skipped": skipped}
 
 
 @router.delete("")
@@ -226,6 +311,7 @@ def _build_scrape_request(
     link_mode: OrganizeMode | None,
     locators: dict | None = None,
     skip_emby_check: bool = False,
+    file_action: str | None = None,
 ) -> ScrapeByIdRequest:
     """构建刮削请求（重试与各冲突分支共用）。"""
     kwargs: dict = {
@@ -239,6 +325,8 @@ def _build_scrape_request(
     }
     if skip_emby_check:
         kwargs["skip_emby_check"] = True
+    if file_action in ("overwrite", "rename"):
+        kwargs["file_action"] = file_action
     if locators:
         kwargs.update(locators)
     return ScrapeByIdRequest(**kwargs)
@@ -298,6 +386,7 @@ async def resolve_conflict(
             metadata_dir=metadata_dir,
             link_mode=link_mode,
             locators=locators,
+            file_action=request.file_action,
         )
         return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
 
@@ -320,6 +409,7 @@ async def resolve_conflict(
             metadata_dir=metadata_dir,
             link_mode=link_mode,
             locators=locators,
+            file_action=request.file_action,
         )
         return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
 
@@ -349,6 +439,7 @@ async def resolve_conflict(
             metadata_dir=metadata_dir,
             link_mode=link_mode,
             locators=locators,
+            file_action=request.file_action,
         )
         return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
 
@@ -370,6 +461,7 @@ async def resolve_conflict(
             metadata_dir=metadata_dir,
             link_mode=link_mode,
             locators=locators,
+            file_action=request.file_action,
         )
         return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
 

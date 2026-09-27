@@ -15,6 +15,7 @@ from server.bootstrap import (  # noqa: E402,F401
     get_file_service,
     get_history_service,
     get_image_service,
+    get_job_monitor_service,
     get_log_service,
     get_manual_job_service,
     get_nfo_service,

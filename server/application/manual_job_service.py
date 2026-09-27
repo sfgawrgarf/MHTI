@@ -72,6 +72,17 @@ def _deserialize_locator(payload: str | None) -> StorageLocator | None:
 # 任务队列
 _job_queue: asyncio.Queue[int] = asyncio.Queue()
 _worker_task: asyncio.Task | None = None
+_active_job_tasks: dict[int, asyncio.Task] = {}
+
+
+def get_manual_runtime_state(pending_count: int) -> dict[str, int]:
+    """Return live manual-worker state without opening another DB connection."""
+    return {
+        "queued_in_memory": min(_job_queue.qsize(), pending_count),
+        "active_tasks": sum(not task.done() for task in _active_job_tasks.values()),
+        "worker_count": int(_worker_task is not None and not _worker_task.done()),
+        "concurrency_limit": 1,
+    }
 
 
 class ManualJobService:
@@ -179,7 +190,11 @@ class ManualJobService:
         rows, total = await self._repo.list_jobs(
             limit=limit, offset=offset, search=search, status=status
         )
-        jobs = [self._row_to_job(row) for row in rows]
+        child_counts = await self._repo.get_child_counts([int(row["id"]) for row in rows])
+        jobs = [
+            self._row_to_job(row, child_counts.get(int(row["id"])))
+            for row in rows
+        ]
         return jobs, total
 
     async def get_job(self, job_id: int) -> ManualJob | None:
@@ -189,7 +204,8 @@ class ManualJobService:
         row = await self._repo.get_job_raw(job_id)
         if row is None:
             return None
-        return self._row_to_job(row)
+        child_counts = await self._repo.get_child_counts([job_id])
+        return self._row_to_job(row, child_counts.get(job_id))
 
     async def delete_jobs(self, ids: list[int]) -> int:
         """Delete manual jobs by IDs.
@@ -227,7 +243,7 @@ class ManualJobService:
             error_message=error_message,
         )
 
-    def _row_to_job(self, row) -> ManualJob:
+    def _row_to_job(self, row, child_counts: dict[str, int] | None = None) -> ManualJob:
         """Convert database row to ManualJob."""
         # 兼容旧数据，source 可能不存在
         source_value = row["source"] if "source" in row.keys() else "manual"
@@ -254,6 +270,7 @@ class ManualJobService:
             row["allow_local_output"] if "allow_local_output" in row.keys() else 0
         )
 
+        child_counts = child_counts or {}
         return ManualJob(
             id=row["id"],
             scan_path=row["scan_path"],
@@ -277,6 +294,9 @@ class ManualJobService:
             error_count=row["error_count"],
             total_count=row["total_count"],
             error_message=row["error_message"],
+            child_pending_count=child_counts.get("pending", 0),
+            child_running_count=child_counts.get("running", 0),
+            child_pending_action_count=child_counts.get("pending_action", 0),
         )
 
 
@@ -294,7 +314,13 @@ async def _job_worker() -> None:
     while True:
         try:
             job_id = await _job_queue.get()
-            await _execute_job(service, job_id)
+            task = asyncio.current_task()
+            if task is not None:
+                _active_job_tasks[job_id] = task
+            try:
+                await _execute_job(service, job_id)
+            finally:
+                _active_job_tasks.pop(job_id, None)
         except asyncio.CancelledError:
             break
         except Exception as e:

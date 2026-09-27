@@ -116,6 +116,17 @@ _scrape_queue: asyncio.Queue[str] = asyncio.Queue()
 _worker_tasks: list[asyncio.Task] = []
 _semaphore: asyncio.Semaphore | None = None
 _current_threads: int = 0
+_active_job_tasks: dict[str, asyncio.Task] = {}
+
+
+def get_scrape_runtime_state(pending_count: int) -> dict[str, int]:
+    """Return live scrape-worker state without opening another DB connection."""
+    return {
+        "queued_in_memory": min(_scrape_queue.qsize(), pending_count),
+        "active_tasks": sum(not task.done() for task in _active_job_tasks.values()),
+        "worker_count": sum(not task.done() for task in _worker_tasks),
+        "concurrency_limit": _current_threads,
+    }
 
 
 def _serialize_locator(locator: StorageLocator | None) -> str | None:
@@ -240,6 +251,15 @@ class ScrapeJobService:
             source=job.source,
             source_id=job.source_id,
             advanced_settings=job.advanced_settings,
+            replaces_job_id=job.replaces_job_id,
+            correction_history_id=job.correction_history_id,
+            correction_tmdb_id=job.correction_tmdb_id,
+            correction_season=job.correction_season,
+            correction_episode=job.correction_episode,
+            continuation_history_id=job.continuation_history_id,
+            file_action=job.file_action,
+            selection_log=job.selection_log,
+            skip_emby_check=job.skip_emby_check,
             status=ScrapeJobStatus.PENDING,
             created_at=now,
         )
@@ -254,6 +274,47 @@ class ScrapeJobService:
         await notifier.notify_job_created(job_id, job.file_path, ScrapeJobStatus.PENDING.value)
 
         return created_job
+
+    async def create_replacement_job(
+        self,
+        job: ScrapeJob,
+        *,
+        replacement_history_id: str | None = None,
+    ) -> ScrapeJob | None:
+        """Queue a fresh job while retaining the original job for audit."""
+        replacement = await self.create_job(
+            ScrapeJobCreate(
+                file_path=job.file_path,
+                output_dir=job.output_dir,
+                metadata_dir=job.metadata_dir,
+                file_locator=job.file_locator,
+                output_locator=job.output_locator,
+                metadata_locator=job.metadata_locator,
+                allow_local_output=job.allow_local_output,
+                link_mode=job.link_mode,
+                source=job.source,
+                source_id=job.source_id,
+                advanced_settings=job.advanced_settings,
+                replaces_job_id=job.id,
+                correction_history_id=replacement_history_id,
+                correction_tmdb_id=job.correction_tmdb_id,
+                correction_season=job.correction_season,
+                correction_episode=job.correction_episode,
+                continuation_history_id=job.continuation_history_id,
+                file_action=job.file_action,
+                selection_log=job.selection_log,
+                skip_emby_check=job.skip_emby_check,
+            ),
+            skip_duplicate_check=True,
+        )
+        if replacement is not None:
+            await self._repo.update_job(
+                job.id,
+                status=ScrapeJobStatus.REPLACED,
+                finished_at=datetime.now(),
+                replaced_by_job_id=replacement.id,
+            )
+        return replacement
 
     async def list_jobs(
         self,
@@ -289,6 +350,7 @@ class ScrapeJobService:
         finished_at: datetime | None = None,
         error_message: str | None = None,
         history_record_id: str | None = None,
+        replaced_by_job_id: str | None = None,
     ) -> None:
         """更新刮削任务"""
         await self._ensure_db()
@@ -300,6 +362,7 @@ class ScrapeJobService:
             finished_at=finished_at,
             error_message=error_message,
             history_record_id=history_record_id,
+            replaced_by_job_id=replaced_by_job_id,
         )
 
     async def delete_jobs(self, ids: list[str]) -> int:
@@ -352,6 +415,16 @@ class ScrapeJobService:
             finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
             error_message=row["error_message"],
             history_record_id=row["history_record_id"],
+            replaces_job_id=row["replaces_job_id"] if "replaces_job_id" in row.keys() else None,
+            replaced_by_job_id=row["replaced_by_job_id"] if "replaced_by_job_id" in row.keys() else None,
+            correction_history_id=row["correction_history_id"] if "correction_history_id" in row.keys() else None,
+            correction_tmdb_id=row["correction_tmdb_id"] if "correction_tmdb_id" in row.keys() else None,
+            correction_season=row["correction_season"] if "correction_season" in row.keys() else None,
+            correction_episode=row["correction_episode"] if "correction_episode" in row.keys() else None,
+            continuation_history_id=row["continuation_history_id"] if "continuation_history_id" in row.keys() else None,
+            file_action=row["file_action"] if "file_action" in row.keys() else None,
+            selection_log=row["selection_log"] if "selection_log" in row.keys() else None,
+            skip_emby_check=bool(row["skip_emby_check"]) if "skip_emby_check" in row.keys() else False,
         )
 
 
@@ -400,9 +473,21 @@ async def _scrape_worker() -> None:
             # 使用 Semaphore 控制并发
             if _semaphore:
                 async with _semaphore:
-                    await _execute_scrape_job(service, job_id)
+                    task = asyncio.current_task()
+                    if task is not None:
+                        _active_job_tasks[job_id] = task
+                    try:
+                        await _execute_scrape_job(service, job_id)
+                    finally:
+                        _active_job_tasks.pop(job_id, None)
             else:
-                await _execute_scrape_job(service, job_id)
+                task = asyncio.current_task()
+                if task is not None:
+                    _active_job_tasks[job_id] = task
+                try:
+                    await _execute_scrape_job(service, job_id)
+                finally:
+                    _active_job_tasks.pop(job_id, None)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -415,7 +500,7 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     from server.application.history_service import HistoryService, build_record_folder_path
     from server.application.scraped_file_service import ScrapedFileService
     from server.domain.system.config_service import ConfigService
-    from server.models.scraper import ScrapeRequest, ScrapeStatus
+    from server.models.scraper import ScrapeByIdRequest, ScrapeRequest, ScrapeStatus
     from server.models.history import HistoryRecordCreate, TaskStatus, HistoryConflictType, TaskSource
 
     job = await service.get_job(job_id)
@@ -501,25 +586,50 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
         )
 
     try:
-        request = ScrapeRequest(
-            file_path=job.file_path,
-            output_dir=job.output_dir,
-            metadata_dir=job.metadata_dir,
-            file_locator=job.file_locator,
-            output_locator=job.output_locator,
-            metadata_locator=job.metadata_locator,
-            allow_local_output=job.allow_local_output,
-            link_mode=job.link_mode,
-            auto_select=True,
-            advanced_settings=job.advanced_settings,
-        )
-        # 使用超时控制
-        result = await asyncio.wait_for(
-            scraper.scrape_file(
+        if job.correction_tmdb_id is not None:
+            request = ScrapeByIdRequest(
+                file_path=job.file_path,
+                tmdb_id=job.correction_tmdb_id,
+                season=job.correction_season if job.correction_season is not None else 1,
+                episode=job.correction_episode if job.correction_episode is not None else 1,
+                output_dir=job.output_dir,
+                metadata_dir=job.metadata_dir,
+                file_locator=job.file_locator,
+                output_locator=job.output_locator,
+                metadata_locator=job.metadata_locator,
+                allow_local_output=job.allow_local_output,
+                link_mode=job.link_mode,
+                skip_emby_check=job.skip_emby_check,
+                file_action=job.file_action,
+                advanced_settings=job.advanced_settings,
+            )
+            scrape_call = scraper.scrape_by_id(
+                request,
+                on_log_update=on_log_update,
+            )
+        else:
+            request = ScrapeRequest(
+                file_path=job.file_path,
+                output_dir=job.output_dir,
+                metadata_dir=job.metadata_dir,
+                file_locator=job.file_locator,
+                output_locator=job.output_locator,
+                metadata_locator=job.metadata_locator,
+                allow_local_output=job.allow_local_output,
+                link_mode=job.link_mode,
+                auto_select=True,
+                skip_emby_check=job.skip_emby_check,
+                file_action=job.file_action,
+                advanced_settings=job.advanced_settings,
+            )
+            scrape_call = scraper.scrape_file(
                 request,
                 on_log_update=on_log_update,
                 on_match_resolved=on_match_resolved,
-            ),
+            )
+        # 使用超时控制
+        result = await asyncio.wait_for(
+            scrape_call,
             timeout=timeout_seconds,
         )
         file_duration = elapsed_seconds()
