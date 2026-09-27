@@ -21,8 +21,9 @@ export function isValidFilename(filename: string | null | undefined): boolean {
   if (!filename || typeof filename !== 'string') return false
   if (filename.trim() === '') return false
   // 检查无效字符
-  const invalidChars = /[<>:"/\\|?*\x00-\x1f]/
+  const invalidChars = /[<>:"/\\|?*]/
   if (invalidChars.test(filename)) return false
+  if ([...filename].some((char) => char.charCodeAt(0) <= 0x1f)) return false
   // 检查保留名称（Windows）
   const reserved = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
   const baseName = filename.split('.')[0] ?? ''

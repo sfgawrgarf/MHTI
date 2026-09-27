@@ -1,6 +1,6 @@
 """Standard episode pattern parser (S01E01, EP01, etc.) - 标准集数解析器.
 
-文件名优先；季号缺失时从路径目录（如 ``Season 1``）补全。
+只从文件名解析标准集数；目录名不应改变文件本身的集数语义。
 """
 
 import re
@@ -11,8 +11,8 @@ from server.domain.parsing.parsers.base import ParseContext, ParserPlugin
 STANDARD_PATTERNS = [
     # S01E01 或 S01.E01 格式
     (r"[.\s_-]?[Ss](\d{1,2})[.\s_-]?[Ee](\d{1,3})", "season_episode"),
-    # EP01 或 E01 格式（仅集数；允许出现在文件名开头）
-    (r"(?:^|[.\s_-])[Ee][Pp]?(\d{1,3})(?:[.\s_-]|$)", "episode_only"),
+    # EP01 或 E01 格式（仅集数；前面需要文件名分隔符）
+    (r"[.\s_-][Ee][Pp]?(\d{1,3})(?:[.\s_-]|$)", "episode_only"),
     # 集数范围（多集文件取首集）：1-2 / 01-02 / 第1-2話
     # 放在单集模式之后、末尾数字之前，避免范围被当成尾集
     (r"第\s*(\d{1,3})\s*[-~〜～ー]\s*\d{1,3}\s*[話话集回章弾幕]", "episode_range"),
@@ -34,15 +34,11 @@ STANDARD_PATTERNS = [
     ),
 ]
 
-# 路径目录中的季号（如 .../Season 1/E01.mp4）
-_PATH_SEASON_PATTERN = re.compile(r"[Ss]eason[.\s_-]*(\d{1,2})")
-
-
 class EpisodeStandardPlugin(ParserPlugin):
     """标准集数格式解析插件.
 
     解析优先级：20
-    文件名优先；仅当文件名已给出集数但未给出季号时，用路径目录补全季号。
+    只解析文件名，避免把父目录中的编号误当成媒体集数。
     """
 
     priority = 20
@@ -57,7 +53,7 @@ class EpisodeStandardPlugin(ParserPlugin):
 
         # 从文件名解析
         for pattern, pattern_type in STANDARD_PATTERNS:
-            match = re.search(pattern, ctx.original_filename, re.I)
+            match = re.search(pattern, ctx.cleaned_filename, re.I)
             if match:
                 if pattern_type == "season_episode":
                     ctx.season = int(match.group(1))
@@ -69,12 +65,5 @@ class EpisodeStandardPlugin(ParserPlugin):
                 if ctx.episode:
                     ctx.matched_patterns.append(f"{self.name}:{pattern_type}")
                     break
-
-        # 路径补全季号：仅在已解析出集数、且文件名未给出季号时生效
-        if ctx.episode is not None and ctx.season is None and ctx.filepath:
-            match = _PATH_SEASON_PATTERN.search(ctx.filepath)
-            if match:
-                ctx.season = int(match.group(1))
-                ctx.matched_patterns.append(f"{self.name}:path_season")
 
         return ctx

@@ -4,6 +4,7 @@
  *
  * 状态在父组件：formData 与开关均经 props 传入。
  */
+import { reactive } from 'vue'
 import { NForm, NFormItem, NSwitch } from 'naive-ui'
 import type { AdvancedSettingsForm } from '@/modules/scrape/types'
 import GlobalSwitchRow from '@/modules/scrape/components/advanced/GlobalSwitchRow.vue'
@@ -12,6 +13,8 @@ const props = defineProps<{
   formData: AdvancedSettingsForm
   useGlobal: boolean
 }>()
+
+const formData = reactive(props.formData)
 
 const emit = defineEmits<{
   'update:useGlobal': [value: boolean]
@@ -24,15 +27,15 @@ const emit = defineEmits<{
     @update:model-value="emit('update:useGlobal', $event)"
   />
   <template v-if="!useGlobal">
-    <NForm :model="props.formData" label-placement="left" label-width="auto" class="settings-form">
+    <NForm :model="formData" label-placement="left" label-width="auto" class="settings-form">
       <NFormItem label="刮削标题">
-        <NSwitch v-model:value="props.formData.scrape_title" />
+        <NSwitch v-model:value="formData.scrape_title" />
       </NFormItem>
       <NFormItem label="刮削简介">
-        <NSwitch v-model:value="props.formData.scrape_plot" />
+        <NSwitch v-model:value="formData.scrape_plot" />
       </NFormItem>
       <NFormItem label="生成NFO文件">
-        <NSwitch v-model:value="props.formData.nfo_enabled" />
+        <NSwitch v-model:value="formData.nfo_enabled" />
       </NFormItem>
     </NForm>
   </template>

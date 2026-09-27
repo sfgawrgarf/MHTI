@@ -8,13 +8,13 @@
  * - 去掉 `round` 胶囊输入框。胶囊形态与全站其余输入框（8px 圆角）不一致，
  *   且旧代码还要用 `--n-border-radius: 12px !important` 去覆盖它，属于自相矛盾。
  */
-import { ref } from 'vue'
+import { reactive, ref, toRefs } from 'vue'
 import { NButton, NForm, NFormItem, NIcon, NInput, NSelect } from 'naive-ui'
 import { LockClosedOutline, PersonOutline } from '@vicons/ionicons5'
 import type { FormInst, FormRules, SelectOption } from 'naive-ui'
 import type { LoginFormData, RegisterFormData } from '@/modules/auth/hooks/useLogin'
 
-defineProps<{
+const props = defineProps<{
   isRegisterMode: boolean
   loading: boolean
   loginForm: LoginFormData
@@ -23,6 +23,10 @@ defineProps<{
   registerRules: FormRules
   expireOptions: SelectOption[]
 }>()
+
+const { isRegisterMode, loading, loginRules, registerRules, expireOptions } = toRefs(props)
+const loginForm = reactive(props.loginForm)
+const registerForm = reactive(props.registerForm)
 
 const emit = defineEmits<{
   login: []

@@ -23,14 +23,16 @@ EPISODE_MARKERS = [
     r"[Ee][Pp]?\d{1,3}",                       # EP01, E01
 
     # ===== 中文格式 =====
-    r"第\d+[季集话回章弾話幕]",               # 第1季, 第1集, 第1話
-    r"第[一二三四五六七八九十百]+[季集话回章弾話幕]",  # 第一季, 第一集
+    r"第\d+[季集话回章弾話幕巻卷夜]",               # 第1季, 第1集, 第1話
+    r"第[一二三四五六七八九十百]+[季集话回章弾話幕巻卷夜]",  # 第一季, 第一集
     r"第\s*\d{1,3}\s*[-~〜～ー]\s*\d{1,3}\s*[話话集回章弾幕]",  # 第1-2話（多集文件）
     # ===== 日语格式 =====
     r"前編|後編|前篇|後篇|上巻|下巻|中編|中篇",  # 前篇/后篇
     r"上集|下集|中集",                        # 上/下集
     rf"[其そ][のノ之乃][{KANJI_CHARS}\d]+",  # 其の一, その1
     r"[＃#♯]\d+",                            # #1
+    r"お家賃\s*\d+\s*突き目",
+    r"\d+\s*突き目",
 
     # ===== 无障碍分隔裸数字（作品名 1、作品名 01）=====
     # 只认被空格/下划线/中点分隔开的 1-3 位数字，避免命中 1080p 这类 4 位噪点
@@ -41,8 +43,13 @@ EPISODE_MARKERS = [
     r"巻\s*\d+",                              # 巻1
     r"Episode\s*\d+",                         # Episode 1
     r"Act\.?\s*\d+",                          # Act 1
+    r"(?:ATTACK\s*NO|Insert|Reason|Desire|Memorial|anime)\s*[.:：．#＃]?\s*\d+",
+    r"理由\s*\d+",
+    r"\b\d+(?:st|nd|rd|th)\b",
+    r"\d+\s*枚目",
     r"\[\d{1,3}\]",                           # [01]
     r"\(\d{1,2}\)\s*$",                       # (1) 在末尾
+    r"\s+\d{1,3}\s*［",
 
     # ===== 副标题标记 =====
     r"(?<=\s)～[^～]{2,}～",                 # ～副标题～（前面须有空格）
@@ -94,7 +101,7 @@ class SeriesNamePlugin(ParserPlugin):
 
     def parse(self, ctx: ParseContext) -> ParseContext:
         # 从清洗后的文件名提取
-        name = self._extract_from_cleaned(ctx.cleaned_filename)
+        name = self._extract_from_cleaned(ctx.cleaned_filename, ctx.episode)
 
         if name:
             ctx.series_name = name
@@ -110,7 +117,7 @@ class SeriesNamePlugin(ParserPlugin):
 
         return ctx
 
-    def _extract_from_cleaned(self, cleaned: str) -> str | None:
+    def _extract_from_cleaned(self, cleaned: str, episode: int | None = None) -> str | None:
         """从清洗后的文件名提取剧名。"""
         text = cleaned
 
@@ -129,6 +136,11 @@ class SeriesNamePlugin(ParserPlugin):
         # 否则会留下半截 "["，剧名被当成未闭合方括号组丢掉
         if earliest_pos > 0 and text[earliest_pos - 1] in "[（(【":
             earliest_pos -= 1
+
+        # 只有没有更明确标记时，才移除前置解析器确认的末尾裸集数。
+        if earliest_pos == len(text) and episode is not None:
+            text = self._remove_trailing_numeric_episode(text, episode)
+            earliest_pos = len(text)
 
         # 检查年份位置
         year_match = re.search(YEAR_PATTERN, text)
@@ -152,6 +164,12 @@ class SeriesNamePlugin(ParserPlugin):
             return None
 
         return name
+
+    @staticmethod
+    def _remove_trailing_numeric_episode(text: str, episode: int) -> str:
+        """移除已确认的末尾数字集号及其后的编码标签。"""
+        pattern = rf"[\s._-]+0?{episode}(?:\s*\[[^\]]+\])?\s*$"
+        return re.sub(pattern, "", text)
 
     def _clean_name(self, name: str) -> str:
         """清理剧名。"""

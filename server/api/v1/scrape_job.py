@@ -52,13 +52,16 @@ async def list_jobs(
     return ScrapeJobListResponse(jobs=jobs, total=total)
 
 
-@router.get("/{job_id}", response_model=ScrapeJob | None)
+@router.get("/{job_id}", response_model=ScrapeJob)
 async def get_job(
     job_id: str,
     service: ScrapeJobService = Depends(get_scrape_job_service),
-) -> ScrapeJob | None:
+) -> ScrapeJob:
     """获取文件刮削任务详情"""
-    return await service.get_job(job_id)
+    job = await service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="刮削任务不存在")
+    return job
 
 
 @router.post("/{job_id}/cancel")

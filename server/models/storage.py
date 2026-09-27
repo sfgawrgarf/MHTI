@@ -140,7 +140,11 @@ def validate_storage_capabilities(
         )
     )
 
-    if metadata_locator and metadata_locator.provider != StorageProvider.LOCAL:
+    if metadata_locator and metadata_locator.provider != StorageProvider.LOCAL and not (
+        source_provider == StorageProvider.P115
+        and target_provider == StorageProvider.P115
+        and allow_local_output
+    ):
         raise ValueError("元数据目录仅支持本地媒体目录")
 
     if source_provider == StorageProvider.P115 and source_locator is None:

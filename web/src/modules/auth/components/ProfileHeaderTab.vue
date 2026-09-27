@@ -16,7 +16,7 @@ import {
 } from 'naive-ui'
 import { CameraOutline, PersonOutline, TrashOutline } from '@vicons/ionicons5'
 
-const props = defineProps<{
+defineProps<{
   avatarSrc?: string
   username: string
   hasAvatar: boolean

@@ -12,7 +12,7 @@ import { computed } from 'vue'
 import { NFormItem } from 'naive-ui'
 import { useResponsiveValue } from '@/shared/composables/useMobileLayout'
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
     label: string
     /** 字段说明：常驻在控件下方，不塞进 placeholder */

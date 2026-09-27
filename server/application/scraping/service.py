@@ -14,11 +14,30 @@ from tempfile import TemporaryDirectory
 
 import httpx
 
+from server.application.ai_provider_service import AIProviderError, AIProviderService
+from server.application.file_io import run_file_io
+from server.application.media_alias_service import MediaAliasMatch, MediaAliasService
+from server.application.media_identity_service import MediaIdentityService
+from server.application.recognition import build_search_title_variants
+from server.application.scraping.config_resolver import ScraperConfigResolver
+from server.application.scraping.media_pipeline import ScraperMediaPipeline
+from server.application.scraping.metadata_resolver import ScraperMetadataResolver
+from server.application.scraping.output_writer import OutputWriter, _get_mode_name
+from server.application.scraping.p115_storage_provider import P115StorageProvider
 from server.common.path_security import PathSecurityError, validate_media_path
+from server.domain.artifacts.image_service import ImageService
+from server.domain.artifacts.nfo_service import NFOService
+from server.domain.artifacts.rename_service import RenameService
+from server.domain.artifacts.subtitle_service import SubtitleService
+from server.domain.integration.emby_service import EmbyService
+from server.domain.metadata.tmdb_service import TMDBService
+from server.domain.parsing.parser_service import ParserService
+from server.domain.system.config_service import ConfigService
+from server.infrastructure.db import DATABASE_PATH
+from server.models.ai import AICandidate, AIUsageMode
 from server.models.emby import ConflictCheckResult, ConflictType
 from server.models.history import ScrapeLogLevel, ScrapeLogEntry, ScrapeLogStep
 from server.models.manual_job import ManualJobAdvancedSettings
-from server.models.ai import AICandidate, AIUsageMode
 from server.models.nfo import SeasonNFO
 from server.models.organize import OrganizeMode
 from server.models.rename import RenameRequest
@@ -37,23 +56,6 @@ from server.models.storage import (
     validate_locator_namespace,
 )
 from server.models.tmdb import TMDBSearchResult, TMDBSeason, TMDBSeries
-from server.domain.system.config_service import ConfigService
-from server.domain.integration.emby_service import EmbyService
-from server.domain.artifacts.image_service import ImageService
-from server.domain.artifacts.nfo_service import NFOService
-from server.domain.parsing.parser_service import ParserService
-from server.domain.artifacts.rename_service import RenameService
-from server.application.scraping.config_resolver import ScraperConfigResolver
-from server.application.scraping.media_pipeline import ScraperMediaPipeline
-from server.application.scraping.metadata_resolver import ScraperMetadataResolver
-from server.application.scraping.output_writer import OutputWriter, _get_mode_name
-from server.application.scraping.p115_storage_provider import P115StorageProvider
-from server.application.ai_provider_service import AIProviderError, AIProviderService
-from server.application.media_alias_service import MediaAliasMatch, MediaAliasService
-from server.application.media_identity_service import MediaIdentityService
-from server.application.recognition import build_search_title_variants
-from server.domain.artifacts.subtitle_service import SubtitleService
-from server.domain.metadata.tmdb_service import TMDBService
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +105,14 @@ class ScraperService:
         self.subtitle_service = subtitle_service
         self.emby_service = emby_service
         self.ai_provider = AIProviderService(config_service)
-        self.media_alias_service = MediaAliasService()
+        # The alias service currently uses the process-wide database context.
+        # Do not let a scraper bound to an isolated test/migration database read
+        # or mutate the production alias table.
+        self.media_alias_service = (
+            MediaAliasService()
+            if getattr(config_service, "db_path", DATABASE_PATH) == DATABASE_PATH
+            else None
+        )
 
         self._config_resolver = ScraperConfigResolver(config_service, tmdb_service)
         self._metadata_resolver = ScraperMetadataResolver(tmdb_service, nfo_service)
@@ -133,6 +142,8 @@ class ScraperService:
         except Exception as exc:  # registration must not undo a successful scrape
             logger.warning("记录媒体版本失败: %s", exc)
         try:
+            if self.media_alias_service is None:
+                return
             await self.media_alias_service.remember_confirmed(
                 file_path=source_path,
                 parsed_title=parsed_title,
@@ -358,6 +369,9 @@ class ScraperService:
         move_step: ScrapeLogStep,
         notify_log_update,
         link_mode: OrganizeMode | None,
+        advanced_settings: ManualJobAdvancedSettings | None = None,
+        dest_path_override: Path | str | None = None,
+        require_metadata_dir: bool = True,
     ) -> tuple[str, Path, Path]:
         return await self._output_writer.write_local_metadata_only(
             title=title,
@@ -372,7 +386,173 @@ class ScraperService:
             move_step=move_step,
             notify_log_update=notify_log_update,
             link_mode=link_mode,
+            advanced_settings=advanced_settings,
+            dest_path_override=dest_path_override,
+            require_metadata_dir=require_metadata_dir,
         )
+
+    async def _prepare_and_organize_local_output(
+        self,
+        *,
+        rename_request: RenameRequest,
+        source_display_path: str,
+        output_dir_display: str | None,
+        title: str,
+        season: int,
+        episode: int,
+        year: int | None,
+        metadata_dir: str | None,
+        nfo_content: str,
+        series,
+        season_info,
+        mode_name: str,
+        move_step: ScrapeLogStep,
+        notify_log_update: Callable[[], Awaitable[None]],
+        result: ScrapeResult,
+        advanced_settings: ManualJobAdvancedSettings | None = None,
+    ) -> tuple[Path, Path, Path]:
+        """Write metadata at the resolved destination before publishing media."""
+        resolved_dest_path = await run_file_io(
+            self.rename_service.resolve_destination_path,
+            rename_request,
+        )
+        resolved_dest_path = Path(resolved_dest_path)
+        source_path = Path(rename_request.source_path)
+        if (
+            resolved_dest_path != source_path
+            and (resolved_dest_path.exists() or resolved_dest_path.is_symlink())
+            and rename_request.conflict_action != "overwrite"
+        ):
+            result.status = ScrapeStatus.FILE_CONFLICT
+            result.message = f"目标文件已存在: {resolved_dest_path}"
+            raise FileExistsError(str(resolved_dest_path))
+
+        await self._write_local_metadata_only(
+            title=title,
+            season=season,
+            episode=episode,
+            year=year,
+            metadata_dir=metadata_dir,
+            output_dir_for_preview=output_dir_display or str(resolved_dest_path.parent),
+            nfo_content=nfo_content,
+            series=series,
+            season_info=season_info,
+            move_step=move_step,
+            notify_log_update=notify_log_update,
+            link_mode=rename_request.link_mode,
+            advanced_settings=advanced_settings,
+            dest_path_override=resolved_dest_path,
+            require_metadata_dir=False,
+        )
+        return await self._organize_local_output(
+            rename_request=rename_request,
+            source_display_path=source_display_path,
+            output_dir_display=output_dir_display,
+            mode_name=mode_name,
+            move_step=move_step,
+            notify_log_update=notify_log_update,
+            result=result,
+        )
+
+    async def _record_media_version(
+        self,
+        *,
+        file_path: str,
+        target_path: str | None,
+        tmdb_id: int | None,
+        season: int,
+        episode: int,
+        title: str | None,
+    ) -> None:
+        """Persist a published media version without changing output status."""
+        if tmdb_id is None or not target_path:
+            return
+        await MediaIdentityService().record(
+            file_path=file_path,
+            target_path=target_path,
+            tmdb_id=tmdb_id,
+            season=season,
+            episode=episode,
+            title=title,
+        )
+
+    @staticmethod
+    async def _safe_notify_log_update(
+        notify_log_update: Callable[[], Awaitable[None]],
+        stage: str,
+    ) -> None:
+        """A post-publication log failure must not cause media retry."""
+        try:
+            await notify_log_update()
+        except Exception:
+            logger.exception("%s写入失败；媒体输出状态保持成功", stage)
+
+    async def _complete_scrape_output(
+        self,
+        *,
+        result: ScrapeResult,
+        file_path: str,
+        tmdb_id: int,
+        series: TMDBSeries,
+        season_info: TMDBSeason | None,
+        season: int,
+        episode: int,
+        scrape_logs: list[ScrapeLogStep],
+        notify_log_update: Callable[[], Awaitable[None]],
+        remember_manual_alias: bool,
+        parsed_title: str | None,
+    ) -> ScrapeResult:
+        """Finalize a successful output and isolate non-media audit failures."""
+        if season_info and season_info.episodes:
+            result.episode_info = next(
+                (item for item in season_info.episodes if item.episode_number == episode),
+                None,
+            )
+
+        warnings: list[str] = []
+        try:
+            await self._record_media_version(
+                file_path=file_path,
+                target_path=result.dest_path,
+                tmdb_id=tmdb_id,
+                season=season,
+                episode=episode,
+                title=getattr(series, "name", None),
+            )
+        except Exception:
+            logger.exception("媒体已输出，但媒体版本记录写入失败: %s", result.dest_path)
+            warnings.append("媒体版本记录写入失败")
+
+        if remember_manual_alias and self.media_alias_service is not None:
+            try:
+                await self.media_alias_service.remember_confirmed(
+                    file_path=file_path,
+                    parsed_title=parsed_title,
+                    tmdb_id=tmdb_id,
+                    season=season,
+                    episode=episode,
+                    canonical_titles=[
+                        getattr(series, "name", None),
+                        getattr(series, "original_name", None),
+                    ],
+                    source="manual",
+                )
+            except Exception:
+                logger.exception("媒体已输出，但手动别名记录写入失败")
+                warnings.append("手动别名记录写入失败")
+
+        if warnings and scrape_logs:
+            scrape_logs[-1].logs.append(
+                ScrapeLogEntry(
+                    message="；".join(warnings),
+                    level=ScrapeLogLevel.WARNING,
+                )
+            )
+        result.status = ScrapeStatus.SUCCESS
+        result.message = "刮削完成"
+        result.scrape_logs = scrape_logs
+        await self._safe_notify_log_update(notify_log_update, "任务完成日志")
+        return result
 
     def _resolve_move_input(
         self,

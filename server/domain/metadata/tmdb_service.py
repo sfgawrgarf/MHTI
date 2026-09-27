@@ -350,11 +350,14 @@ class TMDBService:
         await self.config_service.save_api_token(token.strip())
         await self.config_service.set_api_token_verified(True)
 
-        # 保存即检测 R18：这是里番工具的核心能力，缺它时刮削只会报「未找到匹配」
-        enabled, adult_message = await self.check_adult_access()
-        await self.config_service.save_adult_status(enabled, adult_message)
+        # R18 探测是附加诊断；Token 保存不能因为网络或探测失败而回滚。
+        try:
+            enabled, adult_message = await self.check_adult_access()
+            await self.config_service.save_adult_status(enabled, adult_message)
+        except Exception:
+            pass
 
-        is_valid, verified_at = await self.config_service.get_api_token_verification()
+        _is_valid, _verified_at = await self.config_service.get_api_token_verification()
 
         return await self.get_api_token_status()
 

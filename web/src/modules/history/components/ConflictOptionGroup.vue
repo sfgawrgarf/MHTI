@@ -18,7 +18,7 @@ export interface ConflictOption {
   arrow?: boolean
 }
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   modelValue: string
   options: ConflictOption[]
   variant?: 'group' | 'manual'

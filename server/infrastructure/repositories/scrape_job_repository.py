@@ -183,7 +183,7 @@ class ScrapeJobRepository(BaseRepository):
                  correction_history_id, correction_tmdb_id, correction_season,
                  correction_episode, continuation_history_id, file_action,
                  selection_log, skip_emby_check)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,

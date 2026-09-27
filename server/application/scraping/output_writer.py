@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 from server.common.path_security import validate_media_path
 from server.models.history import ScrapeLogEntry, ScrapeLogLevel, ScrapeLogStep
+from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
 from server.models.rename import RenameRequest
 from server.models.scraper import ScrapeResult, ScrapeStatus
@@ -181,13 +182,23 @@ class OutputWriter:
         move_step: ScrapeLogStep,
         notify_log_update,
         link_mode: OrganizeMode | None,
+        advanced_settings: ManualJobAdvancedSettings | None = None,
+        dest_path_override: Path | str | None = None,
+        require_metadata_dir: bool = True,
     ) -> tuple[str, Path, Path]:
         """在本地元数据目录写入 NFO/图片（视频已在 115，不落本地）。
 
         返回 (nfo_path, metadata_series_folder, metadata_season_folder)。
         仅在 metadata_dir 指向本地路径时执行；否则记录告警并返回空值。
         """
-        if not metadata_dir:
+        if not metadata_dir and dest_path_override is None:
+            move_step.logs.append(ScrapeLogEntry(
+                message="未配置本地元数据目录，跳过 NFO/图片生成",
+                level=ScrapeLogLevel.WARNING,
+            ))
+            await notify_log_update()
+            return "", Path(), Path()
+        if require_metadata_dir and not metadata_dir:
             move_step.logs.append(ScrapeLogEntry(
                 message="未配置本地元数据目录，跳过 NFO/图片生成",
                 level=ScrapeLogLevel.WARNING,
@@ -197,27 +208,33 @@ class OutputWriter:
 
         facade = self._facade
 
-        # 通过预览得到剧集/季文件夹结构（不实际移动文件）
-        # This preview does not move a video, but RenameService still requires
-        # a namespace-safe absolute source path. Keep the synthetic source in
-        # the selected output namespace so both local and 115 layouts work.
-        preview_source = str(
-            Path(output_dir_for_preview)
-            / f".mhti-preview-{season:02d}e{episode:02d}.mp4"
-        )
-        preview_request = self.build_rename_request(
-            source_path=preview_source,
-            title=title,
-            season=season,
-            episode=episode,
-            year=year,
-            output_dir=output_dir_for_preview,
-            link_mode=link_mode,
-        )
-        preview = facade.rename_service.preview_rename(preview_request)
-        dest_path = Path(preview.dest_path)
-        series_folder = Path(preview.dest_folder).parent
-        season_folder = Path(preview.dest_folder)
+        if dest_path_override is not None:
+            dest_path = validate_media_path(str(dest_path_override))
+            season_folder = dest_path.parent
+            series_folder = season_folder.parent
+            season_folder.mkdir(parents=True, exist_ok=True)
+        else:
+            # 通过预览得到剧集/季文件夹结构（不实际移动文件）
+            # This preview does not move a video, but RenameService still requires
+            # a namespace-safe absolute source path. Keep the synthetic source in
+            # the selected output namespace so both local and 115 layouts work.
+            preview_source = str(
+                Path(output_dir_for_preview)
+                / f".mhti-preview-{season:02d}e{episode:02d}.mp4"
+            )
+            preview_request = self.build_rename_request(
+                source_path=preview_source,
+                title=title,
+                season=season,
+                episode=episode,
+                year=year,
+                output_dir=output_dir_for_preview,
+                link_mode=link_mode,
+            )
+            preview = facade.rename_service.preview_rename(preview_request)
+            dest_path = Path(preview.dest_path)
+            series_folder = Path(preview.dest_folder).parent
+            season_folder = Path(preview.dest_folder)
 
         metadata_series_folder, metadata_season_folder = await self.resolve_metadata_folders(
             dest_file=dest_path,
@@ -227,7 +244,7 @@ class OutputWriter:
         )
 
         # NFO
-        nfo_config = await facade._get_effective_nfo_config(None)
+        nfo_config = await facade._get_effective_nfo_config(advanced_settings)
         nfo_path_str = ""
         if nfo_config["nfo_enabled"]:
             nfo_path = validate_media_path(
@@ -260,7 +277,7 @@ class OutputWriter:
         await notify_log_update()
 
         # 图片
-        download_config = await facade._get_effective_download_config(None)
+        download_config = await facade._get_effective_download_config(advanced_settings)
         if download_config["download_poster"] or download_config["download_fanart"]:
             await facade._download_series_images(
                 series,

@@ -16,7 +16,7 @@ from server.domain.parsing.parsers.base import ParseContext, ParserPlugin
 # ============================================================================
 # 视频文件扩展名
 # ============================================================================
-VIDEO_EXTENSIONS = r"\.(mp4|mkv|avi|wmv|mov|flv|rmvb|ts|m2ts|webm|iso|m4v)$"
+VIDEO_EXTENSIONS = r"\.(mp4|mkv|avi|wmv|mov|flv|rmvb|ts|m2ts|webm|iso|m4v|strm)$"
 
 # ============================================================================
 # 语言标识（扩展名前）
@@ -144,9 +144,15 @@ SUBTITLE_PATTERNS = [
 # 集数标记模式（用于定位副标题起始位置）
 # ============================================================================
 EPISODE_MARKERS_FOR_SUBTITLE = [
-    r"第\s*[\d一二三四五六七八九十]+\s*[話话集回章弾幕]",  # 第1話, 第二話
+    r"第\s*[\d一二三四五六七八九十]+\s*[話话集回章弾幕巻卷夜]",  # 第1話, 第二夜
     r"[＃#♯]\s*\d+",                                      # ＃2, #2
     r"[Vv]ol\.?\s*\d+",                                   # Vol.1
+    r"(?:ATTACK\s*NO|Insert|Reason|Desire|Memorial|anime)[.:：．]?\s*\d+",
+    r"理由\s*\d+",
+    r"\b\d+(?:st|nd|rd|th)\b",
+    r"\d+\s*枚目",
+    r"(?:お家賃\s*)?\d+\s*突き目",
+    r"\s+\d{1,3}\s*［",
     r"前編|後編|前篇|後篇|上巻|下巻",                      # 前編/後編
     r"[其そ][のノ之乃]\s*[\d一二三四五六七八九十弍参肆伍]+",  # 其の弍, その1
 ]
@@ -155,11 +161,11 @@ EPISODE_MARKERS_FOR_SUBTITLE = [
 # OVA/动画标记（需要移除）
 # ============================================================================
 ANIMATION_MARKERS = [
-    r"\bOVA\b",
-    r"\bOAD\b",
-    r"\bONA\b",
-    r"\bTHE\s+ANIMATION\b",
-    r"\bANIMATION\b",
+    r"OVA",
+    r"OAD",
+    r"ONA",
+    r"THE\s+ANIMATION",
+    r"ANIMATION",
 ]
 
 
@@ -240,8 +246,9 @@ class CleanerPlugin(ParserPlugin):
 
         # 8. 规范化空白和分隔符
         cleaned = re.sub(r"[._]+", " ", cleaned)
+        cleaned = re.sub(r"[～〜~]\s*[～〜~]", " ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned)
-        cleaned = cleaned.strip(" -")
+        cleaned = cleaned.strip(" -～〜~")
 
         ctx.cleaned_filename = cleaned
         ctx.matched_patterns.append(f"{self.name}:cleaned")

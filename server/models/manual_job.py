@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
+from string import Formatter
 
 from pydantic import BaseModel, Field, model_validator
 from server.models.storage import (
@@ -11,6 +12,7 @@ from server.models.storage import (
     normalize_file_locator,
     validate_storage_capabilities,
 )
+from server.models.template import NamingTemplate
 
 
 class ManualJobStatus(str, Enum):
@@ -221,9 +223,6 @@ class ManualJobCreate(BaseModel):
                 raise ValueError("文件扩展名格式无效")
 
         if not settings.use_global_naming:
-            from server.domain.system.template_service import TemplateService
-            from server.models.template import NamingTemplate
-
             defaults = NamingTemplate()
             templates = {
                 "剧集文件夹": settings.series_folder_template.strip()
@@ -233,11 +232,29 @@ class ManualJobCreate(BaseModel):
                 "剧集文件": settings.episode_file_template.strip()
                 or defaults.episode_file,
             }
-            validator = TemplateService()
+            allowed_fields = {
+                "title",
+                "original_title",
+                "year",
+                "season",
+                "episode",
+                "episode_title",
+                "air_date",
+            }
             for label, template in templates.items():
-                result = validator.validate_template(template)
-                if not result.valid:
-                    raise ValueError(f"{label}模板无效: {result.error}")
+                try:
+                    fields = {
+                        field_name
+                        for _, field_name, _, _ in Formatter().parse(template)
+                        if field_name
+                    }
+                except ValueError as exc:
+                    raise ValueError(f"{label}模板无效: {exc}") from exc
+                unknown = fields - allowed_fields
+                if unknown:
+                    raise ValueError(
+                        f"{label}模板无效: 包含不支持的字段 {', '.join(sorted(unknown))}"
+                    )
 
 
 class ManualJobListResponse(BaseModel):
@@ -250,4 +267,4 @@ class ManualJobListResponse(BaseModel):
 class ManualJobDeleteRequest(BaseModel):
     """Request for deleting manual jobs."""
 
-    ids: list[int]
+    ids: list[int] = Field(max_length=500)

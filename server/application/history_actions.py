@@ -146,6 +146,11 @@ class HistoryScrapeActions:
         """
         resolver = self._resolver()
         input_ = await resolver.resolve(record, remote=remote)
+        keep = {input_.path}
+        deleted = await resolver.clear_products(record.id, keep_paths=keep)
+
+        # 清理必须发生在让位之前：产物视频仍在原整理路径时，HistoryFileService
+        # 才能沿同构目录发现并删除对应的 NFO/图片；随后再把视频让位给重刮输出。
         input_ = await resolver.stage(input_)
 
         steps: list[ScrapeLogStep] = []
@@ -167,10 +172,6 @@ class HistoryScrapeActions:
             )
         steps.append(ScrapeLogStep(name="准备输入", completed=True, logs=logs))
 
-        keep = {input_.path}
-        if input_.staged_from:
-            keep.add(input_.staged_from)
-        deleted = await resolver.clear_products(record.id, keep_paths=keep)
         cleanup_logs = [
             ScrapeLogEntry(message=f"已删除旧产物: {path}") for path in deleted
         ]

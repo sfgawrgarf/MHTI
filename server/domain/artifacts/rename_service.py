@@ -66,7 +66,7 @@ class RenameService:
         else:
             source_path = validate_media_path(request.source_path)
         extension = source_path.suffix
-        active_template = self._template_service.get_active_template()
+        active_template = request.naming_template or self._template_service.get_active_template()
 
         # Build template data
         data = self._build_template_data(request)
@@ -119,6 +119,21 @@ class RenameService:
             new_filename=new_filename,
             will_create_dirs=will_create_dirs,
         )
+
+    def resolve_destination_path(self, request: RenameRequest) -> Path:
+        """Resolve the final local destination without publishing the media."""
+        preview = self.preview_rename(request)
+        source_path = Path(request.source_path)
+        dest_path = Path(preview.dest_path)
+        if (
+            request.conflict_action == "rename"
+            and dest_path != source_path
+            and (dest_path.exists() or dest_path.is_symlink())
+        ):
+            dest_path = self._next_available_path(dest_path)
+        if not is_p115_virtual_path(str(dest_path)):
+            dest_path = validate_media_path(str(dest_path))
+        return dest_path
 
     def execute_rename(
         self,

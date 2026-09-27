@@ -607,7 +607,11 @@ async def _resolve_conflict_compat(
                 locators=locators,
                 skip_emby_check=True,
             ),
-            f"用户选择刮削为 S{season:02d}E{episode:02d}",
+            (
+                f"用户强制继续刮削 S{season:02d}E{episode:02d}（忽略 Emby 冲突）"
+                if request.file_action == "force"
+                else f"用户选择刮削为 S{season:02d}E{episode:02d}"
+            ),
         )
 
     raise HTTPException(status_code=400, detail="未知的冲突类型")

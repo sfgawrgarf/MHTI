@@ -16,6 +16,7 @@ from server.models.template import NamingTemplate
 from server.models.watcher import WatcherConfig, WatcherMode
 from server.models.nfo import NfoConfig
 from server.models.system import SystemConfig
+from server.models.storage import is_p115_virtual_path
 
 # Config keys
 COOKIE_KEY = "tmdb_cookie"
@@ -294,9 +295,12 @@ class ConfigService:
             return OrganizeConfig()
         try:
             data = json.loads(value)
+            metadata_dir = data.get("metadata_dir", "")
+            if metadata_dir and is_p115_virtual_path(metadata_dir.strip()):
+                metadata_dir = ""
             return OrganizeConfig(
                 organize_dir=data.get("organize_dir", ""),
-                metadata_dir=data.get("metadata_dir", ""),
+                metadata_dir=metadata_dir,
                 organize_mode=OrganizeMode(data.get("organize_mode", "copy")),
                 min_file_size_mb=data.get("min_file_size_mb", 100),
                 file_type_whitelist=data.get(

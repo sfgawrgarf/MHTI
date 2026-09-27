@@ -50,7 +50,10 @@ async def get_job(
     service: ManualJobService = Depends(get_manual_job_service),
 ) -> ManualJob | None:
     """Get a manual job by ID."""
-    return await service.get_job(job_id)
+    job = await service.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="手动任务不存在")
+    return job
 
 
 @router.post("/{job_id}/cancel")

@@ -3,6 +3,7 @@
 从 scraper_service.py 拆出，供刮削编排复用。
 """
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,13 @@ class P115StorageProvider:
             "id": None if target_id in (None, "") else str(target_id),
             "parent_id": None if parent_id in (None, "") else str(parent_id),
         }
+
+    @staticmethod
+    def _ensure_operation_succeeded(response: Any, operation: str) -> None:
+        """Treat an explicit ``state: false`` response as an operation failure."""
+        if isinstance(response, dict) and response.get("state") is False:
+            message = response.get("message") or response.get("msg") or "未知原因"
+            raise ValueError(f"115 {operation}失败: {message}")
 
     async def ensure_directory(
         self,
@@ -135,21 +143,39 @@ class P115StorageProvider:
 
         client, _ = await self._get_client()
         file_id = locator.file_id
+        original_parent_id = locator.parent_id
+        original_name = Path(locator.path).name
 
-        # 1. 先改名（用源 file_id，原地改名）
-        if target_name:
-            try:
-                await client.fs_rename((file_id, target_name), async_=True)
-            except Exception as exc:
-                raise ValueError(f"115 文件改名失败: {target_name}") from exc
-
-        # 2. 再移动到目标目录
+        # 1. 先移动，再改名。这样改名失败时可以把文件可靠地移回原目录。
         try:
-            resp = await client.fs_move(file_id, pid=target_parent_id, async_=True)
+            move_response = await client.fs_move(file_id, pid=target_parent_id, async_=True)
+            self._ensure_operation_succeeded(move_response, "文件移动")
         except Exception as exc:
             raise ValueError(f"115 文件移动失败: {file_id} -> {target_parent_id}") from exc
 
-        return resp
+        if target_name and target_name != original_name:
+            try:
+                rename_response = await client.fs_rename((file_id, target_name), async_=True)
+                self._ensure_operation_succeeded(rename_response, "文件改名")
+            except Exception as exc:
+                if original_parent_id:
+                    try:
+                        rollback = await client.fs_move(
+                            file_id,
+                            pid=original_parent_id,
+                            async_=True,
+                        )
+                        self._ensure_operation_succeeded(rollback, "文件回滚")
+                    except Exception as rollback_exc:
+                        raise ValueError(
+                            f"115 文件改名失败且无法移回原目录: {target_name}"
+                        ) from rollback_exc
+                    raise ValueError(
+                        f"115 文件改名失败，已移回原目录: {target_name}"
+                    ) from exc
+                raise ValueError(f"115 文件改名失败: {target_name}") from exc
+
+        return move_response
 
     async def copy(
         self,
@@ -172,31 +198,63 @@ class P115StorageProvider:
         file_id = locator.file_id
         source_name = Path(locator.path).name
 
-        # 1. 复制到目标目录（保持原名）
+        # 1. 记录目标目录已有文件，复制到目标目录（保持原名）
+        before_ids = await self._find_file_ids_in_dir(client, target_parent_id, source_name)
         try:
             resp = await client.fs_copy(file_id, pid=target_parent_id, async_=True)
+            self._ensure_operation_succeeded(resp, "文件复制")
         except Exception as exc:
             raise ValueError(f"115 文件复制失败: {file_id} -> {target_parent_id}") from exc
 
-        # 2. fs_copy 不返回新文件 id，按源文件名在目标目录查找新副本的 id
-        new_id = None
-        if isinstance(resp, dict) and resp.get("file_id"):
-            new_id = resp.get("file_id")
+        # 2. fs_copy 通常不返回新文件 id；用复制前后的 fid 差集定位新副本，
+        # 避免把同名旧文件误改名。
+        new_id = self._extract_response_id(resp).get("id")
+        if not new_id or new_id == file_id:
+            for attempt in range(3):
+                after_ids = await self._find_file_ids_in_dir(client, target_parent_id, source_name)
+                candidates = after_ids - before_ids
+                if len(candidates) == 1:
+                    new_id = candidates.pop()
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(0.05)
         if not new_id:
-            new_id = await self._find_file_id_in_dir(client, target_parent_id, source_name)
+            raise ValueError("115 复制成功但无法定位新文件")
 
         # 3. 改名为目标名
-        if target_name and new_id:
+        if target_name and target_name != source_name:
             try:
-                await client.fs_rename((new_id, target_name), async_=True)
+                rename_response = await client.fs_rename((new_id, target_name), async_=True)
+                self._ensure_operation_succeeded(rename_response, "复制文件改名")
             except Exception as exc:
-                # 改名失败不影响复制结果，但记录警告
-                import logging
-                logging.getLogger(__name__).warning(
-                    f"115 复制后改名失败 (new_id={new_id}, target={target_name}): {exc}"
-                )
+                raise ValueError(f"115 复制后改名失败: {target_name}") from exc
 
-        return resp
+        if isinstance(resp, dict):
+            return {**resp, "file_id": str(new_id)}
+        return {"response": resp, "file_id": str(new_id)}
+
+    async def _find_file_ids_in_dir(
+        self,
+        client: Any,
+        parent_pid: str,
+        name: str,
+    ) -> set[str]:
+        """Return all matching file ids in a directory."""
+        try:
+            response = await client.fs_files(
+                {"cid": parent_pid, "offset": 0, "limit": 100, "show_dir": 1},
+                async_=True,
+            )
+        except Exception:
+            return set()
+        rows = response.get("data", []) if isinstance(response, dict) else []
+        return {
+            str(row.get("fid"))
+            for row in rows
+            if isinstance(row, dict)
+            and (row.get("n") or row.get("name") or "") == name
+            and row.get("fid")
+        }
 
     async def _find_file_id_in_dir(
         self,
@@ -205,23 +263,8 @@ class P115StorageProvider:
         name: str,
     ) -> str | None:
         """在父目录下按名字查找文件的 fid（fs_copy 后定位新副本用）。"""
-        try:
-            response = await client.fs_files(
-                {"cid": parent_pid, "offset": 0, "limit": 100, "show_dir": 1},
-                async_=True,
-            )
-        except Exception:
-            return None
-        rows = response.get("data", []) if isinstance(response, dict) else []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            row_name = row.get("n") or row.get("name") or ""
-            # 文件条目用 fid
-            fid = row.get("fid")
-            if row_name == name and fid and "fid" in row:
-                return str(fid)
-        return None
+        ids = await self._find_file_ids_in_dir(client, parent_pid, name)
+        return next(iter(ids), None)
 
     async def download(self, locator: StorageLocator, destination_dir: Path) -> Path:
         """下载 115 文件到本地临时目录。"""
