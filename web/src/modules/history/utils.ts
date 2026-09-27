@@ -101,6 +101,8 @@ export const getStatusBadge = (
     timeout: { status: 'warning', text: '超时' },
     cancelled: { status: 'warning', text: '取消' },
     skipped: { status: 'default', text: '跳过' },
+    deleted: { status: 'default', text: '已删除' },
+    replaced: { status: 'default', text: '已替代' },
     pending_action: { status: 'pending', text: '待处理' },
     running: { status: 'info', text: '处理中' },
   }

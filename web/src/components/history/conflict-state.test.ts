@@ -49,7 +49,7 @@ describe('conflict selection state', () => {
         episode: 2,
         dest_path: '/library/episode.mkv',
       },
-    } as HistoryRecordDetail
+    } as unknown as HistoryRecordDetail
 
     expect(getConflictData(record, 'file_conflict')?.episode).toBe(2)
     expect(getConflictData(record, 'emby_conflict')).toBeNull()
