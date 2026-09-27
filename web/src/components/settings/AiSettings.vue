@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NButtonGroup, NCard, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpace, NSwitch, NTag, useMessage } from 'naive-ui'
-import { aiApi, type AiConfig, type AiRecognitionResult } from '@/api/ai'
+import { aiApi } from '@/modules/settings/api'
+import type { AiConfig, AiRecognitionResult } from '@/modules/settings/types'
 
 const message = useMessage()
 const loading = ref(false)

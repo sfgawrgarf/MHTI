@@ -7,7 +7,6 @@ import os
 import threading
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 

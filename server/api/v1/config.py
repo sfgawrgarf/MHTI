@@ -1,7 +1,7 @@
 """Configuration API routes."""
 
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from server.application.watching import (
     WatcherConfigUseCase,
@@ -31,7 +31,6 @@ from server.models.config import (
     ProxyConfigRequest,
     ProxyConfigResponse,
     ProxyTestResponse,
-    ProxyType,
     SUPPORTED_LANGUAGES,
 )
 from server.models.organize import OrganizeConfig

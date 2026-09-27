@@ -60,8 +60,9 @@ export interface TMDBSeries {
 
 // 历史记录相关
 export type TaskSource = 'manual' | 'watcher'
-export type TaskStatus = 'success' | 'failed' | 'timeout' | 'cancelled' | 'skipped' | 'pending_action' | 'running'
+export type TaskStatus = 'success' | 'failed' | 'timeout' | 'cancelled' | 'skipped' | 'deleted' | 'replaced' | 'pending_action' | 'running'
 export type ConflictType = 'need_selection' | 'need_season_episode' | 'file_conflict' | 'no_match' | 'search_failed' | 'api_failed' | 'emby_conflict'
+export type ConflictDataMap = Record<ConflictType, Record<string, unknown>>
 export type LogLevel = 'success' | 'warning' | 'error'
 
 export interface ScrapeLogEntry {
@@ -138,7 +139,8 @@ export interface ResolveConflictRequest {
   tmdb_id?: number | null
   season?: number | null
   episode?: number | null
-  file_action?: 'overwrite' | 'skip' | 'rename' | null
+  file_action?: 'overwrite' | 'skip' | 'rename' | 'force' | null
+  resolution_action?: 'rematch' | null
 }
 
 /** 历史操作统一响应；冲突处理可能只创建队列任务而不立即产出文件。 */

@@ -40,6 +40,14 @@ class TokenVerifier(Protocol):
     def verify_token(self, token: str) -> tuple[str | None, str | None]: ...
 
 
+class AuthContext:
+    """Authentication context with user info."""
+
+    def __init__(self, username: str, session_id: str):
+        self.username = username
+        self.session_id = session_id
+
+
 _verifier: TokenVerifier | None = None
 
 
@@ -79,14 +87,6 @@ async def authenticate_access_token(token: str) -> AuthContext | None:
 
 
 security = HTTPBearer(auto_error=False)
-
-
-class AuthContext:
-    """Authentication context with user info."""
-
-    def __init__(self, username: str, session_id: str):
-        self.username = username
-        self.session_id = session_id
 
 
 async def require_auth(

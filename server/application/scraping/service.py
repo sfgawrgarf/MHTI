@@ -753,7 +753,6 @@ class ScraperService:
         """
         self._validate_storage_locators(request)
         file_path = request.file_path
-        path = Path(file_path)
         scrape_logs: list[ScrapeLogStep] = []
 
         async def notify_log_update():
@@ -769,7 +768,7 @@ class ScraperService:
         # Validate local sources before any metadata lookup or file operation.
         if not self._is_provider_source(request.file_locator):
             try:
-                path = validate_media_path(
+                validate_media_path(
                     file_path,
                     must_exist=True,
                     require_file=True,
@@ -1225,7 +1224,7 @@ class ScraperService:
 
         if not self._is_provider_source(request.file_locator):
             try:
-                path = validate_media_path(
+                validate_media_path(
                     file_path,
                     must_exist=True,
                     require_file=True,
@@ -1399,10 +1398,9 @@ class ScraperService:
         scrape_logs.append(meta_step)
         await notify_log_update()
 
-        path = Path(file_path)
         if not self._is_provider_source(request.file_locator):
             try:
-                path = validate_media_path(
+                validate_media_path(
                     file_path,
                     must_exist=True,
                     require_file=True,

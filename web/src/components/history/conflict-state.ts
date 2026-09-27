@@ -3,7 +3,7 @@ import type {
   ConflictType,
   HistoryRecordDetail,
   TMDBSeason,
-} from '@/api/types'
+} from '@/modules/history/types'
 
 export type EmbyResolutionAction = 'skip' | 'force' | 'change'
 

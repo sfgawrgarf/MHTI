@@ -13,7 +13,7 @@ import {
   NThing,
 } from 'naive-ui'
 import { computed } from 'vue'
-import type { TMDBEpisode, TMDBSearchResult, TMDBSeason } from '@/api/types'
+import type { TMDBEpisode, TMDBSearchResult, TMDBSeason } from '@/modules/history/types'
 import { getImageUrl, getSeasonLabel, getSelectableSeasons, getYear } from './conflict-state'
 
 const props = defineProps<{

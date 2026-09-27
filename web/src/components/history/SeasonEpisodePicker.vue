@@ -2,8 +2,8 @@
 import { NIcon, NImage, NInputNumber, NScrollbar, NTabPane, NTabs } from 'naive-ui'
 import { CheckmarkOutline } from '@vicons/ionicons5'
 import { computed } from 'vue'
-import type { TMDBEpisode, TMDBSeason } from '@/api/types'
-import EmptyState from '@/components/common/EmptyState.vue'
+import type { TMDBEpisode, TMDBSeason } from '@/modules/history/types'
+import EmptyState from '@/shared/components/base/EmptyState.vue'
 import { getImageUrl, getSeasonLabel, getSelectableSeasons } from './conflict-state'
 
 const props = defineProps<{
