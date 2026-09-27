@@ -1,6 +1,7 @@
 """Rename service for organizing video files."""
 
 import logging
+import os
 import shutil
 from pathlib import Path
 
