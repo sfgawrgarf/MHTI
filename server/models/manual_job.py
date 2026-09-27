@@ -241,6 +241,15 @@ class ManualJobCreate(BaseModel):
                 "episode_title",
                 "air_date",
             }
+            sample_data = {
+                "title": "示例",
+                "original_title": "Example",
+                "year": 2024,
+                "season": 1,
+                "episode": 1,
+                "episode_title": "第一集",
+                "air_date": "2024-01-01",
+            }
             for label, template in templates.items():
                 try:
                     fields = {
@@ -255,6 +264,10 @@ class ManualJobCreate(BaseModel):
                     raise ValueError(
                         f"{label}模板无效: 包含不支持的字段 {', '.join(sorted(unknown))}"
                     )
+                try:
+                    template.format(**sample_data)
+                except (KeyError, IndexError, ValueError) as exc:
+                    raise ValueError(f"{label}模板无效: {exc}") from exc
 
 
 class ManualJobListResponse(BaseModel):
