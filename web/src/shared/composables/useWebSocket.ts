@@ -158,7 +158,7 @@ function handleMessage(msg: WSMessage): void {
   switch (type) {
     case 'connected':
       state.clientId = payload?.client_id || msg.client_id
-      console.log('[WS] 客户端 ID:', state.clientId)
+      console.log('[WS] 客户端已连接')
       break
 
     case 'pong':
@@ -166,7 +166,7 @@ function handleMessage(msg: WSMessage): void {
       break
 
     case 'job_created':
-      console.log('[WS] 任务创建:', job_id)
+      console.log('[WS] 任务已创建')
       break
 
     case 'job_progress':
@@ -213,7 +213,7 @@ function handleMessage(msg: WSMessage): void {
     case 'log':
       // 日志消息，可以在控制台输出或存储
       if (job_id && payload) {
-        console.log(`[WS] [${job_id}] ${payload.level}: ${payload.message}`)
+        console.log('[WS] 收到任务日志')
       }
       break
 
@@ -236,11 +236,11 @@ function handleMessage(msg: WSMessage): void {
 
     // 历史记录详情页实时更新（由注册的 handler 处理，这里只做日志）
     case 'history_detail_update':
-      console.log('[WS] 历史记录详情更新:', job_id, payload)
+      console.log('[WS] 收到历史记录详情更新')
       break
 
     case 'history_detail_log':
-      console.log('[WS] 历史记录详情日志:', job_id, payload)
+      console.log('[WS] 收到历史记录详情日志')
       break
   }
 

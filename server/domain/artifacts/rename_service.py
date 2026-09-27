@@ -21,20 +21,22 @@ from server.models.storage import is_p115_virtual_path
 logger = logging.getLogger(__name__)
 
 
-def _is_internal_staging_path(raw_path: str) -> bool:
-    """Allow only application-created 115 download staging files as sources."""
+def _resolve_internal_staging_path(raw_path: str) -> Path | None:
+    """Resolve only application-created 115 staging paths under temp storage."""
     try:
         resolved = Path(os.path.realpath(raw_path, strict=True))
         temp_root = Path(tempfile.gettempdir()).resolve()
     except (FileNotFoundError, OSError, RuntimeError):
-        return False
-    if not resolved.is_file() or not resolved.is_relative_to(temp_root):
-        return False
-    return any(
+        return None
+    if not resolved.is_relative_to(temp_root):
+        return None
+    if not any(
         parent.name.startswith("mhti-115-download-")
         for parent in resolved.parents
         if parent != temp_root
-    )
+    ):
+        return None
+    return resolved
 
 
 class RenameService:
@@ -61,8 +63,10 @@ class RenameService:
         is_virtual = is_p115_virtual_path(request.source_path)
         if is_virtual:
             source_path = Path(request.source_path)
-        elif allow_staged_source and _is_internal_staging_path(request.source_path):
-            source_path = Path(os.path.realpath(request.source_path))
+        elif allow_staged_source and (
+            staged_path := _resolve_internal_staging_path(request.source_path)
+        ) is not None:
+            source_path = staged_path
         else:
             source_path = validate_media_path(request.source_path)
         extension = source_path.suffix
@@ -159,8 +163,15 @@ class RenameService:
             )
 
         try:
-            if allow_staged_source and _is_internal_staging_path(request.source_path):
-                source_path = Path(os.path.realpath(request.source_path, strict=True))
+            staged_path = (
+                _resolve_internal_staging_path(request.source_path)
+                if allow_staged_source
+                else None
+            )
+            if staged_path is not None:
+                if not staged_path.is_file():
+                    raise PathSecurityError("临时整理源必须是文件")
+                source_path = staged_path
             else:
                 source_path = validate_media_path(
                     request.source_path,
@@ -391,16 +402,16 @@ class RenameService:
 
         if mode == OrganizeMode.COPY:
             shutil.copy2(str(source_path), str(dest_path))
-            logger.info(f"文件已复制: {source_path} -> {dest_path}")
+            logger.info("文件已复制")
         elif mode == OrganizeMode.HARDLINK:
             os.link(str(source_path), str(dest_path))
-            logger.info(f"硬链接已创建: {source_path} -> {dest_path}")
+            logger.info("硬链接已创建")
         elif mode == OrganizeMode.SYMLINK:
             os.symlink(str(source_path), str(dest_path))
-            logger.info(f"软链接已创建: {source_path} -> {dest_path}")
+            logger.info("软链接已创建")
         else:  # MOVE
             shutil.move(str(source_path), str(dest_path))
-            logger.info(f"文件已移动: {source_path} -> {dest_path}")
+            logger.info("文件已移动")
 
     def create_series_structure(
         self,

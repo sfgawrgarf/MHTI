@@ -515,7 +515,7 @@ class ScrapeJobService:
             try:
                 await get_notifier().notify_cancelled(job_id, message)
             except Exception:
-                logger.exception("Unable to notify cancelled scrape job: %s", job_id)
+                logger.exception("Unable to notify cancelled scrape job")
             return updated, True, message
 
         return updated, False, f"任务已经是 {updated.status.value if updated else '未知'} 状态"

@@ -117,7 +117,7 @@ class ScraperMediaPipeline:
                 break
 
         if not still_path:
-            logger.info(f"S{season_num:02d}E{episode_num:02d} 没有封面图")
+            logger.info("当前集没有封面图，跳过下载")
             return
 
         # 使用与视频文件相同的文件名
