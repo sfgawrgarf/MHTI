@@ -153,8 +153,9 @@ class RenameService:
                 try:
                     source_path = validate_internal_staging_path(
                         request.source_path,
-                        require_file=True,
                     )
+                    if not source_path.is_file():
+                        raise PathSecurityError("临时整理源必须是文件")
                 except PathSecurityError:
                     source_path = validate_media_path(
                         request.source_path,

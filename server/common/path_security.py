@@ -98,11 +98,7 @@ def validate_media_directory(raw_path: str) -> Path:
         raise PathSecurityError(f"路径不是目录: {resolved}") from exc
 
 
-def validate_internal_staging_path(
-    raw_path: str,
-    *,
-    require_file: bool = False,
-) -> Path:
+def validate_internal_staging_path(raw_path: str) -> Path:
     """Return an existing application-created 115 staging path.
 
     Staging files are intentionally kept outside the configured media roots,
@@ -128,8 +124,6 @@ def validate_internal_staging_path(
         if parent != temp_root
     ):
         raise PathSecurityError("临时整理源目录无效")
-    if require_file and not resolved.is_file():
-        raise PathSecurityError("临时整理源必须是文件")
     return resolved
 
 
