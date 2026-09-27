@@ -1,12 +1,14 @@
 """Rename service for organizing video files."""
 
 import logging
-import os
 import shutil
-import tempfile
 from pathlib import Path
 
-from server.common.path_security import PathSecurityError, validate_media_path
+from server.common.path_security import (
+    PathSecurityError,
+    validate_internal_staging_path,
+    validate_media_path,
+)
 from server.models.organize import OrganizeMode
 from server.models.rename import (
     BatchRenameRequest,
@@ -19,24 +21,6 @@ from server.domain.system.template_service import TemplateService
 from server.models.storage import is_p115_virtual_path
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_internal_staging_path(raw_path: str) -> Path | None:
-    """Resolve only application-created 115 staging paths under temp storage."""
-    try:
-        resolved = Path(os.path.realpath(raw_path, strict=True))
-        temp_root = Path(tempfile.gettempdir()).resolve()
-    except (FileNotFoundError, OSError, RuntimeError):
-        return None
-    if not resolved.is_relative_to(temp_root):
-        return None
-    if not any(
-        parent.name.startswith("mhti-115-download-")
-        for parent in resolved.parents
-        if parent != temp_root
-    ):
-        return None
-    return resolved
 
 
 class RenameService:
@@ -63,10 +47,11 @@ class RenameService:
         is_virtual = is_p115_virtual_path(request.source_path)
         if is_virtual:
             source_path = Path(request.source_path)
-        elif allow_staged_source and (
-            staged_path := _resolve_internal_staging_path(request.source_path)
-        ) is not None:
-            source_path = staged_path
+        elif allow_staged_source:
+            try:
+                source_path = validate_internal_staging_path(request.source_path)
+            except PathSecurityError:
+                source_path = validate_media_path(request.source_path)
         else:
             source_path = validate_media_path(request.source_path)
         extension = source_path.suffix
@@ -163,15 +148,18 @@ class RenameService:
             )
 
         try:
-            staged_path = (
-                _resolve_internal_staging_path(request.source_path)
-                if allow_staged_source
-                else None
-            )
-            if staged_path is not None:
-                if not staged_path.is_file():
-                    raise PathSecurityError("临时整理源必须是文件")
-                source_path = staged_path
+            if allow_staged_source:
+                try:
+                    source_path = validate_internal_staging_path(
+                        request.source_path,
+                        require_file=True,
+                    )
+                except PathSecurityError:
+                    source_path = validate_media_path(
+                        request.source_path,
+                        must_exist=True,
+                        require_file=True,
+                    )
             else:
                 source_path = validate_media_path(
                     request.source_path,

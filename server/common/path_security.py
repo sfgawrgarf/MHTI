@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -95,6 +96,41 @@ def validate_media_directory(raw_path: str) -> Path:
         return Path(_DIRECTORY_PATH_ADAPTER.validate_python(resolved))
     except ValidationError as exc:
         raise PathSecurityError(f"路径不是目录: {resolved}") from exc
+
+
+def validate_internal_staging_path(
+    raw_path: str,
+    *,
+    require_file: bool = False,
+) -> Path:
+    """Return an existing application-created 115 staging path.
+
+    Staging files are intentionally kept outside the configured media roots,
+    so they need a separate, equally strict boundary check before any file
+    operation can use them.
+    """
+    if not raw_path or "\x00" in raw_path:
+        raise PathSecurityError("路径不能为空或包含非法字符")
+    if not os.path.isabs(raw_path):
+        raise PathSecurityError("只允许使用绝对路径")
+
+    try:
+        resolved = Path(os.path.realpath(raw_path, strict=True))
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except (FileNotFoundError, OSError, RuntimeError) as exc:
+        raise PathSecurityError("临时整理源路径无效") from exc
+
+    if not resolved.is_relative_to(temp_root):
+        raise PathSecurityError("临时整理源必须位于系统临时目录")
+    if not any(
+        parent.name.startswith("mhti-115-download-")
+        for parent in resolved.parents
+        if parent != temp_root
+    ):
+        raise PathSecurityError("临时整理源目录无效")
+    if require_file and not resolved.is_file():
+        raise PathSecurityError("临时整理源必须是文件")
+    return resolved
 
 
 def validate_image_url(url: str) -> str:

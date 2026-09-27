@@ -20,6 +20,6 @@ extensions:
         ]
       - [
           "server",
-          "Member[domain].Member[artifacts].Member[rename_service].Member[_resolve_internal_staging_path].ReturnValue",
+          "Member[common].Member[path_security].Member[validate_internal_staging_path].ReturnValue",
           "path-injection",
         ]
