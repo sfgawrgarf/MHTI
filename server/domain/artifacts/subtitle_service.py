@@ -26,6 +26,7 @@ SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".sup"}
 VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv", ".rmvb",
     ".ts", ".m2ts", ".webm", ".3gp", ".mpg", ".mpeg", ".vob",
+    ".m4v", ".strm",
 }
 
 # Language code mappings

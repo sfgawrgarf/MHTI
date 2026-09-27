@@ -211,13 +211,21 @@ async def test_execute_job_forwards_locators_to_scrape_job_create(
         path=str(video_path),
         is_dir=False,
     )
-    target_locator = _build_locator(path="/115网盘/已整理", file_id="target-root")
-    metadata_locator = _build_locator(path="/115网盘/元数据", file_id="meta-root")
+    target_locator = StorageLocator(
+        provider=StorageProvider.LOCAL,
+        path=str(tmp_path / "已整理"),
+        is_dir=True,
+    )
+    metadata_locator = StorageLocator(
+        provider=StorageProvider.LOCAL,
+        path=str(tmp_path / "元数据"),
+        is_dir=True,
+    )
     created = await service.create_job(
         ManualJobCreate(
             scan_path=str(video_path),
-            target_folder="/115网盘/已整理",
-            metadata_dir="/115网盘/元数据",
+            target_folder=target_locator.path,
+            metadata_dir=metadata_locator.path,
             link_mode=LinkMode.COPY,
             scan_locator=scan_locator,
             target_locator=target_locator,

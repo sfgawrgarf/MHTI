@@ -58,6 +58,7 @@ VIRTUAL_115_ROOT_PATH = "/115网盘"
 SCAN_VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv", ".rmvb", ".ts",
     ".m2ts", ".bdmv", ".webm", ".3gp", ".mpg", ".mpeg", ".vob", ".iso",
+    ".m4v", ".strm",
 }
 # 登录设备白名单：顺序即前端下拉顺序，仅保留实测可用的标准端。
 # 说明：p115client 的 APP_TO_SSOENT 里还有一批别名（desktop/bios/bandroid/bipad/windows/mac/linux），

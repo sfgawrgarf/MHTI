@@ -218,6 +218,7 @@ class ManualJobCreate(BaseModel):
             valid_extensions = {
                 "mp4", "mkv", "avi", "wmv", "mov", "flv", "rmvb", "ts",
                 "m2ts", "bdmv", "webm", "3gp", "mpg", "mpeg", "vob", "iso",
+                "m4v", "strm",
             }
             if any(extension not in valid_extensions for extension in extensions):
                 raise ValueError("文件扩展名格式无效")
