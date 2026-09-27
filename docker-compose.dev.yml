@@ -1,0 +1,11 @@
+# Local development override. It deliberately leaves the default Compose file
+# pinned to a published GHCR image.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
+services:
+  mhti:
+    build:
+      context: .
+    image: mhti:local

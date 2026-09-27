@@ -1,0 +1,8 @@
+# CI-only quality and test tools. Runtime dependencies remain locked separately
+# in requirements.lock with hashes.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+ruff==0.16.8
+pip-audit==2.10.1
+mypy==2.3.1

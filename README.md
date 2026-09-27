@@ -292,14 +292,21 @@ MHTI/
 
 ```bash
 # 克隆仓库
-git clone https://github.com/xiyan520/MHTI.git
+git clone https://github.com/sfgawrgarf/MHTI.git
 cd MHTI
 
-# 启动服务
-docker-compose up -d
+# 创建持久化、源媒体和整理输出目录
+mkdir -p data media output
+
+# 默认使用已发布的固定版本；升级时显式指定目标版本
+export MHTI_VERSION=2.1.6
+
+# 拉取固定版本镜像并启动服务（Docker Compose v2）
+docker compose pull
+docker compose up -d
 
 # 查看日志
-docker-compose logs -f
+docker compose logs -f mhti
 
 # 访问应用
 # 主页: http://localhost:8000
@@ -313,21 +320,24 @@ docker-compose logs -f
 ```yaml
 services:
   mhti:
-    image: xiyan520/mhti:latest
+    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.1.6}
     container_name: mhti
     restart: unless-stopped
     ports:
       - "8000:8000"                   # 唯一对外入口（Caddy）
     volumes:
       - ./data:/app/data              # 数据持久化
+      - ./media:/media:ro             # 源媒体（只读）
+      - ./output:/output              # 整理输出
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # - /path/to/media:/media:ro    # 媒体库（按需挂载）
-      # - /path/to/output:/output     # 输出目录（按需挂载）
     environment:
       - DATA_DIR=/app/data
       - TZ=Asia/Shanghai
+      - MHTI_ALLOWED_MEDIA_ROOTS=/media,/output
 ```
 
+默认 Compose 文件使用 GHCR 固定版本镜像；源码开发或验证容器构建时，使用
+`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`。
 容器内 Caddy 监听 8000，uvicorn 只监听 `127.0.0.1:8001`，前端静态文件由 Caddy 直接提供。
 
 ### 开发模式
@@ -464,7 +474,8 @@ python -m uvicorn server.main:app --host 127.0.0.1 --port 8000
 | DELETE | `/api/logs` · POST `/api/logs/cleanup` | 清空 / 按策略清理 |
 | GET | `/api/logs/export` | 日志导出 |
 | WS | `/ws` | WebSocket 实时通道 |
-| GET | `/health` | 健康检查 |
+| GET | `/health` | 存活检查 |
+| GET | `/health/ready` | 就绪检查 |
 
 ---
 
@@ -492,7 +503,7 @@ python -m uvicorn server.main:app --host 127.0.0.1 --port 8000
 
 | 技术 | 版本 | 用途 |
 |------|------|------|
-| Python | 3.11+（Docker 3.12） | 运行时 |
+| Python | 3.12+ | 运行时 |
 | FastAPI | 0.109+ | Web 框架 |
 | Uvicorn | 0.27+ | ASGI 服务器 |
 | Pydantic | 2.6+ | 数据验证 |
@@ -501,8 +512,8 @@ python -m uvicorn server.main:app --host 127.0.0.1 --port 8000
 | watchdog | 4.0+ | 本地目录监控 |
 | croniter | 2.0+ | 定时任务表达式 |
 | sse-starlette | 2.0+ | 日志与进度 SSE |
-| python-jose | 3.3+ | JWT 认证 |
-| cryptography | 42.0+ | 敏感配置加密 |
+| PyJWT | 2.10+ | JWT 认证 |
+| cryptography | 49.0+ | 敏感配置加密 |
 | p115client | 0.0.9.6.5.1 | 115 网盘客户端（版本需与 requirements 严格对齐） |
 
 ### 前端

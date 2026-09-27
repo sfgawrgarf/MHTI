@@ -6,7 +6,8 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError as JWTError
 
 from server.infrastructure.db import get_db_manager
 from server.infrastructure.repositories.auth_repository import AuthRepository
