@@ -186,7 +186,10 @@ async def clear_records(
     history_service: HistoryService = Depends(get_history_service),
 ) -> dict:
     """Clear history records."""
-    deleted = await history_service.clear_records(before_days=before_days)
+    try:
+        deleted = await history_service.clear_records(before_days=before_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"success": True, "deleted": deleted, "message": f"已删除 {deleted} 条记录"}
 
 
@@ -254,7 +257,10 @@ async def delete_record(
     history_service: HistoryService = Depends(get_history_service),
 ) -> dict:
     """Delete a history record."""
-    deleted = await history_service.delete_record(record_id)
+    try:
+        deleted = await history_service.delete_record(record_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="Record not found")
     return {"success": True, "message": "记录已删除"}
@@ -388,7 +394,7 @@ async def resolve_conflict(
             locators=locators,
             file_action=request.file_action,
         )
-        return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
+        return await actions.queue_scrape_and_update(record_id, scrape_request, user_log)
 
     elif request.conflict_type == HistoryConflictType.NEED_SEASON_EPISODE:
         if request.season is None or request.episode is None:
@@ -411,17 +417,14 @@ async def resolve_conflict(
             locators=locators,
             file_action=request.file_action,
         )
-        return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
+        return await actions.queue_scrape_and_update(record_id, scrape_request, user_log)
 
     elif request.conflict_type == HistoryConflictType.FILE_CONFLICT:
         if request.file_action not in ("overwrite", "skip", "rename"):
             raise HTTPException(status_code=400, detail="无效的处理方式")
 
         if request.file_action == "skip":
-            await history_service.update_record(
-                record_id, status=TaskStatus.SKIPPED, error_message="用户跳过"
-            )
-            return {"success": True, "message": "已跳过"}
+            return await actions.skip_record(record_id)
 
         tmdb_id = record.conflict_data.get("tmdb_id") if record.conflict_data else None
         if tmdb_id is None:
@@ -441,7 +444,7 @@ async def resolve_conflict(
             locators=locators,
             file_action=request.file_action,
         )
-        return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
+        return await actions.queue_scrape_and_update(record_id, scrape_request, user_log)
 
     elif request.conflict_type in (HistoryConflictType.NO_MATCH, HistoryConflictType.SEARCH_FAILED, HistoryConflictType.API_FAILED):
         # 手动输入 TMDB ID 的情况
@@ -463,15 +466,12 @@ async def resolve_conflict(
             locators=locators,
             file_action=request.file_action,
         )
-        return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
+        return await actions.queue_scrape_and_update(record_id, scrape_request, user_log)
 
     elif request.conflict_type == HistoryConflictType.EMBY_CONFLICT:
         # Emby 冲突处理
         if request.file_action == "skip":
-            await history_service.update_record(
-                record_id, status=TaskStatus.SKIPPED, error_message="用户跳过（Emby 已存在）"
-            )
-            return {"success": True, "message": "已跳过"}
+            return await actions.skip_record(record_id, "用户跳过（Emby 已存在）")
 
         tmdb_id = record.conflict_data.get("tmdb_id") if record.conflict_data else None
         if tmdb_id is None:
@@ -497,7 +497,7 @@ async def resolve_conflict(
             locators=None,
             skip_emby_check=True,  # 跳过 Emby 检查
         )
-        return await actions.execute_scrape_and_update(record_id, scrape_request, user_log)
+        return await actions.queue_scrape_and_update(record_id, scrape_request, user_log)
 
     raise HTTPException(status_code=400, detail="未知的冲突类型")
 

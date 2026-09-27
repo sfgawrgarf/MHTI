@@ -123,6 +123,21 @@ async def lifespan(app: FastAPI):
     # Initialize service container
     await init_services()
 
+    # Rebuild durable task queues before the watcher performs its initial scan.
+    # Interrupted RUNNING rows are reset to pending by these calls; no media
+    # file, provider session, or user configuration is changed here.
+    from server.application.scrape_job_service import recover_pending_jobs as recover_scrape_jobs
+    from server.application.manual_job_service import recover_pending_jobs as recover_manual_jobs
+
+    recovered_scrape = await recover_scrape_jobs()
+    recovered_manual = await recover_manual_jobs()
+    if recovered_scrape or recovered_manual:
+        logger.info(
+            "Recovered %s scrape jobs and %s manual jobs",
+            recovered_scrape,
+            recovered_manual,
+        )
+
     # Learn only confirmed aliases from existing successful history. This is
     # idempotent and never rewrites source media or removes user data.
     from server.application.media_alias_service import MediaAliasService

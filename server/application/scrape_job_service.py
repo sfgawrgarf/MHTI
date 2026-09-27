@@ -6,6 +6,7 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from server.common.path_security import PathSecurityError, validate_media_path
 from server.infrastructure.db import DATABASE_PATH
@@ -25,6 +26,8 @@ from server.models.storage import (
 )
 from server.infrastructure.realtime import get_notifier
 from server.domain.media.fingerprint_service import calculate_fingerprint
+from server.application.file_io import run_file_io
+from server.application.media_identity_service import MediaIdentityService
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +119,35 @@ _scrape_queue: asyncio.Queue[str] = asyncio.Queue()
 _worker_tasks: list[asyncio.Task] = []
 _semaphore: asyncio.Semaphore | None = None
 _current_threads: int = 0
+_initialization_task: asyncio.Task | None = None
 _active_job_tasks: dict[str, asyncio.Task] = {}
+_job_state_locks: WeakKeyDictionary = WeakKeyDictionary()
+_workers_stopping = False
+
+
+def _get_job_state_lock() -> asyncio.Lock:
+    """Return a lock scoped to the current event loop."""
+    loop = asyncio.get_running_loop()
+    lock = _job_state_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _job_state_locks[loop] = lock
+    return lock
+
+
+def _discard_queued_job_ids(job_ids: set[str]) -> None:
+    """Remove cancelled IDs while preserving the remaining queue order."""
+    retained: list[str] = []
+    while True:
+        try:
+            queued_id = _scrape_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        _scrape_queue.task_done()
+        if queued_id not in job_ids:
+            retained.append(queued_id)
+    for queued_id in retained:
+        _scrape_queue.put_nowait(queued_id)
 
 
 def get_scrape_runtime_state(pending_count: int) -> dict[str, int]:
@@ -217,6 +248,29 @@ class ScrapeJobService:
                 logger.info(f"文件已有待处理任务，跳过: {job.file_path}")
                 return None
 
+            # Watcher deliveries are automatic.  Once a local source has a
+            # recorded media version, a restart or repeated filesystem event
+            # must not enqueue the same media again.  Explicit manual retries
+            # still bypass this guard.
+            if job.source == ScrapeJobSource.WATCHER:
+                file_fingerprint = None
+                if job.file_locator is None:
+                    file_fingerprint = await run_file_io(
+                        calculate_fingerprint, job.file_path
+                    )
+                if await self._repo.has_skipped_history(
+                    job.file_path, file_fingerprint
+                ):
+                    logger.info(f"文件已有用户跳过记录，跳过监控重复任务: {job.file_path}")
+                    return None
+                if job.file_locator is None:
+                    fingerprint = await run_file_io(
+                        MediaIdentityService.fingerprint, job.file_path
+                    )
+                    if await self._repo.has_media_version(fingerprint):
+                        logger.info(f"文件已有媒体版本记录，跳过监控重复任务: {job.file_path}")
+                        return None
+
         job_id = str(uuid.uuid4())[:8]
         now = datetime.now()
 
@@ -228,7 +282,7 @@ class ScrapeJobService:
         output_locator_json = _serialize_locator(job.output_locator)
         metadata_locator_json = _serialize_locator(job.metadata_locator)
 
-        await self._repo.insert_job(
+        inserted = await self._repo.insert_job(
             job_id,
             job,
             created_at=now.isoformat(),
@@ -236,7 +290,11 @@ class ScrapeJobService:
             file_locator_json=file_locator_json,
             output_locator_json=output_locator_json,
             metadata_locator_json=metadata_locator_json,
+            check_duplicate=not skip_duplicate_check,
         )
+        if not inserted:
+            logger.info(f"文件已有并发创建的待处理任务，跳过: {job.file_path}")
+            return None
 
         created_job = ScrapeJob(
             id=job_id,
@@ -316,6 +374,22 @@ class ScrapeJobService:
             )
         return replacement
 
+    async def prepare_recovery(self) -> list[str]:
+        """Reset interrupted work and return the durable pending queue."""
+        await self._ensure_db()
+        return await self._repo.prepare_recovery()
+
+    async def claim_job(self, job_id: str) -> bool:
+        """Atomically move one pending job to running."""
+        async with _get_job_state_lock():
+            await self._ensure_db()
+            return await self._repo.claim_job(job_id)
+
+    async def reset_job_to_pending(self, job_id: str) -> bool:
+        """Return an interrupted running job to a clean pending state."""
+        await self._ensure_db()
+        return await self._repo.reset_job_to_pending(job_id)
+
     async def list_jobs(
         self,
         limit: int = 50,
@@ -349,21 +423,131 @@ class ScrapeJobService:
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
         error_message: str | None = None,
+        clear_error_message: bool = False,
         history_record_id: str | None = None,
         replaced_by_job_id: str | None = None,
-    ) -> None:
+        expected_status: ScrapeJobStatus | None = None,
+    ) -> bool:
         """更新刮削任务"""
         await self._ensure_db()
 
-        await self._repo.update_job(
+        return await self._repo.update_job(
             job_id,
             status=status,
             started_at=started_at,
             finished_at=finished_at,
             error_message=error_message,
+            clear_error_message=clear_error_message,
             history_record_id=history_record_id,
             replaced_by_job_id=replaced_by_job_id,
+            expected_status=expected_status,
         )
+
+    async def cancel_job(self, job_id: str) -> tuple[ScrapeJob | None, bool, str]:
+        """Cancel queued/running/user-action work and finish its history."""
+        message = "用户已取消任务；文件操作已停止或完成安全收尾"
+        immediate_cancel = False
+        task: asyncio.Task | None = None
+
+        async with _get_job_state_lock():
+            job = await self.get_job(job_id)
+            if job is None:
+                return None, False, "刮削任务不存在"
+
+            cancellable = {
+                ScrapeJobStatus.PENDING,
+                ScrapeJobStatus.RUNNING,
+                ScrapeJobStatus.PENDING_ACTION,
+            }
+            if job.status not in cancellable:
+                return job, False, f"任务已经是 {job.status.value} 状态"
+
+            task = _active_job_tasks.get(job_id)
+            if job.status != ScrapeJobStatus.RUNNING or task is None or task.done():
+                immediate_cancel = await self.update_job(
+                    job_id,
+                    status=ScrapeJobStatus.CANCELLED,
+                    finished_at=datetime.now(),
+                    error_message=message,
+                    expected_status=job.status,
+                )
+
+        if not immediate_cancel and task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        updated = await self.get_job(job_id)
+        if updated is not None and updated.status in cancellable:
+            live_task = _active_job_tasks.get(job_id)
+            if (
+                updated.status == ScrapeJobStatus.RUNNING
+                and live_task is not None
+                and not live_task.done()
+            ):
+                live_task.cancel()
+                await asyncio.gather(live_task, return_exceptions=True)
+            else:
+                # Covers a stale RUNNING row for which no live task exists,
+                # and a worker cancelled before its terminal write completed.
+                await self.update_job(
+                    job_id,
+                    status=ScrapeJobStatus.CANCELLED,
+                    finished_at=datetime.now(),
+                    error_message=message,
+                    expected_status=updated.status,
+                )
+            updated = await self.get_job(job_id)
+
+        if updated is not None and updated.status == ScrapeJobStatus.CANCELLED:
+            history_id = updated.history_record_id or updated.continuation_history_id
+            if history_id:
+                from server.application.history_service import HistoryService
+                from server.models.history import TaskStatus
+
+                try:
+                    await HistoryService(db_path=self.db_path).update_record(
+                        history_id,
+                        status=TaskStatus.CANCELLED,
+                        error_message=message,
+                    )
+                except Exception:
+                    logger.exception("Unable to finalize cancelled history: %s", history_id)
+            try:
+                await get_notifier().notify_cancelled(job_id, message)
+            except Exception:
+                logger.exception("Unable to notify cancelled scrape job: %s", job_id)
+            return updated, True, message
+
+        return updated, False, f"任务已经是 {updated.status.value if updated else '未知'} 状态"
+
+    async def cancel_jobs_by_source(self, source_id: int) -> int:
+        """Cancel all unfinished scrape children dispatched by a manual job."""
+        jobs, _ = await self.list_jobs(
+            limit=500,
+            offset=0,
+            source=ScrapeJobSource.MANUAL,
+            source_id=source_id,
+        )
+        active = [
+            job for job in jobs
+            if job.status in {
+                ScrapeJobStatus.PENDING,
+                ScrapeJobStatus.RUNNING,
+                ScrapeJobStatus.PENDING_ACTION,
+            }
+        ]
+        _discard_queued_job_ids({job.id for job in active})
+        results = await asyncio.gather(
+            *(self.cancel_job(job.id) for job in active),
+            return_exceptions=True,
+        )
+        count = 0
+        for result in results:
+            if isinstance(result, tuple):
+                count += int(result[1])
+            elif isinstance(result, BaseException):
+                logger.error("Unable to cancel scrape child: %r", result)
+        return count
 
     async def delete_jobs(self, ids: list[str]) -> int:
         """删除刮削任务"""
@@ -430,34 +614,45 @@ class ScrapeJobService:
 
 def _ensure_worker() -> None:
     """确保后台 worker 在运行，并根据配置调整并发数"""
-    global _worker_tasks, _semaphore, _current_threads
+    global _worker_tasks, _semaphore, _current_threads, _initialization_task
+
+    if _workers_stopping:
+        return
 
     async def _init_workers():
-        global _semaphore, _current_threads, _worker_tasks
+        global _semaphore, _current_threads, _worker_tasks, _initialization_task
         from server.domain.system.config_service import ConfigService
 
-        config_service = ConfigService()
-        system_config = await config_service.get_system_config()
-        threads = system_config.scrape_threads
+        try:
+            config_service = ConfigService()
+            system_config = await config_service.get_system_config()
+            threads = system_config.scrape_threads
 
-        # 如果并发数变化，重新初始化
-        if threads != _current_threads:
-            _current_threads = threads
-            _semaphore = asyncio.Semaphore(threads)
-            logger.info(f"刮削并发数设置为: {threads}")
+            if _workers_stopping:
+                return
 
-        # 清理已完成的 worker
-        _worker_tasks = [t for t in _worker_tasks if not t.done()]
+            # 如果并发数变化，重新初始化
+            if threads != _current_threads:
+                _current_threads = threads
+                _semaphore = asyncio.Semaphore(threads)
+                logger.info(f"刮削并发数设置为: {threads}")
 
-        # 启动足够的 worker
-        while len(_worker_tasks) < threads:
-            task = asyncio.create_task(_scrape_worker())
-            _worker_tasks.append(task)
+            # 清理已完成的 worker
+            _worker_tasks = [t for t in _worker_tasks if not t.done()]
+
+            # 启动足够的 worker
+            while len(_worker_tasks) < threads:
+                task = asyncio.create_task(_scrape_worker())
+                _worker_tasks.append(task)
+        finally:
+            if _initialization_task is asyncio.current_task():
+                _initialization_task = None
 
     # 在事件循环中执行初始化
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_init_workers())
+        if _initialization_task is None or _initialization_task.done():
+            _initialization_task = loop.create_task(_init_workers())
     except RuntimeError:
         pass
 
@@ -468,40 +663,62 @@ async def _scrape_worker() -> None:
     service = ScrapeJobService()
 
     while True:
+        job_id: str | None = None
+        execution_task: asyncio.Task | None = None
         try:
             job_id = await _scrape_queue.get()
             # 使用 Semaphore 控制并发
             if _semaphore:
                 async with _semaphore:
-                    task = asyncio.current_task()
-                    if task is not None:
-                        _active_job_tasks[job_id] = task
-                    try:
-                        await _execute_scrape_job(service, job_id)
-                    finally:
-                        _active_job_tasks.pop(job_id, None)
+                    execution_task = asyncio.create_task(
+                        _execute_scrape_job(service, job_id)
+                    )
+                    _active_job_tasks[job_id] = execution_task
+                    result = (await asyncio.gather(
+                        execution_task, return_exceptions=True
+                    ))[0]
             else:
-                task = asyncio.current_task()
-                if task is not None:
-                    _active_job_tasks[job_id] = task
-                try:
-                    await _execute_scrape_job(service, job_id)
-                finally:
-                    _active_job_tasks.pop(job_id, None)
+                execution_task = asyncio.create_task(
+                    _execute_scrape_job(service, job_id)
+                )
+                _active_job_tasks[job_id] = execution_task
+                result = (await asyncio.gather(
+                    execution_task, return_exceptions=True
+                ))[0]
+            if isinstance(result, Exception):
+                raise result
         except asyncio.CancelledError:
+            if execution_task is not None and not execution_task.done():
+                execution_task.cancel()
+                await asyncio.gather(execution_task, return_exceptions=True)
             break
         except Exception as e:
             logger.error(f"Scrape worker error: {e}")
+        finally:
+            if job_id is not None:
+                _active_job_tasks.pop(job_id, None)
+                _scrape_queue.task_done()
 
 
-async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
-    """执行单个刮削任务"""
+async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
+    """执行一个已经被原子领取的刮削任务。"""
     from server.bootstrap import get_scraper_service
     from server.application.history_service import HistoryService, build_record_folder_path
     from server.application.scraped_file_service import ScrapedFileService
     from server.domain.system.config_service import ConfigService
     from server.models.scraper import ScrapeByIdRequest, ScrapeRequest, ScrapeStatus
-    from server.models.history import HistoryRecordCreate, TaskStatus, HistoryConflictType, TaskSource
+    from server.models.history import (
+        HistoryRecordCreate,
+        TaskStatus,
+        HistoryConflictType,
+        TaskSource,
+        ScrapeLogEntry,
+        ScrapeLogStep,
+    )
+
+    if not await service.claim_job(job_id):
+        logger.info(f"ScrapeJob {job_id} 已被其他 worker 领取或无需执行")
+        return
 
     job = await service.get_job(job_id)
     if job is None:
@@ -518,9 +735,8 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     system_config = await config_service.get_system_config()
     timeout_seconds = system_config.task_timeout
 
-    # 更新状态为运行中
-    started_at = datetime.now()
-    await service.update_job(job_id, status=ScrapeJobStatus.RUNNING, started_at=started_at)
+    # claim_job 已经把 started_at 原子写入数据库；沿用它以保证前端计时一致。
+    started_at = job.started_at or datetime.now()
 
     def elapsed_seconds() -> float:
         """本次执行已耗时：running 期间前端用 started_at 本地计时，落终态时写回真实值。"""
@@ -544,37 +760,63 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     # 计算文件指纹
     file_fingerprint = calculate_fingerprint(job.file_path)
 
-    # 创建历史记录
-    history_record = await history_service.create_record(HistoryRecordCreate(
-        task_name=task_name,
-        folder_path=job.file_path,
-        status=TaskStatus.RUNNING,
-        source=task_source,
-        total_files=1,
-        success_count=0,
-        failed_count=0,
-        duration_seconds=0,
-        started_at=started_at,  # 供前端实时计时（executed_at 是记录创建时间，重跑时不等同于本次开始）
-        scrape_job_id=job_id,
-        # 关联手动任务 ID，便于按任务聚合查询历史记录
-        manual_job_id=job.source_id if job.source == ScrapeJobSource.MANUAL else None,
-        file_fingerprint=file_fingerprint,
-    ))
+    # 冲突解决/重试沿用原历史记录，普通扫描才创建新记录。
+    if job.continuation_history_id:
+        history_record = await history_service.get_record(job.continuation_history_id)
+        if history_record is None:
+            raise RuntimeError("原历史记录不存在，无法继续处理")
+        existing_logs = list(history_record.scrape_logs or [])
+        if job.selection_log:
+            existing_logs.append(
+                ScrapeLogStep(
+                    name="用户手动选择",
+                    completed=True,
+                    logs=[ScrapeLogEntry(message=job.selection_log)],
+                )
+            )
+        await history_service.update_record(
+            history_record.id,
+            status=TaskStatus.RUNNING,
+            error_message="",
+            started_at=started_at,
+            tmdb_id=job.correction_tmdb_id,
+            season_number=job.correction_season,
+            episode_number=job.correction_episode,
+        )
+        if existing_logs:
+            await history_service.update_scrape_logs(history_record.id, existing_logs)
+    else:
+        existing_logs = []
+        history_record = await history_service.create_record(HistoryRecordCreate(
+            task_name=task_name,
+            folder_path=job.file_path,
+            status=TaskStatus.RUNNING,
+            source=task_source,
+            total_files=1,
+            success_count=0,
+            failed_count=0,
+            duration_seconds=0,
+            started_at=started_at,  # 供前端实时计时（executed_at 是记录创建时间，重跑时不等同于本次开始）
+            scrape_job_id=job_id,
+            # 关联手动任务 ID，便于按任务聚合查询历史记录
+            manual_job_id=job.source_id if job.source == ScrapeJobSource.MANUAL else None,
+            file_fingerprint=file_fingerprint,
+        ))
     record_id = history_record.id
 
     # 更新任务关联的历史记录ID
     await service.update_job(job_id, history_record_id=record_id)
 
     # 创建日志回调（同时记住最后执行到的节点：超时要写清停在哪一步）
-    current_logs: list = []
-    current_step_name: str | None = None
+    current_logs: list = list(existing_logs)
+    current_step_name: str | None = resolve_timeout_step(current_logs)
 
     async def on_log_update(logs):
         nonlocal current_logs, current_step_name
         if logs:
-            current_logs = logs
-            current_step_name = resolve_timeout_step(logs)
-        await history_service.update_scrape_logs(record_id, logs)
+            current_logs = existing_logs + logs
+            current_step_name = resolve_timeout_step(current_logs)
+        await history_service.update_scrape_logs(record_id, current_logs)
 
     async def on_match_resolved(tmdb_id: int, season: int, episode: int):
         """匹配一确定就落库：这条记录超时/失败后仍能看出匹配的是哪部剧，重试直接沿用。"""
@@ -902,18 +1144,152 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     logger.info(f"ScrapeJob {job_id} completed with status: {job.status}")
 
 
-async def shutdown_workers() -> None:
-    """取消所有刮削 worker 任务，避免进程退出时卡顿。
+async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
+    """Finalize cancellation and pre-finalization failures.
 
-    worker 阻塞在队列 ``get()`` 上，进程退出前必须显式取消，否则
-    uvorn 会在 lifespan shutdown 阶段等待它们直到超时。
+    The scraper body has its own result/timeout state machine.  This outer
+    guard covers cancellation during configuration, fingerprinting, history
+    creation, or any other preparation step that previously could strand a
+    claimed row in ``running`` forever.
     """
-    global _worker_tasks
-    if not _worker_tasks:
-        return
-    for task in _worker_tasks:
-        if not task.done():
-            task.cancel()
-    await asyncio.gather(*_worker_tasks, return_exceptions=True)
-    _worker_tasks = []
-    logger.info("Scrape workers cancelled")
+    try:
+        await _run_scrape_job(service, job_id)
+    except asyncio.CancelledError:
+        job = await service.get_job(job_id)
+        if job is None:
+            raise
+
+        history_id = job.history_record_id or job.continuation_history_id
+        from server.application.history_service import HistoryService
+        from server.models.history import TaskStatus
+
+        history_service = HistoryService(db_path=service.db_path)
+        if _workers_stopping:
+            # Shutdown is recoverable: leave the durable job pending.  The
+            # history boundary is marked failed so the next attempt creates a
+            # fresh running record instead of showing a permanently running
+            # entry from the previous process.
+            if history_id:
+                try:
+                    await history_service.update_record(
+                        history_id,
+                        status=TaskStatus.FAILED,
+                        error_message="任务因服务重启中断，已重新排队",
+                    )
+                except Exception:
+                    logger.exception("Unable to finalize recovered history: %s", history_id)
+            await service.reset_job_to_pending(job_id)
+            raise
+
+        message = "任务已取消，文件操作已停止或完成安全收尾；请核对日志和目标文件"
+        transitioned = await service.update_job(
+            job_id,
+            status=ScrapeJobStatus.CANCELLED,
+            finished_at=datetime.now(),
+            error_message=message,
+            expected_status=ScrapeJobStatus.RUNNING,
+        )
+        if transitioned and history_id:
+            try:
+                await history_service.update_record(
+                    history_id,
+                    status=TaskStatus.CANCELLED,
+                    error_message=message,
+                )
+                await history_service.flush_and_clear_log_cache(history_id)
+            except Exception:
+                logger.exception("Unable to finalize cancelled history: %s", history_id)
+        if transitioned:
+            try:
+                await get_notifier().notify_cancelled(job_id, message)
+            except Exception:
+                logger.exception("Unable to notify cancelled scrape job: %s", job_id)
+        raise
+    except Exception as exc:
+        error = str(exc) or repr(exc) or type(exc).__name__
+        message = f"任务执行异常: {error}"
+        logger.exception("Unhandled scrape job failure before finalization: %s", job_id)
+        job = await service.get_job(job_id)
+        if job is None or job.status != ScrapeJobStatus.RUNNING:
+            return
+
+        history_id = job.history_record_id or job.continuation_history_id
+        transitioned = await service.update_job(
+            job_id,
+            status=ScrapeJobStatus.FAILED,
+            finished_at=datetime.now(),
+            error_message=message,
+            expected_status=ScrapeJobStatus.RUNNING,
+        )
+        if history_id:
+            from server.application.history_service import HistoryService
+            from server.models.history import TaskStatus
+
+            history_service = HistoryService(db_path=service.db_path)
+            try:
+                await history_service.update_record(
+                    history_id,
+                    status=TaskStatus.FAILED,
+                    error_message=message,
+                )
+                await history_service.flush_and_clear_log_cache(history_id)
+            except Exception:
+                logger.exception("Unable to finalize failed history: %s", history_id)
+        if transitioned:
+            try:
+                await get_notifier().notify_failed(job_id, message)
+            except Exception:
+                logger.exception("Unable to notify failed scrape job: %s", job_id)
+
+
+async def shutdown_workers() -> None:
+    """Stop workers and leave interrupted durable work recoverable."""
+    global _worker_tasks, _initialization_task, _semaphore, _current_threads
+    global _workers_stopping
+
+    _workers_stopping = True
+    try:
+        tasks = [
+            task
+            for task in [
+                _initialization_task,
+                *_worker_tasks,
+                *_active_job_tasks.values(),
+            ]
+            if task is not None
+        ]
+        # A task can be present in both the worker list and active map.
+        tasks = list(dict.fromkeys(tasks))
+        _initialization_task = None
+        _worker_tasks = []
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        _initialization_task = None
+        _worker_tasks = []
+        _active_job_tasks.clear()
+        while True:
+            try:
+                _scrape_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _scrape_queue.task_done()
+        _semaphore = None
+        _current_threads = 0
+        _workers_stopping = False
+    logger.info("Scrape workers stopped and queue reset")
+
+
+async def recover_pending_jobs() -> int:
+    """Requeue persisted scrape jobs after startup or an unclean stop."""
+    service = ScrapeJobService()
+    job_ids = await service.prepare_recovery()
+    for job_id in job_ids:
+        await _scrape_queue.put(job_id)
+    if job_ids:
+        _ensure_worker()
+        logger.info("Recovered %s scrape jobs from database", len(job_ids))
+    return len(job_ids)

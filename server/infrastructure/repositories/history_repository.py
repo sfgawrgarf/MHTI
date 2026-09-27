@@ -268,11 +268,32 @@ class HistoryRepository(BaseRepository):
         async with self._connect() as db:
             # 先获取关联的 scrape_job_id
             cursor = await db.execute(
-                "SELECT scrape_job_id FROM history_records WHERE id = ?",
+                "SELECT status, scrape_job_id FROM history_records WHERE id = ?",
                 (record_id,),
             )
             row = await cursor.fetchone()
-            scrape_job_id = row[0] if row else None
+            scrape_job_id = row[1] if row else None
+
+            if row is None:
+                await db.rollback()
+                return False
+
+            cursor = await db.execute(
+                """
+                SELECT 1 FROM scrape_jobs
+                WHERE status IN ('pending', 'running')
+                  AND (
+                      history_record_id = ?
+                      OR continuation_history_id = ?
+                      OR id = ?
+                  )
+                LIMIT 1
+                """,
+                (record_id, record_id, scrape_job_id),
+            )
+            if row[0] == TaskStatus.RUNNING.value or await cursor.fetchone():
+                await db.rollback()
+                raise ValueError("记录关联的任务仍在等待或运行中，请先取消任务")
 
             # 删除历史记录
             cursor = await db.execute(
@@ -284,8 +305,16 @@ class HistoryRepository(BaseRepository):
             # 同时删除关联的 scrape_job
             if scrape_job_id:
                 await db.execute(
-                    "DELETE FROM scrape_jobs WHERE id = ?",
-                    (scrape_job_id,),
+                    """
+                    DELETE FROM scrape_jobs
+                    WHERE id = ? OR continuation_history_id = ?
+                    """,
+                    (scrape_job_id, record_id),
+                )
+            else:
+                await db.execute(
+                    "DELETE FROM scrape_jobs WHERE continuation_history_id = ?",
+                    (record_id,),
                 )
 
             await db.commit()
@@ -441,23 +470,55 @@ class HistoryRepository(BaseRepository):
         async with self._connect() as db:
             if before_days is not None:
                 cutoff = (datetime.now() - timedelta(days=before_days)).isoformat()
+                cursor = await db.execute(
+                    """
+                    SELECT 1 FROM history_records h
+                    LEFT JOIN scrape_jobs j
+                      ON j.id = h.scrape_job_id
+                      OR j.history_record_id = h.id
+                      OR j.continuation_history_id = h.id
+                    WHERE h.executed_at < ?
+                      AND (h.status = 'running' OR j.status IN ('pending', 'running'))
+                    LIMIT 1
+                    """,
+                    (cutoff,),
+                )
+                if await cursor.fetchone():
+                    raise ValueError("待清理记录中存在仍在处理的任务，请先取消任务")
                 # 先删除关联的 scrape_jobs
                 await db.execute(
                     """DELETE FROM scrape_jobs WHERE id IN (
                         SELECT scrape_job_id FROM history_records
                         WHERE executed_at < ? AND scrape_job_id IS NOT NULL
+                    ) OR continuation_history_id IN (
+                        SELECT id FROM history_records WHERE executed_at < ?
                     )""",
-                    (cutoff,),
+                    (cutoff, cutoff),
                 )
                 cursor = await db.execute(
                     "DELETE FROM history_records WHERE executed_at < ?",
                     (cutoff,),
                 )
             else:
+                cursor = await db.execute(
+                    """
+                    SELECT 1 FROM history_records h
+                    LEFT JOIN scrape_jobs j
+                      ON j.id = h.scrape_job_id
+                      OR j.history_record_id = h.id
+                      OR j.continuation_history_id = h.id
+                    WHERE h.status = 'running' OR j.status IN ('pending', 'running')
+                    LIMIT 1
+                    """
+                )
+                if await cursor.fetchone():
+                    raise ValueError("记录中存在仍在处理的任务，请先取消任务")
                 # 先删除关联的 scrape_jobs
                 await db.execute(
                     """DELETE FROM scrape_jobs WHERE id IN (
                         SELECT scrape_job_id FROM history_records WHERE scrape_job_id IS NOT NULL
+                    ) OR continuation_history_id IN (
+                        SELECT id FROM history_records
                     )"""
                 )
                 cursor = await db.execute("DELETE FROM history_records")

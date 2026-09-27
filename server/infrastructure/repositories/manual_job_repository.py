@@ -163,6 +163,48 @@ class ManualJobRepository(BaseRepository):
             "SELECT * FROM manual_jobs WHERE id = ?", (job_id,)
         )
 
+    async def prepare_recovery(self) -> list[int]:
+        """Reset interrupted manual scans and return pending IDs."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                """
+                UPDATE manual_jobs
+                SET status = 'pending', started_at = NULL, finished_at = NULL,
+                    error_message = NULL
+                WHERE status = 'running'
+                """
+            )
+            cursor = await db.execute(
+                """
+                SELECT id FROM manual_jobs
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                """
+            )
+            rows = await cursor.fetchall()
+            await db.commit()
+        return [int(row[0]) for row in rows]
+
+    async def claim_job(self, job_id: int) -> bool:
+        """Atomically claim a pending manual job for one worker."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                UPDATE manual_jobs
+                SET status = ?, started_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    ManualJobStatus.RUNNING.value,
+                    datetime.now().isoformat(),
+                    job_id,
+                    ManualJobStatus.PENDING.value,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
     async def get_child_counts(
         self,
         job_ids: list[int],
@@ -192,6 +234,32 @@ class ManualJobRepository(BaseRepository):
 
         placeholders = ",".join("?" * len(ids))
         async with self._connect() as db:
+            cursor = await db.execute(
+                f"""
+                SELECT COUNT(*) FROM manual_jobs
+                WHERE id IN ({placeholders}) AND status IN ('pending', 'running')
+                """,
+                ids,
+            )
+            active_count = int((await cursor.fetchone())[0])
+            cursor = await db.execute(
+                f"""
+                SELECT COUNT(*) FROM scrape_jobs
+                WHERE source = 'manual' AND source_id IN ({placeholders})
+                  AND status IN ('pending', 'running', 'pending_action')
+                """,
+                ids,
+            )
+            active_child_count = int((await cursor.fetchone())[0])
+            if active_count or active_child_count:
+                raise ValueError(
+                    "手动任务或其刮削子任务仍在处理中，请先取消"
+                )
+            # 级联删除该手动任务投递的刮削任务，避免留下孤立队列记录。
+            await db.execute(
+                f"DELETE FROM scrape_jobs WHERE source = 'manual' AND source_id IN ({placeholders})",
+                ids,
+            )
             # 级联删除关联的刮削记录
             await db.execute(
                 f"DELETE FROM history_records WHERE manual_job_id IN ({placeholders})",
@@ -215,7 +283,8 @@ class ManualJobRepository(BaseRepository):
         error_count: int | None = None,
         total_count: int | None = None,
         error_message: str | None = None,
-    ) -> None:
+        expected_status: ManualJobStatus | None = None,
+    ) -> bool:
         updates = ["status = ?"]
         params = [status.value]
 
@@ -242,10 +311,15 @@ class ManualJobRepository(BaseRepository):
             params.append(error_message)
 
         params.append(job_id)
+        where_clause = "id = ?"
+        if expected_status is not None:
+            where_clause += " AND status = ?"
+            params.append(expected_status.value)
 
         async with self._connect() as db:
-            await db.execute(
-                f"UPDATE manual_jobs SET {', '.join(updates)} WHERE id = ?",
+            cursor = await db.execute(
+                f"UPDATE manual_jobs SET {', '.join(updates)} WHERE {where_clause}",
                 params,
             )
             await db.commit()
+            return cursor.rowcount == 1

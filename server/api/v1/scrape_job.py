@@ -1,7 +1,7 @@
 """Scrape job API endpoints - 文件刮削任务 API"""
 from server.api.deps import require_auth
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from server.api.deps import get_scrape_job_service
 from server.models.scrape_job import (
@@ -22,7 +22,13 @@ async def create_job(
     service: ScrapeJobService = Depends(get_scrape_job_service),
 ) -> ScrapeJob:
     """创建文件刮削任务"""
-    return await service.create_job(job)
+    created = await service.create_job(job)
+    if created is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该文件已有待处理任务",
+        )
+    return created
 
 
 @router.get("", response_model=ScrapeJobListResponse)
@@ -55,11 +61,33 @@ async def get_job(
     return await service.get_job(job_id)
 
 
+@router.post("/{job_id}/cancel")
+async def cancel_job(
+    job_id: str,
+    service: ScrapeJobService = Depends(get_scrape_job_service),
+) -> dict:
+    """取消排队、运行中或等待用户处理的刮削任务。"""
+    job, cancelled, message = await service.cancel_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=message)
+    if not cancelled:
+        raise HTTPException(status_code=409, detail=message)
+    return {
+        "job_id": job_id,
+        "status": job.status.value,
+        "cancelled": True,
+        "message": message,
+    }
+
+
 @router.delete("")
 async def delete_jobs(
     ids: list[str] = Query(...),
     service: ScrapeJobService = Depends(get_scrape_job_service),
 ) -> dict:
     """删除文件刮削任务"""
-    deleted = await service.delete_jobs(ids)
+    try:
+        deleted = await service.delete_jobs(ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"deleted": deleted}

@@ -5,6 +5,7 @@
 
 from datetime import date, datetime
 import logging
+from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -247,6 +248,103 @@ class HistoryScrapeActions:
             return {k: v for k, v in result.items() if v is not None and v is not False}
         except Exception:
             return {}
+
+    async def queue_scrape_and_update(
+        self,
+        record_id: str,
+        scrape_request,
+        user_selection_log: str | None = None,
+    ) -> dict:
+        """Queue a conflict resolution in the same worker as new scrapes.
+
+        The history row remains the single user-visible record.  The worker
+        receives ``continuation_history_id`` and changes that row to running
+        when it atomically claims the replacement job, so a request retry
+        cannot start a second direct scraper in the API process.
+        """
+        from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
+
+        record = await self._history_service.get_record(record_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        if record.status == TaskStatus.RUNNING:
+            raise HTTPException(status_code=409, detail="该记录正在处理中，请稍后再试")
+
+        locators = await self.restore_locators(record)
+        output_dir = scrape_request.output_dir or str(Path(scrape_request.file_path).parent)
+        job = await self._scrape_job_service.create_job(
+            ScrapeJobCreate(
+                file_path=scrape_request.file_path,
+                output_dir=output_dir,
+                metadata_dir=scrape_request.metadata_dir,
+                file_locator=getattr(scrape_request, "file_locator", None)
+                or locators.get("file_locator"),
+                output_locator=getattr(scrape_request, "output_locator", None)
+                or locators.get("output_locator"),
+                metadata_locator=getattr(scrape_request, "metadata_locator", None)
+                or locators.get("metadata_locator"),
+                allow_local_output=getattr(scrape_request, "allow_local_output", False)
+                or bool(locators.get("allow_local_output")),
+                link_mode=scrape_request.link_mode,
+                source=ScrapeJobSource.MANUAL,
+                source_id=record.manual_job_id,
+                advanced_settings=getattr(scrape_request, "advanced_settings", None),
+                replaces_job_id=record.scrape_job_id,
+                continuation_history_id=record.id,
+                correction_tmdb_id=scrape_request.tmdb_id,
+                correction_season=scrape_request.season,
+                correction_episode=scrape_request.episode,
+                file_action=getattr(scrape_request, "file_action", None),
+                selection_log=user_selection_log,
+                skip_emby_check=getattr(scrape_request, "skip_emby_check", False),
+            ),
+            skip_duplicate_check=True,
+        )
+        if job is None:
+            raise HTTPException(status_code=409, detail="该记录或文件已在处理中，请勿重复提交")
+
+        if record.scrape_job_id:
+            from server.models.scrape_job import ScrapeJobStatus
+
+            await self._scrape_job_service.update_job(
+                record.scrape_job_id,
+                status=ScrapeJobStatus.REPLACED,
+                finished_at=datetime.now(),
+                replaced_by_job_id=job.id,
+            )
+        return {
+            "success": True,
+            "queued": True,
+            "job_id": job.id,
+            "message": "已加入刮削队列，请在记录页查看结果",
+        }
+
+    async def skip_record(self, record_id: str, message: str = "用户跳过") -> dict:
+        """Close both sides of a user skip decision."""
+        from server.models.scrape_job import ScrapeJobStatus
+
+        record = await self._history_service.get_record(record_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        await self._history_service.update_record(
+            record_id,
+            status=TaskStatus.SKIPPED,
+            error_message=message,
+        )
+        if record.scrape_job_id:
+            job = await self._scrape_job_service.get_job(record.scrape_job_id)
+            if job is not None and job.status in {
+                ScrapeJobStatus.PENDING,
+                ScrapeJobStatus.RUNNING,
+                ScrapeJobStatus.PENDING_ACTION,
+            }:
+                await self._scrape_job_service.update_job(
+                    job.id,
+                    status=ScrapeJobStatus.SKIPPED,
+                    finished_at=datetime.now(),
+                    error_message=message,
+                )
+        return {"success": True, "message": "已跳过"}
 
     async def execute_scrape_and_update(
         self,

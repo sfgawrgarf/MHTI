@@ -96,6 +96,41 @@ class ScrapeJobRepository(BaseRepository):
         )
         return {row[0] for row in rows}
 
+    async def has_media_version(self, source_fingerprint: str) -> bool:
+        """Return whether a local source was already recorded as a version."""
+        try:
+            row = await self._fetch_one(
+                "SELECT 1 FROM media_versions WHERE source_fingerprint = ? LIMIT 1",
+                (source_fingerprint,),
+            )
+        except aiosqlite.OperationalError:
+            # Standalone/custom databases may not carry the optional identity
+            # tables yet; that is equivalent to having no recorded version.
+            return False
+        return row is not None
+
+    async def has_skipped_history(
+        self, file_path: str, file_fingerprint: str | None
+    ) -> bool:
+        """Return whether a watcher source was explicitly skipped by a user."""
+        try:
+            row = await self._fetch_one(
+                """
+                SELECT 1 FROM history_records
+                WHERE status = 'skipped'
+                  AND (
+                      (? IS NOT NULL AND file_fingerprint = ?)
+                      OR folder_path = ?
+                      OR instr(folder_path, ? || ' => ') = 1
+                  )
+                LIMIT 1
+                """,
+                (file_fingerprint, file_fingerprint, file_path, file_path),
+            )
+        except aiosqlite.OperationalError:
+            return False
+        return row is not None
+
     async def insert_job(
         self,
         job_id: str,
@@ -106,8 +141,39 @@ class ScrapeJobRepository(BaseRepository):
         file_locator_json: str | None,
         output_locator_json: str | None,
         metadata_locator_json: str | None,
-    ) -> None:
+        check_duplicate: bool = False,
+    ) -> bool:
         async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if data.continuation_history_id:
+                cursor = await db.execute(
+                    "SELECT status FROM history_records WHERE id = ?",
+                    (data.continuation_history_id,),
+                )
+                history = await cursor.fetchone()
+                if not history or history[0] not in {
+                    "pending_action",
+                    "failed",
+                    "timeout",
+                    "cancelled",
+                    "skipped",
+                }:
+                    await db.rollback()
+                    return False
+
+            if check_duplicate:
+                cursor = await db.execute(
+                    """
+                    SELECT 1 FROM scrape_jobs
+                    WHERE file_path = ?
+                      AND status IN ('pending', 'running', 'pending_action')
+                    LIMIT 1
+                    """,
+                    (data.file_path,),
+                )
+                if await cursor.fetchone():
+                    await db.rollback()
+                    return False
             await db.execute(
                 """
                 INSERT INTO scrape_jobs
@@ -145,7 +211,35 @@ class ScrapeJobRepository(BaseRepository):
                     1 if data.skip_emby_check else 0,
                 ),
             )
+            if data.replaces_job_id:
+                cursor = await db.execute(
+                    """
+                    UPDATE scrape_jobs
+                    SET status = 'replaced', finished_at = ?, replaced_by_job_id = ?
+                    WHERE id = ? AND replaced_by_job_id IS NULL
+                    """,
+                    (created_at, job_id, data.replaces_job_id),
+                )
+                if cursor.rowcount != 1:
+                    await db.rollback()
+                    return False
+
+            if data.continuation_history_id:
+                cursor = await db.execute(
+                    """
+                    UPDATE history_records
+                    SET status = 'running', error_message = '已排队，等待处理'
+                    WHERE id = ? AND status IN (
+                        'pending_action', 'failed', 'timeout', 'cancelled', 'skipped'
+                    )
+                    """,
+                    (data.continuation_history_id,),
+                )
+                if cursor.rowcount != 1:
+                    await db.rollback()
+                    return False
             await db.commit()
+            return True
 
     async def list_jobs(
         self,
@@ -195,6 +289,69 @@ class ScrapeJobRepository(BaseRepository):
             "SELECT * FROM scrape_jobs WHERE id = ?", (job_id,)
         )
 
+    async def prepare_recovery(self) -> list[str]:
+        """Reset interrupted jobs and return persisted pending IDs.
+
+        A worker can be interrupted between claiming a row and writing its
+        terminal state.  Recovery must make that row runnable again before the
+        in-memory queue is rebuilt.  The linked history is retained as a
+        failure marker so the next run starts with an auditable boundary.
+        """
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                """
+                UPDATE history_records
+                SET status = 'failed',
+                    error_message = COALESCE(
+                        error_message,
+                        '任务因服务重启中断，已重新排队'
+                    )
+                WHERE id IN (
+                    SELECT history_record_id FROM scrape_jobs
+                    WHERE status = 'running' AND history_record_id IS NOT NULL
+                )
+                  AND status = 'running'
+                """
+            )
+            await db.execute(
+                """
+                UPDATE scrape_jobs
+                SET status = 'pending', started_at = NULL, finished_at = NULL,
+                    error_message = NULL, history_record_id = NULL
+                WHERE status = 'running'
+                """
+            )
+            cursor = await db.execute(
+                """
+                SELECT id FROM scrape_jobs
+                WHERE status = 'pending'
+                ORDER BY created_at ASC
+                """
+            )
+            rows = await cursor.fetchall()
+            await db.commit()
+        return [str(row[0]) for row in rows]
+
+    async def claim_job(self, job_id: str) -> bool:
+        """Atomically claim a pending job for one worker."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                UPDATE scrape_jobs
+                SET status = ?, started_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    ScrapeJobStatus.RUNNING.value,
+                    datetime.now().isoformat(),
+                    job_id,
+                    ScrapeJobStatus.PENDING.value,
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
     async def update_job(
         self,
         job_id: str,
@@ -202,9 +359,11 @@ class ScrapeJobRepository(BaseRepository):
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
         error_message: str | None = None,
+        clear_error_message: bool = False,
         history_record_id: str | None = None,
         replaced_by_job_id: str | None = None,
-    ) -> None:
+        expected_status: ScrapeJobStatus | None = None,
+    ) -> bool:
         updates = []
         params = []
 
@@ -217,7 +376,9 @@ class ScrapeJobRepository(BaseRepository):
         if finished_at is not None:
             updates.append("finished_at = ?")
             params.append(finished_at.isoformat())
-        if error_message is not None:
+        if clear_error_message:
+            updates.append("error_message = NULL")
+        elif error_message is not None:
             updates.append("error_message = ?")
             params.append(error_message)
         if history_record_id is not None:
@@ -228,23 +389,58 @@ class ScrapeJobRepository(BaseRepository):
             params.append(replaced_by_job_id)
 
         if not updates:
-            return
+            return False
 
         params.append(job_id)
+        where_clause = "id = ?"
+        if expected_status is not None:
+            where_clause += " AND status = ?"
+            params.append(expected_status.value)
 
         async with self._connect() as db:
-            await db.execute(
-                f"UPDATE scrape_jobs SET {', '.join(updates)} WHERE id = ?",
+            cursor = await db.execute(
+                f"UPDATE scrape_jobs SET {', '.join(updates)} WHERE {where_clause}",
                 params,
             )
             await db.commit()
+            return cursor.rowcount == 1
+
+    async def reset_job_to_pending(self, job_id: str) -> bool:
+        """Return a running job to a clean pending state."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                UPDATE scrape_jobs
+                SET status = 'pending', started_at = NULL, finished_at = NULL,
+                    error_message = NULL
+                WHERE id = ? AND status = 'running'
+                """,
+                (job_id,),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
 
     async def delete_jobs(self, ids: list[str]) -> int:
+        """Delete terminal jobs; active jobs must be cancelled first."""
         if not ids:
             return 0
 
         placeholders = ",".join("?" * len(ids))
-        return await self._execute(
-            f"DELETE FROM scrape_jobs WHERE id IN ({placeholders})",
-            tuple(ids),
-        )
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"""
+                SELECT COUNT(*) FROM scrape_jobs
+                WHERE id IN ({placeholders})
+                  AND status IN ('pending', 'running', 'pending_action')
+                """,
+                ids,
+            )
+            active_count = int((await cursor.fetchone())[0])
+            if active_count:
+                raise ValueError(f"有 {active_count} 个任务仍在处理中，请先取消")
+            cursor = await db.execute(
+                f"DELETE FROM scrape_jobs WHERE id IN ({placeholders})",
+                ids,
+            )
+            await db.commit()
+            return cursor.rowcount
