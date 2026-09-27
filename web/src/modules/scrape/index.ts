@@ -3,6 +3,13 @@
  */
 
 export { scrapeRoutes } from './routes'
-export { manualJobApi } from './api'
+export { jobRuntimeApi, manualJobApi, scrapeJobApi } from './api'
 export { default as ManualJobCreateModal } from './components/ManualJobCreateModal.vue'
-export type { ManualJob, ManualJobStatus, ManualJobCreate } from './types'
+export type {
+  JobRuntimeMetrics,
+  ManualJob,
+  ManualJobCreate,
+  ManualJobStatus,
+  ScrapeJob,
+  ScrapeJobStatus,
+} from './types'

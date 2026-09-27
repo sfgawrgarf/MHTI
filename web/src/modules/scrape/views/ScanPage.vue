@@ -10,6 +10,7 @@ import { JOB_STATUS_OPTIONS } from '@/modules/scrape/constants'
 import JobMobileCard from '@/modules/scrape/components/JobMobileCard.vue'
 import JobTable from '@/modules/scrape/components/JobTable.vue'
 import TaskWizard from '@/modules/scrape/components/TaskWizard.vue'
+import JobRuntimeCard from '@/modules/scrape/components/JobRuntimeCard.vue'
 import EmptyState from '@/shared/components/base/EmptyState.vue'
 import PageContainer from '@/shared/components/base/PageContainer.vue'
 import PageSkeleton from '@/shared/components/base/PageSkeleton.vue'
@@ -28,10 +29,13 @@ const {
   statusFilter,
   checkedRowKeys,
   showCreateModal,
+  cancellingJobIds,
   handleSearch,
   handleStatusChange,
   handlePageChange,
   handleBatchDelete,
+  canCancel,
+  handleCancel,
   handleCreateSuccess,
   handleCheckedRowKeysChange,
   goToHistory,
@@ -43,6 +47,7 @@ const statusOptions = JOB_STATUS_OPTIONS
 
 <template>
   <div class="scan-page">
+    <JobRuntimeCard />
     <!-- 主卡片（四段式容器：数据区；弹窗区在容器外平铺） -->
     <PageContainer>
       <!-- 页面级操作：创建/批量删除属于"对整页数据做什么"，放页头而非工具行 -->
@@ -102,6 +107,9 @@ const statusOptions = JOB_STATUS_OPTIONS
             v-for="job in jobs"
             :key="job.id"
             :job="job"
+            :can-cancel="canCancel(job)"
+            :cancelling="cancellingJobIds.has(job.id)"
+            @cancel="handleCancel(job)"
             @click="goToHistory(job)"
           />
         </div>
@@ -121,7 +129,10 @@ const statusOptions = JOB_STATUS_OPTIONS
           :jobs="jobs"
           :loading="loading"
           :checked-row-keys="checkedRowKeys"
+          :cancelling-job-ids="cancellingJobIds"
+          :can-cancel="canCancel"
           @update:checked-row-keys="handleCheckedRowKeysChange"
+          @cancel="handleCancel"
           @record="goToHistory"
         />
         <EmptyState

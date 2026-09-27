@@ -65,7 +65,12 @@ export function createProgressThrottle(
     }
   }
 
-  return { throttledProgressUpdate }
+  /** 丢弃已进入终态任务的缓冲进度，避免取消后旧进度回写。 */
+  function discardProgress(jobId: string): void {
+    progressBuffer.delete(jobId)
+  }
+
+  return { throttledProgressUpdate, discardProgress }
 }
 
 /**
@@ -122,5 +127,10 @@ export function createHandlerThrottle(notify: (msg: WSMessage) => void) {
     }
   }
 
-  return { scheduleHandlerNotification }
+  /** 丢弃终态消息之前排队的同一任务进度通知。 */
+  function discardHandlerNotifications(jobId: string): void {
+    handlerBuffer = handlerBuffer.filter((msg) => msg.job_id !== jobId)
+  }
+
+  return { scheduleHandlerNotification, discardHandlerNotifications }
 }

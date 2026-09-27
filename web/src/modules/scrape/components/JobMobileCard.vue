@@ -4,16 +4,20 @@
  *
  * 纯展示 + click 事件；样式按原 ScanPage 逐条迁移。
  */
-import { NIcon, NProgress, NTag } from 'naive-ui'
+import { NButton, NIcon, NPopconfirm, NProgress, NTag } from 'naive-ui'
 import { ChevronForwardOutline } from '@vicons/ionicons5'
 import type { ManualJob } from '@/modules/scrape/types'
 import StatusBadge from '@/shared/components/business/StatusBadge.vue'
 import TouchCard from '@/shared/components/base/TouchCard.vue'
-import { JOB_STATUS_BADGE, LINK_MODE_LABELS, LINK_MODE_TAG_TYPE } from '@/modules/scrape/constants'
+import { LINK_MODE_LABELS, LINK_MODE_TAG_TYPE, activeChildCount, getJobStatusBadge } from '@/modules/scrape/constants'
 import { LinkMode } from '@/modules/scrape/types'
 
-defineProps<{ job: ManualJob }>()
-const emit = defineEmits<{ click: [] }>()
+const props = defineProps<{
+  job: ManualJob
+  canCancel: boolean
+  cancelling: boolean
+}>()
+const emit = defineEmits<{ click: []; cancel: [] }>()
 
 /** 格式化时间（原 ScanPage 实现：字符串切片） */
 const formatTime = (time: string | null) => {
@@ -27,8 +31,7 @@ const getProgressPercent = (job: ManualJob) => {
   return Math.round(((job.success_count + job.skip_count + job.error_count) / job.total_count) * 100)
 }
 
-const statusBadge = (status: ManualJob['status']) =>
-  JOB_STATUS_BADGE[status] || { status: 'default' as const, text: status }
+const statusBadge = () => getJobStatusBadge(props.job)
 </script>
 
 <template>
@@ -37,8 +40,8 @@ const statusBadge = (status: ManualJob['status']) =>
       <div class="job-header">
         <span class="job-id">#{{ job.id }}</span>
         <StatusBadge
-          :status="statusBadge(job.status).status"
-          :text="statusBadge(job.status).text"
+          :status="statusBadge().status"
+          :text="statusBadge().text"
           size="small"
         />
       </div>
@@ -56,6 +59,20 @@ const statusBadge = (status: ManualJob['status']) =>
           {{ LINK_MODE_LABELS[job.link_mode as LinkMode] || '未知' }}
         </NTag>
         <span class="job-time">{{ formatTime(job.created_at) }}</span>
+        <NPopconfirm v-if="canCancel" @positive-click="emit('cancel')">
+          <template #trigger>
+            <NButton
+              size="tiny"
+              quaternary
+              type="warning"
+              :loading="cancelling"
+              @click.stop
+            >
+              取消
+            </NButton>
+          </template>
+          停止任务及剩余 {{ activeChildCount(job) }} 个刮削任务？
+        </NPopconfirm>
       </div>
       <!-- 进度条 -->
       <div v-if="job.status === 'running' || job.total_count > 0" class="job-progress">

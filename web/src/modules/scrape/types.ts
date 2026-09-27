@@ -4,6 +4,7 @@
 import type { StorageLocator } from '@/shared/types/common'
 
 export type ManualJobStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
+export type ManualJobSource = 'manual' | 'watcher'
 
 export const LinkMode = {
   HARDLINK: 1,
@@ -19,6 +20,10 @@ export interface ManualJob {
   scan_path: string
   target_folder: string
   metadata_dir: string
+  scan_locator: StorageLocator | null
+  target_locator: StorageLocator | null
+  metadata_locator: StorageLocator | null
+  allow_local_output: boolean
   link_mode: LinkMode
   delete_empty_parent: boolean
   config_reuse_id: number | null
@@ -31,6 +36,99 @@ export interface ManualJob {
   error_count: number
   total_count: number
   error_message: string | null
+  source: ManualJobSource
+  advanced_settings: ManualJobAdvancedSettings | null
+  child_pending_count: number
+  child_running_count: number
+  child_pending_action_count: number
+}
+
+export interface ManualJobCancelResult {
+  job_id: number
+  status: ManualJobStatus
+  cancelled: boolean
+  cancelled_scrape_jobs: number
+  message: string
+}
+
+export type ScrapeJobSource = 'manual' | 'watcher'
+export type ScrapeJobStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'timeout'
+  | 'cancelled'
+  | 'skipped'
+  | 'deleted'
+  | 'replaced'
+  | 'pending_action'
+
+export type ScrapeJobLinkMode = 'copy' | 'move' | 'hardlink' | 'symlink'
+
+export interface ScrapeJob {
+  id: string
+  file_path: string
+  output_dir: string
+  metadata_dir: string | null
+  file_locator: StorageLocator | null
+  output_locator: StorageLocator | null
+  metadata_locator: StorageLocator | null
+  allow_local_output: boolean
+  link_mode: ScrapeJobLinkMode | null
+  source: ScrapeJobSource
+  source_id: number | null
+  status: ScrapeJobStatus
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  error_message: string | null
+  history_record_id: string | null
+  replaces_job_id: string | null
+  replaced_by_job_id: string | null
+  continuation_history_id: string | null
+  correction_history_id: string | null
+  correction_tmdb_id: number | null
+  correction_season: number | null
+  correction_episode: number | null
+  file_action: string | null
+  selection_log: string | null
+  skip_emby_check: boolean
+}
+
+export interface ScrapeJobCreate {
+  file_path: string
+  output_dir: string
+  metadata_dir?: string | null
+  file_locator?: StorageLocator | null
+  output_locator?: StorageLocator | null
+  metadata_locator?: StorageLocator | null
+  allow_local_output?: boolean
+  link_mode?: ScrapeJobLinkMode | null
+  source?: ScrapeJobSource
+  source_id?: number | null
+  advanced_settings?: ManualJobAdvancedSettings | null
+  replaces_job_id?: string | null
+  correction_history_id?: string | null
+  correction_tmdb_id?: number | null
+  correction_season?: number | null
+  correction_episode?: number | null
+  continuation_history_id?: string | null
+  file_action?: string | null
+  selection_log?: string | null
+  skip_emby_check?: boolean
+}
+
+export interface ScrapeJobListResponse {
+  jobs: ScrapeJob[]
+  total: number
+}
+
+export interface ScrapeJobCancelResult {
+  job_id: string
+  status: ScrapeJobStatus
+  cancelled: boolean
+  message: string
 }
 
 export interface ManualJobCreate {
@@ -44,6 +142,7 @@ export interface ManualJobCreate {
   link_mode?: LinkMode
   delete_empty_parent?: boolean
   config_reuse_id?: number | null
+  source?: ManualJobSource
   advanced_settings?: ManualJobAdvancedSettings | null
 }
 
@@ -93,4 +192,27 @@ export type AdvancedSettingsForm = Omit<
 export interface ManualJobListResponse {
   jobs: ManualJob[]
   total: number
+}
+
+export interface QueueRuntimeMetrics {
+  status_counts: Record<string, number>
+  queued_in_memory: number
+  active_tasks: number
+  worker_count: number
+  concurrency_limit: number
+  oldest_pending_at: string | null
+  oldest_pending_seconds: number | null
+}
+
+export interface FileIORuntimeMetrics {
+  workers: number
+  active: number
+  waiting: number
+}
+
+export interface JobRuntimeMetrics {
+  generated_at: string
+  manual: QueueRuntimeMetrics
+  scrape: QueueRuntimeMetrics
+  file_io: FileIORuntimeMetrics
 }

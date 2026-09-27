@@ -21,6 +21,7 @@ export type SectionKey =
   | 'naming'
   | 'network'
   | 'nfo'
+  | 'ai'
   | 'cloud115'
   | 'emby'
   | 'system'
@@ -44,6 +45,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { key: 'download', label: '下载', description: '海报、剧照与元数据的下载范围' },
   { key: 'naming', label: '命名与语言', description: '元数据语言、文件名模板与重命名规则' },
   { key: 'nfo', label: 'NFO 元数据', description: '生成的 NFO 字段与图片类型', group: '集成' },
+  { key: 'ai', label: 'AI 识别', description: '配置 AI 辅助识别与媒体版本策略' },
   { key: 'network', label: '网络代理', description: '刮削与下载请求是否走代理' },
   { key: 'cloud115', label: '115 网盘', description: '115 登录状态与在线处理开关' },
   { key: 'emby', label: 'Emby', description: '服务器地址、API Key 与入库校验', group: '系统' },

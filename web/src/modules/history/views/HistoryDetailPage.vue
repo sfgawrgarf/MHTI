@@ -36,7 +36,7 @@ const {
   goBack,
 } = useHistoryRecordDetail()
 
-const { busy, actionError, retryScrape, reorganize, reportFileDeletion } = useHistoryRecordActions(
+const { busy, cancelling, actionError, retryScrape, reorganize, cancelScrape, reportFileDeletion } = useHistoryRecordActions(
   () => record.value,
   () => loadRecord(false),
 )
@@ -59,6 +59,11 @@ const canHandle = computed(() => {
     status === 'cancelled'
   )
 })
+
+const canCancel = computed(() =>
+  (record.value?.status === 'running' || record.value?.status === 'pending_action')
+  && Boolean(record.value.scrape_job_id),
+)
 
 /** 处理弹窗模式：待处理走冲突处理，其余走重试刮削 */
 const handleMode = computed<'resolve' | 'retry'>(() =>
@@ -114,12 +119,15 @@ const handleSuccess = async () => {
         :episode="episode"
         :badge="badge"
         :can-handle="canHandle"
-        :busy="busy"
+        :busy="busy || cancelling"
+        :can-cancel="canCancel"
+        :cancelling="cancelling"
         @back="goBack"
         @handle="showHandleModal = true"
         @rescape="showRescapeModal = true"
         @reorganize="reorganize"
         @delete-files="showFilesModal = true"
+        @cancel="cancelScrape"
       />
 
       <!-- 操作失败提示（重刮 / 重新整理 / 删除文件共用） -->
@@ -164,7 +172,7 @@ const handleSuccess = async () => {
     <RescapeModal
       v-model:show="showRescapeModal"
       :record="record"
-      :loading="busy"
+      :loading="busy || cancelling"
       @submit="retryScrape"
     />
 

@@ -6,5 +6,5 @@
  */
 
 export { settingsRoutes } from './routes'
-export { embyApi } from './api'
+export { aiApi, embyApi } from './api'
 export { default as TmdbSetupWizard } from './components/TmdbSetupWizard.vue'

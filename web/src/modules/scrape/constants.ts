@@ -6,6 +6,7 @@
  * ManualJobCreate 的默认值一致）。
  */
 import type { SelectOption } from 'naive-ui'
+import type { ManualJob } from '@/modules/scrape/types'
 import { LinkMode } from '@/modules/scrape/types'
 
 /** LinkMode → 中文标签 */
@@ -66,4 +67,16 @@ export const JOB_STATUS_BADGE: Record<
   success: { status: 'success', text: '成功' },
   failed: { status: 'error', text: '失败' },
   cancelled: { status: 'warning', text: '已取消' },
+}
+
+/** 未完成的手动任务或其刮削子任务数量。 */
+export const activeChildCount = (job: ManualJob): number =>
+  job.child_pending_count + job.child_running_count + job.child_pending_action_count
+
+/** 有活跃子任务时优先显示真实的处理中状态。 */
+export const getJobStatusBadge = (job: ManualJob) => {
+  if (activeChildCount(job) > 0) {
+    return { status: 'info' as const, text: '处理中' }
+  }
+  return JOB_STATUS_BADGE[job.status] ?? { status: 'default' as const, text: job.status }
 }

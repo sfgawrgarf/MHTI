@@ -6,8 +6,8 @@
  * 既盖住图片，又和「处理」按钮抢海报右下的位置。处理 / 重刮 / 更多按主次排列，
  * 「处理」只在需要人工介入时出现，且是页面上唯一的主色按钮。
  */
-import { NButton, NIcon } from 'naive-ui'
-import { ArrowBackOutline, ConstructOutline } from '@vicons/ionicons5'
+import { NButton, NIcon, NPopconfirm } from 'naive-ui'
+import { ArrowBackOutline, ConstructOutline, StopCircleOutline } from '@vicons/ionicons5'
 import type { HistoryRecordDetail } from '@/modules/history/types'
 import type { BadgeTone } from '@/modules/history/utils'
 import RecordActions from '@/modules/history/components/RecordActions.vue'
@@ -20,6 +20,8 @@ defineProps<{
   badge: { status: BadgeTone; text: string } | null
   canHandle: boolean
   busy: boolean
+  canCancel: boolean
+  cancelling: boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +30,7 @@ const emit = defineEmits<{
   rescape: []
   reorganize: []
   'delete-files': []
+  cancel: []
 }>()
 </script>
 
@@ -51,6 +54,15 @@ const emit = defineEmits<{
     </div>
 
     <div class="header-actions">
+      <NPopconfirm v-if="canCancel" @positive-click="emit('cancel')">
+        <template #trigger>
+          <NButton type="warning" ghost size="small" :loading="cancelling">
+            <template #icon><NIcon :component="StopCircleOutline" /></template>
+            取消任务
+          </NButton>
+        </template>
+        取消会等待正在执行的文件操作完成安全收尾，确定继续？
+      </NPopconfirm>
       <NButton v-if="canHandle" type="primary" size="small" @click="emit('handle')">
         <template #icon><NIcon :component="ConstructOutline" /></template>
         处理

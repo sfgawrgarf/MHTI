@@ -1,5 +1,10 @@
 import api from '@/shared/api/client'
-import type { ScanRequest, ScanResponse } from '@/modules/library/types'
+import type {
+  ScanRequest,
+  ScanResponse,
+  ScrapedFileCheckResponse,
+  ScrapedFileListResponse,
+} from '@/modules/library/types'
 
 /**
  * 文件相关 API
@@ -26,6 +31,46 @@ export const filesApi = {
       locator: locator ?? null,
     }
     const response = await api.post<ScanResponse>('/scan', request)
+    return response.data
+  },
+}
+
+/** 已刮削登记 API；只管理登记，不直接删除媒体文件。 */
+export const scrapedFilesApi = {
+  async list(params: {
+    page?: number
+    page_size?: number
+    search?: string
+  } = {}): Promise<ScrapedFileListResponse> {
+    const response = await api.get<ScrapedFileListResponse>('/scraped-files', { params })
+    return response.data
+  },
+
+  async delete(ids: string[]): Promise<{ deleted: number }> {
+    const response = await api.delete<{ deleted: number }>('/scraped-files', {
+      params: { ids },
+      paramsSerializer: () => ids.map((id) => `ids=${encodeURIComponent(id)}`).join('&'),
+    })
+    return response.data
+  },
+
+  async deleteByPaths(paths: string[]): Promise<{ deleted: number }> {
+    const response = await api.delete<{ deleted: number }>('/scraped-files/by-paths', {
+      params: { paths },
+      paramsSerializer: () => paths.map((path) => `paths=${encodeURIComponent(path)}`).join('&'),
+    })
+    return response.data
+  },
+
+  async clear(): Promise<{ deleted: number }> {
+    const response = await api.delete<{ deleted: number }>('/scraped-files/clear')
+    return response.data
+  },
+
+  async check(path: string): Promise<ScrapedFileCheckResponse> {
+    const response = await api.get<ScrapedFileCheckResponse>('/scraped-files/check', {
+      params: { path },
+    })
     return response.data
   },
 }

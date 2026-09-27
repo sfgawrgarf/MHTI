@@ -141,6 +141,16 @@ export interface ResolveConflictRequest {
   file_action?: 'overwrite' | 'skip' | 'rename' | null
 }
 
+/** 历史操作统一响应；冲突处理可能只创建队列任务而不立即产出文件。 */
+export interface HistoryActionResponse {
+  success: boolean
+  message: string
+  queued?: boolean
+  job_id?: string
+  status?: string
+  dest_path?: string
+}
+
 // 重试刮削请求
 export interface RetryRequest {
   tmdb_id: number

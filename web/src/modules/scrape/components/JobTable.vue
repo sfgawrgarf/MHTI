@@ -7,24 +7,27 @@
  * 展示函数与 ScanPage 原实现逐字一致（formatTime 字符串切片、
  * formatDuration 秒数计算、getProgressPercent 千分比）。
  */
-import { h } from 'vue'
-import { NButton, NDataTable, NIcon, type DataTableColumns, type DataTableRowKey } from 'naive-ui'
-import { ListOutline } from '@vicons/ionicons5'
+import { computed, h } from 'vue'
+import { NButton, NDataTable, NIcon, NPopconfirm, type DataTableColumns, type DataTableRowKey } from 'naive-ui'
+import { ListOutline, StopCircleOutline } from '@vicons/ionicons5'
 import type { ManualJob } from '@/modules/scrape/types'
 import { LinkMode } from '@/modules/scrape/types'
 import ProgressCell from '@/modules/scrape/components/ProgressCell.vue'
-import { JOB_STATUS_BADGE, LINK_MODE_LABELS } from '@/modules/scrape/constants'
+import { LINK_MODE_LABELS, getJobStatusBadge, activeChildCount } from '@/modules/scrape/constants'
 import StatusBadge from '@/shared/components/business/StatusBadge.vue'
 
-defineProps<{
+const props = defineProps<{
   jobs: ManualJob[]
   loading: boolean
   checkedRowKeys: DataTableRowKey[]
+  cancellingJobIds: Set<number>
+  canCancel: (job: ManualJob) => boolean
 }>()
 
 const emit = defineEmits<{
   'update:checkedRowKeys': [keys: DataTableRowKey[]]
   record: [job: ManualJob]
+  cancel: [job: ManualJob]
 }>()
 
 // 格式化时间
@@ -42,8 +45,8 @@ const formatDuration = (job: ManualJob) => {
   return `${seconds.toFixed(2)}s`
 }
 
-const columns: DataTableColumns<ManualJob> = [
-  { type: 'selection' },
+const columns = computed<DataTableColumns<ManualJob>>(() => [
+  { type: 'selection', disabled: (row) => props.canCancel(row) },
   { title: '#', key: 'id', width: 60 },
   {
     title: '扫描目录',
@@ -94,15 +97,15 @@ const columns: DataTableColumns<ManualJob> = [
     key: 'status',
     width: 80,
     render: (row) => {
-      const badge = JOB_STATUS_BADGE[row.status] ?? { status: 'default' as const, text: row.status }
+      const badge = getJobStatusBadge(row)
       return h(StatusBadge, { status: badge.status, text: badge.text, size: 'small' })
     },
   },
   {
     title: '操作',
     key: 'actions',
-    width: 100,
-    render: (row) =>
+    width: 180,
+    render: (row) => h('div', { class: 'job-actions' }, [
       h(
         NButton,
         {
@@ -113,10 +116,33 @@ const columns: DataTableColumns<ManualJob> = [
         {
           icon: () => h(NIcon, { component: ListOutline }),
           default: () => '记录',
-        }
+        },
       ),
+      props.canCancel(row)
+        ? h(
+            NPopconfirm,
+            { onPositiveClick: () => emit('cancel', row) },
+            {
+              trigger: () => h(
+                NButton,
+                {
+                  size: 'small',
+                  quaternary: true,
+                  type: 'warning',
+                  loading: props.cancellingJobIds.has(row.id),
+                },
+                {
+                  icon: () => h(NIcon, { component: StopCircleOutline }),
+                  default: () => '取消',
+                },
+              ),
+              default: () => `停止任务及剩余 ${activeChildCount(row)} 个刮削任务？`,
+            },
+          )
+        : null,
+    ]),
   },
-]
+])
 </script>
 
 <template>
@@ -143,5 +169,11 @@ const columns: DataTableColumns<ManualJob> = [
 
 .job-table :deep(.n-data-table-tr:hover) {
   background: var(--bg-hover);
+}
+
+.job-table :deep(.job-actions) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 </style>

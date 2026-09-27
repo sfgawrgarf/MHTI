@@ -14,6 +14,7 @@ import LanguageSettings from '@/modules/settings/components/LanguageSettings.vue
 import TemplateSettings from '@/modules/settings/components/TemplateSettings.vue'
 import ProxySettings from '@/modules/settings/components/ProxySettings.vue'
 import NfoSettings from '@/modules/settings/components/NfoSettings.vue'
+import AiSettings from '@/modules/settings/components/AiSettings.vue'
 import SystemSettings from '@/modules/settings/components/SystemSettings.vue'
 import LogSettings from '@/modules/settings/components/LogSettings.vue'
 import EmbySettings from '@/modules/settings/components/EmbySettings.vue'
@@ -49,6 +50,9 @@ defineProps<{
   </section>
   <section v-show="active === 'nfo'" class="pane" aria-label="NFO 元数据">
     <NfoSettings v-if="mounted.has('nfo')" />
+  </section>
+  <section v-show="active === 'ai'" class="pane" aria-label="AI 识别">
+    <AiSettings v-if="mounted.has('ai')" />
   </section>
   <section v-show="active === 'cloud115'" class="pane" aria-label="115 网盘">
     <Cloud115Settings v-if="mounted.has('cloud115')" />

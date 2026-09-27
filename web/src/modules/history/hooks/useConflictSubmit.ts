@@ -51,12 +51,12 @@ export function useConflictSubmit(options: {
 
       loading.value = true
       try {
-        await historyApi.retryRecord(record.id, {
+        const response = await historyApi.retryRecord(record.id, {
           tmdb_id: options.selectedTmdbId.value,
           season: options.selectedSeason.value,
           episode: options.selectedEpisode.value,
         })
-        message.success('重试成功')
+        message.success(response.message || '重试成功')
         options.onSuccess()
       } catch (error: unknown) {
         const err = error as { response?: { data?: { detail?: string } } }
@@ -117,14 +117,14 @@ export function useConflictSubmit(options: {
         fileActionValue = options.embyAction.value === 'skip' ? 'skip' : 'overwrite'
       }
 
-      await historyApi.resolveConflict(record.id, {
+      const response = await historyApi.resolveConflict(record.id, {
         conflict_type: conflictType,
         tmdb_id: options.selectedTmdbId.value,
         season,
         episode,
         file_action: fileActionValue,
       })
-      message.success('处理成功')
+      message.success(response.message || '处理成功')
       options.onSuccess()
     } catch (error: unknown) {
       const err = error as { response?: { data?: { detail?: string } } }

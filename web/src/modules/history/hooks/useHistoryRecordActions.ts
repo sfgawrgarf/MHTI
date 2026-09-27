@@ -9,6 +9,7 @@
  */
 import { ref } from 'vue'
 import { historyApi } from '@/modules/history/api'
+import { scrapeJobApi } from '@/modules/scrape/api'
 import type { HistoryFileDeleteResponse, HistoryRecordDetail } from '@/modules/history/types'
 
 export function useHistoryRecordActions(
@@ -16,6 +17,7 @@ export function useHistoryRecordActions(
   reload: () => Promise<void>,
 ) {
   const busy = ref(false)
+  const cancelling = ref(false)
   const actionError = ref('')
 
   const describeError = (error: unknown) => {
@@ -59,6 +61,23 @@ export function useHistoryRecordActions(
     await historyApi.reorganizeRecord(record.id)
   })
 
+  /** 取消当前记录关联的刮削任务；后端会安全等待文件 I/O 收尾。 */
+  const cancelScrape = async () => {
+    const record = getRecord()
+    if (!record?.scrape_job_id || cancelling.value) return
+    cancelling.value = true
+    actionError.value = ''
+    try {
+      await scrapeJobApi.cancel(record.scrape_job_id)
+      await reload()
+    } catch (error) {
+      actionError.value = describeError(error)
+      console.error(error)
+    } finally {
+      cancelling.value = false
+    }
+  }
+
   /** 删除文件结果：失败项要逐条说明原因，成功则静默刷新 */
   const reportFileDeletion = async (response: HistoryFileDeleteResponse) => {
     if (response.failed > 0) {
@@ -71,5 +90,5 @@ export function useHistoryRecordActions(
     await reload()
   }
 
-  return { busy, actionError, retryScrape, reorganize, reportFileDeletion }
+  return { busy, cancelling, actionError, retryScrape, reorganize, cancelScrape, reportFileDeletion }
 }

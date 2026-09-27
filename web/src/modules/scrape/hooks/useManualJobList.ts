@@ -3,6 +3,7 @@ import { useRouter } from 'vue-router'
 import { useMessage, type DataTableRowKey } from 'naive-ui'
 import { manualJobApi } from '@/modules/scrape/api'
 import type { ManualJob, ManualJobStatus } from '@/modules/scrape/types'
+import { activeChildCount } from '@/modules/scrape/constants'
 
 /**
  * 手动任务列表（ScanPage）
@@ -22,6 +23,7 @@ export function useManualJobList() {
   const statusFilter = ref<ManualJobStatus | null>(null)
   const checkedRowKeys = ref<DataTableRowKey[]>([])
   const showCreateModal = ref(false)
+  const cancellingJobIds = ref<Set<number>>(new Set())
 
   let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -79,6 +81,30 @@ export function useManualJobList() {
     }
   }
 
+  const canCancel = (job: ManualJob) =>
+    job.status === 'pending' || job.status === 'running' || activeChildCount(job) > 0
+
+  const handleCancel = async (job: ManualJob) => {
+    if (!canCancel(job) || cancellingJobIds.value.has(job.id)) return
+    cancellingJobIds.value = new Set(cancellingJobIds.value).add(job.id)
+    try {
+      const result = await manualJobApi.cancel(job.id)
+      const childText = result.cancelled_scrape_jobs
+        ? `，同时取消 ${result.cancelled_scrape_jobs} 个刮削任务`
+        : ''
+      message.success(`任务已安全取消${childText}`)
+      await loadJobs()
+    } catch (error) {
+      const err = error as { response?: { data?: { detail?: string } } }
+      message.error(err.response?.data?.detail || '取消失败或任务已经结束')
+      console.error(error)
+    } finally {
+      const next = new Set(cancellingJobIds.value)
+      next.delete(job.id)
+      cancellingJobIds.value = next
+    }
+  }
+
   // 创建任务成功
   const handleCreateSuccess = () => {
     showCreateModal.value = false
@@ -97,7 +123,7 @@ export function useManualJobList() {
   }
 
   // 是否有运行中的任务
-  const hasRunningJobs = computed(() => jobs.value.some((j) => j.status === 'running' || j.status === 'pending'))
+  const hasRunningJobs = computed(() => jobs.value.some(canCancel))
 
   onMounted(() => {
     loadJobs()
@@ -125,11 +151,14 @@ export function useManualJobList() {
     statusFilter,
     checkedRowKeys,
     showCreateModal,
+    cancellingJobIds,
     loadJobs,
     handleSearch,
     handleStatusChange,
     handlePageChange,
     handleBatchDelete,
+    canCancel,
+    handleCancel,
     handleCreateSuccess,
     handleCheckedRowKeysChange,
     goToHistory,

@@ -26,3 +26,26 @@ export interface ScanResponse {
   files: ScannedFile[]
   scraped_count: number  // 已刮削文件数量（被排除的）
 }
+
+export interface ScrapedFile {
+  id: string
+  source_path: string
+  target_path: string | null
+  file_size: number
+  tmdb_id: number | null
+  season: number | null
+  episode: number | null
+  title: string | null
+  scraped_at: string
+  history_record_id: string | null
+}
+
+export interface ScrapedFileListResponse {
+  records: ScrapedFile[]
+  total: number
+}
+
+export interface ScrapedFileCheckResponse {
+  is_scraped: boolean
+  record: ScrapedFile | null
+}

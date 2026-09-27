@@ -82,10 +82,10 @@ function notifyHandlers(msg: WSMessage): void {
 }
 
 // 进度节流（写入 state.jobProgress）与 handler 通知节流（实现见 wsThrottle）
-const { throttledProgressUpdate } = createProgressThrottle((jobId, progress) => {
+const { throttledProgressUpdate, discardProgress } = createProgressThrottle((jobId, progress) => {
   state.jobProgress.set(jobId, progress)
 })
-const { scheduleHandlerNotification } = createHandlerThrottle(notifyHandlers)
+const { scheduleHandlerNotification, discardHandlerNotifications } = createHandlerThrottle(notifyHandlers)
 
 /**
  * 连接 WebSocket
@@ -185,8 +185,18 @@ function handleMessage(msg: WSMessage): void {
 
     case 'job_failed':
       if (job_id) {
+        discardProgress(job_id)
         state.jobProgress.delete(job_id)
         state.pendingActions.delete(job_id)
+      }
+      break
+
+    case 'job_cancelled':
+      if (job_id) {
+        discardProgress(job_id)
+        state.jobProgress.delete(job_id)
+        state.pendingActions.delete(job_id)
+        discardHandlerNotifications(job_id)
       }
       break
 
@@ -240,6 +250,10 @@ function handleMessage(msg: WSMessage): void {
     // 对 handlers 也进行节流，避免频繁调用
     scheduleHandlerNotification(msg)
   } else {
+    if (job_id && (type === 'job_completed' || type === 'job_failed' || type === 'job_cancelled')) {
+      discardProgress(job_id)
+      discardHandlerNotifications(job_id)
+    }
     // 其他消息立即通知
     notifyHandlers(msg)
   }

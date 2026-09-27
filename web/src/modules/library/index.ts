@@ -3,4 +3,4 @@
  */
 
 export { libraryRoutes } from './routes'
-export { filesApi } from './api'
+export { filesApi, scrapedFilesApi } from './api'

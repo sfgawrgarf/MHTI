@@ -63,3 +63,66 @@ export interface EmbyConflictResult {
   existing_series: EmbySeriesMatch | null
   existing_episode: EmbyEpisodeMatch | null
 }
+
+export type VersionPolicy = 'coexist' | 'prefer_best' | 'skip' | 'archive'
+export type AiUsageMode = 'assist_use' | 'force_use'
+
+export interface AiConfig {
+  enabled: boolean
+  usage_mode: AiUsageMode
+  base_url: string
+  model: string
+  timeout_seconds: number
+  auto_apply_threshold: number
+  version_policy: VersionPolicy
+  has_api_key: boolean
+}
+
+export interface AiConfigUpdate extends Omit<AiConfig, 'has_api_key'> {
+  api_key?: string
+}
+
+export interface AiRecognitionCandidate {
+  id: string | number
+  title: string
+  original_title?: string | null
+  year?: number | null
+  overview?: string | null
+  source?: string
+}
+
+export interface AiRecognitionResult {
+  title: string | null
+  search_titles: string[]
+  season: number | null
+  episode: number | null
+  selected_candidate_id: string | number | null
+  confidence: number
+  reason: string
+  warnings: string[]
+  needs_confirmation: boolean
+  evidence: Record<string, unknown>
+}
+
+export interface VersionPreviewRequest {
+  file_path: string
+  tmdb_id: number
+  season: number
+  episode: number
+  title?: string | null
+  policy?: VersionPolicy | null
+}
+
+export interface VersionPreview {
+  identity_key: string
+  source_fingerprint: string
+  quality_score: number
+  quality_labels: string[]
+  action: string
+  reason: string
+  existing_versions: Array<Record<string, unknown>>
+}
+
+export interface VersionRecordRequest extends VersionPreviewRequest {
+  target_path?: string | null
+}

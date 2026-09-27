@@ -1,5 +1,16 @@
 import api from '@/shared/api/client'
-import type { EmbyConfig, EmbyConfigRequest, EmbyTestResponse } from '@/modules/settings/types'
+import type {
+  AiConfig,
+  AiConfigUpdate,
+  AiRecognitionCandidate,
+  AiRecognitionResult,
+  EmbyConfig,
+  EmbyConfigRequest,
+  EmbyTestResponse,
+  VersionPreview,
+  VersionPreviewRequest,
+  VersionRecordRequest,
+} from '@/modules/settings/types'
 
 /**
  * Emby 相关 API
@@ -27,5 +38,40 @@ export const embyApi = {
   async testConnection(config?: EmbyConfigRequest): Promise<EmbyTestResponse> {
     const response = await api.post<EmbyTestResponse>('/emby/test', config || null)
     return response.data
+  },
+}
+
+/** AI 识别与媒体版本 API。 */
+export const aiApi = {
+  async getConfig(): Promise<AiConfig> {
+    return (await api.get<AiConfig>('/ai/config')).data
+  },
+
+  async saveConfig(config: AiConfigUpdate): Promise<AiConfig> {
+    return (await api.put<AiConfig>('/ai/config', config)).data
+  },
+
+  async clearConfig(): Promise<{ success: boolean }> {
+    return (await api.delete<{ success: boolean }>('/ai/config')).data
+  },
+
+  async recognize(
+    filePath: string,
+    candidates: AiRecognitionCandidate[] = [],
+  ): Promise<AiRecognitionResult> {
+    return (
+      await api.post<AiRecognitionResult>('/ai/recognize', {
+        file_path: filePath,
+        candidates,
+      })
+    ).data
+  },
+
+  async previewVersion(request: VersionPreviewRequest): Promise<VersionPreview> {
+    return (await api.post<VersionPreview>('/ai/versions/preview', request)).data
+  },
+
+  async recordVersion(request: VersionRecordRequest): Promise<VersionPreview> {
+    return (await api.post<VersionPreview>('/ai/versions/record', request)).data
   },
 }
