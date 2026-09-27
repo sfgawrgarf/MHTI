@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from server.common.path_security import PathSecurityError, validate_media_path
 from server.infrastructure.db import DATABASE_PATH
 from server.infrastructure.repositories.manual_job_repository import ManualJobRepository
 from server.models.manual_job import (
@@ -17,7 +18,11 @@ from server.models.manual_job import (
     ManualJobStatus,
 )
 from server.models.organize import OrganizeMode
-from server.models.storage import StorageLocator, StorageProvider
+from server.models.storage import (
+    StorageLocator,
+    StorageProvider,
+    validate_locator_namespace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +89,39 @@ class ManualJobService:
     async def create_job(self, job: ManualJobCreate) -> ManualJob:
         """Create a new manual job and add to queue."""
         await self._ensure_db()
+
+        locators = (job.scan_locator, job.target_locator, job.metadata_locator)
+        for locator in locators:
+            if locator is None:
+                continue
+            try:
+                validate_locator_namespace(locator)
+            except ValueError as exc:
+                raise PathSecurityError(str(exc)) from exc
+        job = job.model_copy(
+            update={
+                "scan_path": (
+                    job.scan_path
+                    if job.scan_locator and job.scan_locator.provider == StorageProvider.P115
+                    else str(validate_media_path(job.scan_path))
+                ),
+                "target_folder": (
+                    job.target_folder
+                    if job.target_locator and job.target_locator.provider == StorageProvider.P115
+                    else str(validate_media_path(job.target_folder))
+                ),
+                "metadata_dir": (
+                    job.metadata_dir
+                    if job.metadata_locator
+                    and job.metadata_locator.provider == StorageProvider.P115
+                    else (
+                        str(validate_media_path(job.metadata_dir))
+                        if job.metadata_dir
+                        else ""
+                    )
+                ),
+            }
+        )
         now = datetime.now()
 
         # 序列化高级设置
@@ -283,12 +321,14 @@ async def _execute_job(service: ManualJobService, job_id: int) -> None:
     try:
         # 扫描文件
         file_service = FileService()
-        scan_path = Path(job.scan_path)
-
         is_p115_source = (
             job.scan_locator is not None
             and job.scan_locator.provider == StorageProvider.P115
         )
+        if not is_p115_source:
+            scan_path = validate_media_path(job.scan_path)
+        else:
+            scan_path = Path(job.scan_path)
 
         if is_p115_source:
             scan_result = await file_service.scan_folder_async(

@@ -3,6 +3,8 @@
 import hashlib
 from pathlib import Path
 
+from server.common.path_security import PathSecurityError, validate_media_path
+
 # 每个采样块的大小
 SAMPLE_SIZE = 4096  # 4KB
 
@@ -20,8 +22,13 @@ def calculate_fingerprint(file_path: str | Path) -> str | None:
     Returns:
         文件指纹字符串，格式为 "size_hash"，如果文件不存在返回 None
     """
-    path = Path(file_path)
-    if not path.exists() or not path.is_file():
+    try:
+        path = validate_media_path(
+            str(file_path),
+            must_exist=True,
+            require_file=True,
+        )
+    except PathSecurityError:
         return None
 
     try:

@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 
 import httpx
 
+from server.common.path_security import PathSecurityError, validate_media_path
 from server.models.emby import ConflictCheckResult, ConflictType
 from server.models.history import ScrapeLogLevel, ScrapeLogEntry, ScrapeLogStep
 from server.models.manual_job import ManualJobAdvancedSettings
@@ -29,7 +30,11 @@ from server.models.scraper import (
     ScrapeResult,
     ScrapeStatus,
 )
-from server.models.storage import StorageLocator, StorageProvider
+from server.models.storage import (
+    StorageLocator,
+    StorageProvider,
+    validate_locator_namespace,
+)
 from server.models.tmdb import TMDBSearchResult, TMDBSeason, TMDBSeries
 from server.domain.system.config_service import ConfigService
 from server.domain.integration.emby_service import EmbyService
@@ -192,6 +197,21 @@ class ScraperService:
     def _is_provider_source(self, locator: StorageLocator | None) -> bool:
         """判断是否为云端 provider 文件。"""
         return locator is not None and locator.provider != StorageProvider.LOCAL
+
+    @staticmethod
+    def _validate_storage_locators(request) -> None:
+        """Reject provider/path namespace mismatches before any work starts."""
+        for locator in (
+            request.file_locator,
+            request.output_locator,
+            request.metadata_locator,
+        ):
+            if locator is None:
+                continue
+            try:
+                validate_locator_namespace(locator)
+            except ValueError as exc:
+                raise PathSecurityError(str(exc)) from exc
 
     def _get_storage_provider(self, provider: StorageProvider):
         """按 provider 返回对应存储适配器。"""
@@ -510,13 +530,17 @@ class ScraperService:
             # Write episode NFO file (if enabled)
             nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
             if nfo_config["nfo_enabled"]:
-                nfo_path = metadata_season_folder / f"{dest_file.stem}.nfo"
+                nfo_path = validate_media_path(
+                    str(metadata_season_folder / f"{dest_file.stem}.nfo")
+                )
                 nfo_path.write_text(nfo_content, encoding="utf-8")
                 result.nfo_path = str(nfo_path)
                 move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
 
                 # 生成 tvshow.nfo（剧集信息）到剧集文件夹
-                tvshow_nfo_path = metadata_series_folder / "tvshow.nfo"
+                tvshow_nfo_path = validate_media_path(
+                    str(metadata_series_folder / "tvshow.nfo")
+                )
                 if not tvshow_nfo_path.exists():
                     metadata_series_folder.mkdir(parents=True, exist_ok=True)
                     tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
@@ -525,7 +549,9 @@ class ScraperService:
                     move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
 
                 # 生成 season.nfo 到季度文件夹
-                season_nfo_path = metadata_season_folder / "season.nfo"
+                season_nfo_path = validate_media_path(
+                    str(metadata_season_folder / "season.nfo")
+                )
                 if not season_nfo_path.exists():
                     season_nfo_data = self._get_season_nfo_data(series, season_num)
                     season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
@@ -604,7 +630,7 @@ class ScraperService:
         Returns:
             ScrapePreview with parsed info and search results.
         """
-        path = Path(file_path)
+        path = validate_media_path(file_path, must_exist=True, require_file=True)
 
         # Parse filename
         parsed = self.parser_service.parse(path.name, file_path)
@@ -651,6 +677,7 @@ class ScraperService:
         Returns:
             ScrapeResult with operation status and details.
         """
+        self._validate_storage_locators(request)
         file_path = request.file_path
         path = Path(file_path)
         scrape_logs: list[ScrapeLogStep] = []
@@ -665,13 +692,20 @@ class ScraperService:
             if on_match_resolved and result.selected_id:
                 await on_match_resolved(result.selected_id, season, episode)
 
-        # Check file exists
-        if not self._is_provider_source(request.file_locator) and not path.exists():
-            return ScrapeResult(
-                file_path=file_path,
-                status=ScrapeStatus.MOVE_FAILED,
-                message=f"文件不存在: {file_path}",
-            )
+        # Validate local sources before any metadata lookup or file operation.
+        if not self._is_provider_source(request.file_locator):
+            try:
+                path = validate_media_path(
+                    file_path,
+                    must_exist=True,
+                    require_file=True,
+                )
+            except PathSecurityError as exc:
+                return ScrapeResult(
+                    file_path=file_path,
+                    status=ScrapeStatus.MOVE_FAILED,
+                    message=str(exc),
+                )
 
         # Step 1: Parse filename
         parse_step = ScrapeLogStep(name="解析文件名", logs=[])
@@ -1003,6 +1037,7 @@ class ScraperService:
         Returns:
             ScrapeResult with operation status.
         """
+        self._validate_storage_locators(request)
         file_path = request.file_path
         path = Path(file_path)
         scrape_logs: list[ScrapeLogStep] = []
@@ -1012,12 +1047,19 @@ class ScraperService:
             if on_log_update:
                 await on_log_update(scrape_logs)
 
-        if not self._is_provider_source(request.file_locator) and not path.exists():
-            return ScrapeResult(
-                file_path=file_path,
-                status=ScrapeStatus.MOVE_FAILED,
-                message=f"文件不存在: {file_path}",
-            )
+        if not self._is_provider_source(request.file_locator):
+            try:
+                path = validate_media_path(
+                    file_path,
+                    must_exist=True,
+                    require_file=True,
+                )
+            except PathSecurityError as exc:
+                return ScrapeResult(
+                    file_path=file_path,
+                    status=ScrapeStatus.MOVE_FAILED,
+                    message=str(exc),
+                )
 
         result = ScrapeResult(
             file_path=file_path,
@@ -1163,6 +1205,7 @@ class ScraperService:
         Returns:
             ScrapeResult，与正常刮削同一套状态码。
         """
+        self._validate_storage_locators(request)
         file_path = request.file_path
         scrape_logs: list[ScrapeLogStep] = []
 
@@ -1181,18 +1224,25 @@ class ScraperService:
         await notify_log_update()
 
         path = Path(file_path)
-        if not self._is_provider_source(request.file_locator) and not path.exists():
-            meta_step.logs.append(
-                ScrapeLogEntry(message=f"源文件不存在: {file_path}", level=ScrapeLogLevel.ERROR)
-            )
-            meta_step.completed = False
-            await notify_log_update()
-            return ScrapeResult(
-                file_path=file_path,
-                status=ScrapeStatus.MOVE_FAILED,
-                message=f"源文件不存在: {file_path}",
-                scrape_logs=scrape_logs,
-            )
+        if not self._is_provider_source(request.file_locator):
+            try:
+                path = validate_media_path(
+                    file_path,
+                    must_exist=True,
+                    require_file=True,
+                )
+            except PathSecurityError as exc:
+                meta_step.logs.append(
+                    ScrapeLogEntry(message=str(exc), level=ScrapeLogLevel.ERROR)
+                )
+                meta_step.completed = False
+                await notify_log_update()
+                return ScrapeResult(
+                    file_path=file_path,
+                    status=ScrapeStatus.MOVE_FAILED,
+                    message=str(exc),
+                    scrape_logs=scrape_logs,
+                )
 
         result = ScrapeResult(
             file_path=file_path,

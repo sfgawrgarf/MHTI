@@ -11,6 +11,12 @@ async def create_all_tables(db: aiosqlite.Connection) -> None:
     await _create_watcher_tables(db)
     await _create_log_tables(db)
 
+    # Keep direct schema consumers (including isolated/custom databases) on
+    # the same additive compatibility path as the application startup.
+    from server.infrastructure.db.compatibility import ensure_compatibility_schema
+
+    await ensure_compatibility_schema(db)
+
 
 async def _create_core_tables(db: aiosqlite.Connection) -> None:
     """Create core configuration tables."""

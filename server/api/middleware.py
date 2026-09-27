@@ -10,6 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from server.common.http import get_client_ip
 from server.common.exceptions import AppException, ErrorCode
+from server.common.path_security import PathSecurityError
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,27 @@ def setup_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=exc.to_dict(),
+        )
+
+    @app.exception_handler(PathSecurityError)
+    async def path_security_exception_handler(
+        request: Request, exc: PathSecurityError
+    ) -> JSONResponse:
+        """Return a client error for rejected filesystem or URL input."""
+        logger.warning(
+            "Path security rejection: %s",
+            exc,
+            extra={"path": request.url.path, "method": request.method},
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": ErrorCode.INVALID_PATH.value,
+                    "message": str(exc),
+                    "details": {},
+                }
+            },
         )
 
     @app.exception_handler(Exception)

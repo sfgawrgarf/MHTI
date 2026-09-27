@@ -25,6 +25,7 @@ from server.application.history_service import HistoryService, split_record_fold
 from server.application.manual_job_service import ManualJobService
 from server.application.scraped_file_service import ScrapedFileService
 from server.application.scrape_job_service import ScrapeJobService
+from server.common.path_security import PathSecurityError, validate_media_path
 from server.domain.system.config_service import ConfigService
 from server.models.history import (
     HistoryFileDeleteResponse,
@@ -107,11 +108,29 @@ class HistoryFileService:
                     self._append(entries, seen, target_path, HistoryFileRole.ORGANIZED, roots)
 
         # 元数据（nfo / 图片）：产物视频所在系列与季的目录名在元数据目录下是同构的
-        target_path = next(
-            (entry.path for entry in entries if entry.role == HistoryFileRole.ORGANIZED), None
+        target_entry = next(
+            (entry for entry in entries if entry.role == HistoryFileRole.ORGANIZED), None
         )
+        target_path = target_entry.path if target_entry and target_entry.deletable else None
         if target_path and metadata_root:
-            for path in self._metadata_files(Path(target_path), Path(metadata_root)):
+            try:
+                safe_metadata_root = validate_media_path(metadata_root)
+                safe_target_path = validate_media_path(
+                    target_path,
+                    must_exist=True,
+                    require_file=True,
+                )
+            except PathSecurityError:
+                safe_metadata_root = None
+                safe_target_path = None
+            if safe_metadata_root and safe_target_path:
+                metadata_paths = self._metadata_files(
+                    safe_target_path,
+                    safe_metadata_root,
+                )
+            else:
+                metadata_paths = []
+            for path in metadata_paths:
                 self._append(entries, seen, str(path), HistoryFileRole.METADATA, roots)
 
         return HistoryFileListResponse(
@@ -259,9 +278,17 @@ class HistoryFileService:
             )
 
         try:
-            size = path.stat().st_size
-        except OSError:
-            size = 0
+            safe_path = validate_media_path(
+                path_str,
+                must_exist=True,
+                require_file=True,
+            )
+            size = safe_path.stat().st_size
+        except (OSError, PathSecurityError):
+            return HistoryFileEntry(
+                path=path_str, role=role, exists=True, deletable=False,
+                reason="不在允许的媒体目录内",
+            )
 
         if not roots:
             return HistoryFileEntry(
@@ -339,8 +366,13 @@ class HistoryFileService:
                 )
                 continue
             try:
-                Path(entry.path).unlink()
-            except OSError as exc:  # 权限、占用、路径失效等
+                safe_path = validate_media_path(
+                    entry.path,
+                    must_exist=True,
+                    require_file=True,
+                )
+                safe_path.unlink()
+            except (OSError, PathSecurityError) as exc:  # 权限、占用、路径失效等
                 logger.warning("删除文件失败 %s: %s", entry.path, exc)
                 results.append(
                     HistoryFileDeleteResult(

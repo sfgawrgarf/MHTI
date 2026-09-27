@@ -13,6 +13,7 @@ from typing import Any, Callable
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedEvent
 
+from server.common.path_security import PathSecurityError, validate_media_path
 from server.infrastructure.db import DATABASE_PATH
 from server.infrastructure.repositories.watcher_repository import WatcherRepository
 from server.models.watcher import (
@@ -25,6 +26,7 @@ from server.models.watcher import (
     WatcherStatus,
     WatcherStatusResponse,
 )
+from server.models.storage import is_p115_virtual_path
 
 logger = logging.getLogger(__name__)
 
@@ -456,9 +458,45 @@ class WatcherService:
         """确保监控目录表可用并完成旧库列迁移。"""
         await self._repo.ensure_schema()
 
+    @staticmethod
+    def _validate_folder_path(path: str, provider: str) -> str:
+        """Normalize local watcher paths while preserving provider namespaces."""
+        if provider not in {"local", "115"}:
+            raise PathSecurityError(f"不支持的存储提供方: {provider}")
+        if provider == "115":
+            if not is_p115_virtual_path(path):
+                raise PathSecurityError("115 监控目录必须使用 /115网盘 路径")
+            return path.rstrip("/") or "/115网盘"
+
+        normalized = validate_media_path(path)
+        if normalized.exists() and not normalized.is_dir():
+            raise PathSecurityError(f"监控路径不是目录: {normalized}")
+        return str(normalized)
+
+    @staticmethod
+    def _validate_output_path(path: str, provider: str) -> str:
+        """Validate a watcher output path in its declared local/115 namespace."""
+        output_provider = (
+            "115"
+            if provider == "115" and is_p115_virtual_path(path)
+            else "local"
+        )
+        return WatcherService._validate_folder_path(path, output_provider)
+
     async def create_folder(self, folder: WatchedFolderCreate) -> WatchedFolder:
         """Create a new watched folder."""
         await self._ensure_db()
+
+        folder = folder.model_copy(
+            update={
+                "path": self._validate_folder_path(folder.path, folder.provider),
+                "output_dir": (
+                    self._validate_output_path(folder.output_dir, folder.provider)
+                    if folder.output_dir
+                    else None
+                ),
+            }
+        )
 
         folder_id = str(uuid.uuid4())[:8]
         now = datetime.now()
@@ -514,7 +552,28 @@ class WatcherService:
         if folder is None:
             return None
 
-        await self._repo.update_folder(folder_id, update)
+        provider = update.provider if update.provider is not None else folder.provider
+        path = update.path if update.path is not None else folder.path
+        output_dir = update.output_dir
+        effective_output_dir = (
+            output_dir if output_dir is not None else folder.output_dir
+        )
+        if effective_output_dir:
+            self._validate_output_path(effective_output_dir, provider)
+        normalized_update = update.model_copy(
+            update={
+                "path": self._validate_folder_path(path, provider)
+                if update.path is not None or update.provider is not None
+                else None,
+                "output_dir": (
+                    self._validate_output_path(output_dir, provider)
+                    if output_dir
+                    else output_dir
+                ),
+            }
+        )
+
+        await self._repo.update_folder(folder_id, normalized_update)
 
         updated_folder = await self.get_folder(folder_id)
 
@@ -549,6 +608,13 @@ class WatcherService:
     async def _start_folder_watch(self, folder: WatchedFolder) -> None:
         """启动单个文件夹的监控"""
         if folder.id in self._strategies:
+            return
+        try:
+            self._validate_folder_path(folder.path, folder.provider)
+            if folder.output_dir:
+                self._validate_output_path(folder.output_dir, folder.provider)
+        except PathSecurityError as exc:
+            logger.error("拒绝启动越界监控目录 %s: %s", folder.path, exc)
             return
         # 根据 provider + mode 选择策略
         if folder.provider == "115":
@@ -613,12 +679,23 @@ class WatcherService:
         logger.info(f"已有 {len(pending_paths)} 个待处理任务，初始扫描将跳过这些文件")
 
         for folder in folders:
+            try:
+                safe_folder_path = self._validate_folder_path(
+                    folder.path,
+                    folder.provider,
+                )
+                if folder.output_dir:
+                    self._validate_output_path(folder.output_dir, folder.provider)
+            except PathSecurityError as exc:
+                logger.error("跳过越界或无效的初始监控目录 %s: %s", folder.path, exc)
+                continue
+
             # 115 网盘目录：用 P115Service 扫描（不走本地 os.walk）
             if folder.provider == "115":
                 await self._initial_scan_p115(folder, pending_paths)
                 continue
 
-            folder_path = Path(folder.path)
+            folder_path = Path(safe_folder_path)
             if not folder_path.exists():
                 continue
 

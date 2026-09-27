@@ -1,7 +1,6 @@
 """Scrape preview service."""
 
-from pathlib import Path
-
+from server.common.path_security import validate_media_path
 from server.models.scraper import ScrapePreview
 from server.domain.parsing.parser_service import ParserService
 from server.domain.metadata.tmdb_service import TMDBService
@@ -28,7 +27,11 @@ class ScrapePreviewService:
         Returns:
             ScrapePreview with parsed info and search results.
         """
-        path = Path(file_path)
+        path = validate_media_path(
+            file_path,
+            must_exist=True,
+            require_file=True,
+        )
 
         # Parse filename
         parsed = await self.parser_service.parse(path.name)

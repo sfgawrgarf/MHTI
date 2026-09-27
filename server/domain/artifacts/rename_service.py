@@ -3,8 +3,10 @@
 import logging
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
+from server.common.path_security import PathSecurityError, validate_media_path
 from server.models.organize import OrganizeMode
 from server.models.rename import (
     BatchRenameRequest,
@@ -14,8 +16,25 @@ from server.models.rename import (
     RenameResult,
 )
 from server.domain.system.template_service import TemplateService
+from server.models.storage import is_p115_virtual_path
 
 logger = logging.getLogger(__name__)
+
+
+def _is_internal_staging_path(raw_path: str) -> bool:
+    """Allow only application-created 115 download staging files as sources."""
+    try:
+        resolved = Path(os.path.realpath(raw_path, strict=True))
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except (FileNotFoundError, OSError, RuntimeError):
+        return False
+    if not resolved.is_file() or not resolved.is_relative_to(temp_root):
+        return False
+    return any(
+        parent.name.startswith("mhti-115-download-")
+        for parent in resolved.parents
+        if parent != temp_root
+    )
 
 
 class RenameService:
@@ -25,7 +44,12 @@ class RenameService:
         """Initialize the rename service."""
         self._template_service = template_service or TemplateService()
 
-    def preview_rename(self, request: RenameRequest) -> RenamePreview:
+    def preview_rename(
+        self,
+        request: RenameRequest,
+        *,
+        allow_staged_source: bool = False,
+    ) -> RenamePreview:
         """Preview a rename operation without executing it.
 
         Args:
@@ -34,7 +58,13 @@ class RenameService:
         Returns:
             Preview of the rename operation.
         """
-        source_path = Path(request.source_path)
+        is_virtual = is_p115_virtual_path(request.source_path)
+        if is_virtual:
+            source_path = Path(request.source_path)
+        elif allow_staged_source and _is_internal_staging_path(request.source_path):
+            source_path = Path(os.path.realpath(request.source_path))
+        else:
+            source_path = validate_media_path(request.source_path)
         extension = source_path.suffix
         active_template = self._template_service.get_active_template()
 
@@ -71,10 +101,16 @@ class RenameService:
 
         # Determine which directories need to be created
         will_create_dirs = []
-        check_dir = dest_folder
-        while not check_dir.exists() and check_dir != base_dir.parent:
-            will_create_dirs.insert(0, str(check_dir))
-            check_dir = check_dir.parent
+        if not is_p115_virtual_path(str(dest_folder)):
+            safe_base_dir = validate_media_path(str(base_dir))
+            dest_folder = validate_media_path(str(dest_folder))
+            dest_path = validate_media_path(str(dest_path))
+            check_dir = dest_folder
+            while check_dir.is_relative_to(safe_base_dir):
+                will_create_dirs.insert(0, str(check_dir))
+                if check_dir == safe_base_dir:
+                    break
+                check_dir = check_dir.parent
 
         return RenamePreview(
             source_path=str(source_path),
@@ -88,6 +124,7 @@ class RenameService:
         self,
         request: RenameRequest,
         create_backup: bool = False,
+        allow_staged_source: bool = False,
     ) -> RenameResult:
         """Execute a rename operation.
 
@@ -98,7 +135,30 @@ class RenameService:
         Returns:
             Result of the rename operation.
         """
-        source_path = Path(request.source_path)
+        if is_p115_virtual_path(request.source_path):
+            return RenameResult(
+                source_path=request.source_path,
+                dest_path="",
+                success=False,
+                error="115 虚拟路径必须通过存储提供方执行整理",
+            )
+
+        try:
+            if allow_staged_source and _is_internal_staging_path(request.source_path):
+                source_path = Path(os.path.realpath(request.source_path, strict=True))
+            else:
+                source_path = validate_media_path(
+                    request.source_path,
+                    must_exist=True,
+                    require_file=True,
+                )
+        except PathSecurityError as exc:
+            return RenameResult(
+                source_path=request.source_path,
+                dest_path="",
+                success=False,
+                error=str(exc),
+            )
 
         logger.info(f"execute_rename: 源文件 = {source_path}")
 
@@ -113,9 +173,32 @@ class RenameService:
             )
 
         # Get preview for paths
-        preview = self.preview_rename(request)
+        try:
+            preview = self.preview_rename(
+                request,
+                allow_staged_source=allow_staged_source,
+            )
+        except PathSecurityError as exc:
+            return RenameResult(
+                source_path=str(source_path),
+                dest_path="",
+                success=False,
+                error=str(exc),
+            )
         dest_path = Path(preview.dest_path)
         dest_folder = Path(preview.dest_folder)
+
+        if not is_p115_virtual_path(str(dest_path)):
+            try:
+                dest_path = validate_media_path(str(dest_path))
+                dest_folder = dest_path.parent
+            except PathSecurityError as exc:
+                return RenameResult(
+                    source_path=str(source_path),
+                    dest_path=str(dest_path),
+                    success=False,
+                    error=str(exc),
+                )
 
         logger.info(f"execute_rename: 目标文件夹 = {dest_folder}")
         logger.info(f"execute_rename: 目标路径 = {dest_path}")

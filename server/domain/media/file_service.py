@@ -10,8 +10,17 @@ from server.common.exceptions import (
     InvalidFolderError,
     PermissionDeniedError,
 )
+from server.common.path_security import (
+    PathSecurityError,
+    allowed_media_roots,
+    validate_media_path,
+)
 from server.models.file import DirectoryEntry, ScannedFile
-from server.models.storage import StorageLocator, StorageProvider
+from server.models.storage import (
+    StorageLocator,
+    StorageProvider,
+    validate_locator_namespace,
+)
 
 # Supported video file extensions
 SUPPORTED_VIDEO_EXTENSIONS: set[str] = {
@@ -56,26 +65,12 @@ def _sanitize_path(path_str: str) -> Path:
     Raises:
         InvalidFolderError: If path contains dangerous patterns.
     """
-    if not path_str:
-        return Path("")
-
-    # 检查危险模式
-    dangerous_patterns = ["..", "~", "\x00"]
-    for pattern in dangerous_patterns:
-        if pattern in path_str:
-            raise InvalidFolderError(f"路径包含非法字符: {pattern}")
-
-    # 规范化路径
-    path = Path(path_str).resolve()
-
-    # 检查是否在禁止目录中
-    path_str_normalized = str(path).replace("\\", "/")
-    for blocked in BLOCKED_PATHS:
-        blocked_normalized = blocked.replace("\\", "/")
-        if path_str_normalized.startswith(blocked_normalized):
-            raise PermissionDeniedError(f"禁止访问系统目录: {blocked}")
-
-    return path
+    try:
+        # Do not require existence here: callers retain the distinction between
+        # a missing folder and an invalid/out-of-scope path.
+        return validate_media_path(path_str)
+    except PathSecurityError as exc:
+        raise InvalidFolderError(path_str, reason=str(exc)) from exc
 
 
 class FileService:
@@ -109,6 +104,11 @@ class FileService:
             InvalidFolderError: If the path is not a directory.
             PermissionDeniedError: If access to the folder is denied.
         """
+        if locator is not None:
+            try:
+                validate_locator_namespace(locator)
+            except ValueError as exc:
+                raise InvalidFolderError(locator.path, reason=str(exc)) from exc
         if locator is not None and locator.provider == StorageProvider.P115:
             return self._scan_provider_p115(folder_path, locator)
 
@@ -164,6 +164,11 @@ class FileService:
         locator: StorageLocator | None = None,
     ) -> list[ScannedFile]:
         """Async variant of :meth:`scan_folder` for provider-backed sources."""
+        if locator is not None:
+            try:
+                validate_locator_namespace(locator)
+            except ValueError as exc:
+                raise InvalidFolderError(locator.path, reason=str(exc)) from exc
         if locator is not None and locator.provider == StorageProvider.P115:
             service = self._get_115_service()
             scan_method = getattr(service, "scan_folder", None)
@@ -243,6 +248,17 @@ class FileService:
 
         entries = [self._build_virtual_115_entry()] if include_cloud_mounts else []
         if platform.system() != "Windows":
+            existing_paths = {entry.path for entry in entries}
+            for root in allowed_media_roots():
+                if not root.is_dir() or str(root) in existing_paths:
+                    continue
+                entries.append(
+                    DirectoryEntry(
+                        name=root.name or str(root),
+                        path=str(root),
+                        is_dir=True,
+                    )
+                )
             return entries
 
         import string
@@ -466,18 +482,15 @@ class FileService:
             InvalidFolderError: If the path is not a directory.
             PermissionDeniedError: If access is denied.
         """
-        import platform
         provider_value = self._normalize_provider(provider)
 
         if provider_value == StorageProvider.P115.value:
             return self._browse_provider_115(path, file_id, page, page_size)
 
         if not path:
-            if platform.system() == "Windows":
-                return self._browse_local_root(
-                    page, page_size, include_cloud_mounts=include_cloud_mounts
-                )
-            path = "/"
+            return self._browse_local_root(
+                page, page_size, include_cloud_mounts=include_cloud_mounts
+            )
 
         return self._browse_local_path(
             path, page, page_size, include_cloud_mounts=include_cloud_mounts

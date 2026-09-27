@@ -1,6 +1,9 @@
 """Image download service with retry and concurrency support."""
 
 import asyncio
+import os
+import stat
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -10,6 +13,11 @@ from server.models.image import (
     ImageDownloadRequest,
     ImageDownloadResult,
     ImageSize,
+)
+from server.common.path_security import (
+    PathSecurityError,
+    validate_image_url,
+    validate_media_path,
 )
 from server.domain.system.config_service import ConfigService
 
@@ -21,6 +29,7 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 class ImageService:
@@ -83,7 +92,17 @@ class ImageService:
         Returns:
             ImageDownloadResult with success status.
         """
-        full_path = Path(save_path) / filename
+        requested_path = Path(save_path) / filename
+        try:
+            safe_url = validate_image_url(url)
+            full_path = validate_media_path(str(requested_path))
+        except PathSecurityError as exc:
+            return ImageDownloadResult(
+                url=url,
+                save_path=str(requested_path),
+                success=False,
+                error=str(exc),
+            )
         last_error: str | None = None
 
         config = await self._get_system_config()
@@ -92,9 +111,10 @@ class ImageService:
         proxy_url = await self._get_proxy_url()
 
         for attempt in range(max_retries):
+            temporary_path: Path | None = None
             try:
                 async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
-                    response = await client.get(url, headers=self._headers)
+                    response = await client.get(safe_url, headers=self._headers)
 
                     if response.status_code == 404:
                         return ImageDownloadResult(
@@ -106,12 +126,39 @@ class ImageService:
 
                     response.raise_for_status()
 
+                    content = response.content
+                    if len(content) > MAX_IMAGE_BYTES:
+                        return ImageDownloadResult(
+                            url=url,
+                            save_path=str(full_path),
+                            success=False,
+                            error="Image exceeds 20 MB limit",
+                        )
+
                     # Ensure directory exists
                     full_path.parent.mkdir(parents=True, exist_ok=True)
 
-                    # Write image data
-                    with open(full_path, "wb") as f:
-                        f.write(response.content)
+                    # Write beside the destination and publish atomically. This
+                    # also prevents a failed download from leaving a partial
+                    # image that later code treats as complete.
+                    with tempfile.NamedTemporaryFile(
+                        mode="wb",
+                        dir=full_path.parent,
+                        prefix=".mhti-image-",
+                        suffix=".part",
+                        delete=False,
+                    ) as image_file:
+                        temporary_path = Path(image_file.name)
+                        image_file.write(content)
+
+                    mode = (
+                        stat.S_IMODE(full_path.stat().st_mode)
+                        if full_path.exists()
+                        else 0o644
+                    )
+                    temporary_path.chmod(mode)
+                    os.replace(temporary_path, full_path)
+                    temporary_path = None
 
                     return ImageDownloadResult(
                         url=url,
@@ -133,6 +180,9 @@ class ImageService:
                     success=False,
                     error=f"File system error: {str(e)}",
                 )
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
 
             # Wait before retry (if not last attempt)
             if attempt < max_retries - 1:

@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from server.common.path_security import PathSecurityError, validate_media_path
 from server.infrastructure.db import DATABASE_PATH
 from server.infrastructure.repositories.scrape_job_repository import ScrapeJobRepository
 from server.models.manual_job import ManualJobAdvancedSettings
@@ -17,7 +18,11 @@ from server.models.scrape_job import (
     ScrapeJobStatus,
 )
 from server.models.organize import OrganizeMode
-from server.models.storage import StorageLocator
+from server.models.storage import (
+    StorageLocator,
+    StorageProvider,
+    validate_locator_namespace,
+)
 from server.infrastructure.realtime import get_notifier
 from server.domain.media.fingerprint_service import calculate_fingerprint
 
@@ -161,6 +166,38 @@ class ScrapeJobService:
     async def create_job(self, job: ScrapeJobCreate, skip_duplicate_check: bool = False) -> ScrapeJob | None:
         """创建刮削任务并加入队列，如果已存在待处理任务则返回 None"""
         await self._ensure_db()
+
+        for locator in (job.file_locator, job.output_locator, job.metadata_locator):
+            if locator is None:
+                continue
+            try:
+                validate_locator_namespace(locator)
+            except ValueError as exc:
+                raise PathSecurityError(str(exc)) from exc
+        job = job.model_copy(
+            update={
+                "file_path": (
+                    job.file_path
+                    if job.file_locator and job.file_locator.provider == StorageProvider.P115
+                    else str(validate_media_path(job.file_path))
+                ),
+                "output_dir": (
+                    job.output_dir
+                    if job.output_locator and job.output_locator.provider == StorageProvider.P115
+                    else str(validate_media_path(job.output_dir))
+                ),
+                "metadata_dir": (
+                    job.metadata_dir
+                    if job.metadata_locator
+                    and job.metadata_locator.provider == StorageProvider.P115
+                    else (
+                        str(validate_media_path(job.metadata_dir))
+                        if job.metadata_dir
+                        else None
+                    )
+                ),
+            }
+        )
 
         # 去重检查：如果已有待处理任务，跳过创建
         if not skip_duplicate_check:

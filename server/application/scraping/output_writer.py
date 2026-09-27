@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+from server.common.path_security import validate_media_path
 from server.models.history import ScrapeLogEntry, ScrapeLogLevel, ScrapeLogStep
 from server.models.organize import OrganizeMode
 from server.models.rename import RenameRequest
@@ -149,7 +150,10 @@ class OutputWriter:
                     link_mode=mode,
                     year=year,
                 )
-                rename_result = facade.rename_service.execute_rename(local_request)
+                rename_result = facade.rename_service.execute_rename(
+                    local_request,
+                    allow_staged_source=True,
+                )
                 if not rename_result.success:
                     raise ValueError(rename_result.error or "本地整理失败")
             return StorageLocator(
@@ -192,8 +196,15 @@ class OutputWriter:
         facade = self._facade
 
         # 通过预览得到剧集/季文件夹结构（不实际移动文件）
+        # This preview does not move a video, but RenameService still requires
+        # a namespace-safe absolute source path. Keep the synthetic source in
+        # the selected output namespace so both local and 115 layouts work.
+        preview_source = str(
+            Path(output_dir_for_preview)
+            / f".mhti-preview-{season:02d}e{episode:02d}.mp4"
+        )
         preview_request = self.build_rename_request(
-            source_path=f"{title} S{season:02d}E{episode:02d}",
+            source_path=preview_source,
             title=title,
             season=season,
             episode=episode,
@@ -217,12 +228,16 @@ class OutputWriter:
         nfo_config = await facade._get_effective_nfo_config(None)
         nfo_path_str = ""
         if nfo_config["nfo_enabled"]:
-            nfo_path = metadata_season_folder / f"{dest_path.stem}.nfo"
+            nfo_path = validate_media_path(
+                str(metadata_season_folder / f"{dest_path.stem}.nfo")
+            )
             nfo_path.write_text(nfo_content, encoding="utf-8")
             nfo_path_str = str(nfo_path)
             move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
 
-            tvshow_nfo_path = metadata_series_folder / "tvshow.nfo"
+            tvshow_nfo_path = validate_media_path(
+                str(metadata_series_folder / "tvshow.nfo")
+            )
             if not tvshow_nfo_path.exists():
                 metadata_series_folder.mkdir(parents=True, exist_ok=True)
                 tvshow_nfo_data = facade.nfo_service.tvshow_from_tmdb(series)
@@ -230,7 +245,9 @@ class OutputWriter:
                 tvshow_nfo_path.write_text(tvshow_nfo_content, encoding="utf-8")
                 move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
 
-            season_nfo_path = metadata_season_folder / "season.nfo"
+            season_nfo_path = validate_media_path(
+                str(metadata_season_folder / "season.nfo")
+            )
             if not season_nfo_path.exists():
                 season_nfo_data = facade._get_season_nfo_data(series, season)
                 season_nfo_content = facade.nfo_service.generate_season_nfo(season_nfo_data)
@@ -323,9 +340,13 @@ class OutputWriter:
     ) -> tuple[Path, Path]:
         """确定本地元数据输出目录。"""
         if metadata_dir:
-            metadata_base = Path(metadata_dir)
-            metadata_series_folder = metadata_base / series_folder.name
-            metadata_season_folder = metadata_series_folder / season_folder.name
+            metadata_base = validate_media_path(metadata_dir)
+            metadata_series_folder = validate_media_path(
+                str(metadata_base / series_folder.name)
+            )
+            metadata_season_folder = validate_media_path(
+                str(metadata_series_folder / season_folder.name)
+            )
             metadata_season_folder.mkdir(parents=True, exist_ok=True)
             return metadata_series_folder, metadata_season_folder
 

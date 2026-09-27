@@ -28,10 +28,18 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from server.common.path_security import PathSecurityError, validate_media_path
+from server.models.storage import is_p115_virtual_path
+
 logger = logging.getLogger(__name__)
 
 # 产物让位时的文件名后缀（与产物同目录，避免跨盘复制大文件）
 _STAGE_SUFFIX = ".mhti-rescrape"
+
+
+def _is_remote_path(path: str) -> bool:
+    """Recognize provider namespaces and legacy remote URI paths."""
+    return is_p115_virtual_path(path) or "://" in path
 
 
 @dataclass
@@ -61,15 +69,20 @@ class RescrapeSource:
     async def resolve(self, record, *, remote: bool = False) -> RescrapeInput:
         """挑出本次要跑的输入文件；源文件与产物都不存在时报 400。"""
         candidates = await self._candidates(record)
-        if remote:
-            # 云端（115 等）文件在本地没有对应路径，存在性只能交给存储层判断
-            if candidates:
-                path, from_product = candidates[0]
-                return RescrapeInput(path=path, from_product=from_product)
-
         for path, from_product in candidates:
-            if Path(path).is_file():
-                return RescrapeInput(path=path, from_product=from_product)
+            if _is_remote_path(path):
+                if remote:
+                    return RescrapeInput(path=path, from_product=from_product)
+                continue
+            try:
+                safe_path = validate_media_path(
+                    path,
+                    must_exist=True,
+                    require_file=True,
+                )
+            except PathSecurityError:
+                continue
+            return RescrapeInput(path=str(safe_path), from_product=from_product)
 
         raise HTTPException(status_code=400, detail="源文件与产物都不存在，无法重刮")
 
@@ -104,16 +117,29 @@ class RescrapeSource:
         if not input_.from_product:
             return input_
 
-        original = Path(input_.path)
-        if not original.is_file():
+        if _is_remote_path(input_.path):
+            return input_
+
+        try:
+            original = validate_media_path(
+                input_.path,
+                must_exist=True,
+                require_file=True,
+            )
+        except PathSecurityError:
             return input_
 
         staged = original.with_name(f"{original.stem}{_STAGE_SUFFIX}{original.suffix}")
         try:
             if staged.exists():  # 上次异常退出留下的同名临时文件
-                staged.unlink()
+                safe_staged = validate_media_path(
+                    str(staged),
+                    must_exist=True,
+                    require_file=True,
+                )
+                safe_staged.unlink()
             original.rename(staged)
-        except OSError as exc:
+        except (OSError, PathSecurityError) as exc:
             # 让位失败不阻断重刮：最坏情况是整理步骤报「目标文件已存在」，
             # 用户能在错误信息里看到原因，文件本身没被改动
             logger.warning("重刮输入让位失败 %s: %s", original, exc)
@@ -127,15 +153,27 @@ class RescrapeSource:
         if not input_.staged_from:
             return
 
-        staged = Path(input_.path)
-        original = Path(input_.staged_from)
+        if _is_remote_path(input_.path) or _is_remote_path(input_.staged_from):
+            return
+
+        try:
+            staged = validate_media_path(input_.path)
+            original = validate_media_path(input_.staged_from)
+        except PathSecurityError as exc:
+            logger.warning("重刮让位路径不在允许目录内: %s", exc)
+            return
 
         if not success:
             if staged.exists() and not original.exists():
                 try:
-                    staged.rename(original)
+                    safe_staged = validate_media_path(
+                        str(staged),
+                        must_exist=True,
+                        require_file=True,
+                    )
+                    safe_staged.rename(original)
                     logger.info("重刮失败，产物已放回原位: %s", original)
-                except OSError as exc:
+                except (OSError, PathSecurityError) as exc:
                     logger.warning("重刮失败且产物放回原位失败 %s: %s", original, exc)
             return
 
@@ -145,17 +183,24 @@ class RescrapeSource:
 
         if dest_path and Path(dest_path).is_symlink():
             try:
+                validate_media_path(dest_path, must_exist=True)
                 if Path(dest_path).resolve() == staged.resolve():
                     # 软链接产物指向让位文件，删了就等于把产物删了
                     logger.warning("产物是软链接，保留让位文件 %s", staged)
                     return
-            except OSError:
-                pass
+            except (OSError, PathSecurityError) as exc:
+                logger.warning("产物软链接路径校验失败，保留让位文件: %s", exc)
+                return
 
         try:
-            staged.unlink()
+            safe_staged = validate_media_path(
+                str(staged),
+                must_exist=True,
+                require_file=True,
+            )
+            safe_staged.unlink()
             logger.info("已删除上一轮产物副本: %s", staged)
-        except OSError as exc:
+        except (OSError, PathSecurityError) as exc:
             logger.warning("删除让位文件失败 %s: %s", staged, exc)
 
     # ---- 清理 ----

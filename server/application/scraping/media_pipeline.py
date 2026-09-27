@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from server.common.path_security import validate_media_path
 from server.models.emby import ConflictCheckRequest, ConflictCheckResult, ConflictType
 from server.models.tmdb import TMDBSeason, TMDBSeries
 
@@ -157,8 +158,8 @@ class ScraperMediaPipeline:
         Returns:
             已移动的字幕文件路径列表。
         """
-        source_path = Path(source_video_path)
-        dest_path = Path(dest_video_path)
+        source_path = validate_media_path(source_video_path)
+        dest_path = validate_media_path(dest_video_path)
         source_folder = source_path.parent
         dest_folder = dest_path.parent
         source_stem = source_path.stem
@@ -186,7 +187,9 @@ class ScraperMediaPipeline:
                     # 如果目标文件夹不同，移动到目标文件夹
                     renamed_path = Path(result.dest_path)
                     if renamed_path.parent != dest_folder:
-                        final_path = dest_folder / renamed_path.name
+                        final_path = validate_media_path(
+                            str(dest_folder / renamed_path.name)
+                        )
                         try:
                             shutil.move(str(renamed_path), str(final_path))
                             moved_subtitles.append(str(final_path))

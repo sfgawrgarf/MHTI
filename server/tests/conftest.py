@@ -35,6 +35,16 @@ def mock_auth_context() -> AuthContext:
     return AuthContext(username="test_user", session_id="test_session_123")
 
 
+@pytest.fixture(autouse=True)
+def test_media_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Allow isolated pytest temporary directories for file-operation tests."""
+    monkeypatch.setenv(
+        "MHTI_ALLOWED_MEDIA_ROOTS",
+        f"{tempfile.gettempdir()},/nonexistent",
+    )
+    monkeypatch.setenv("MHTI_ALLOWED_IMAGE_HOSTS", "image.tmdb.org,example.com")
+
+
 @pytest.fixture
 def override_auth(mock_auth_context: AuthContext) -> Generator[None, None, None]:
     """
