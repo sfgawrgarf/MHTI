@@ -117,7 +117,7 @@ class ScrapeJobRepository(BaseRepository):
             row = await self._fetch_one(
                 """
                 SELECT 1 FROM history_records
-                WHERE status = 'skipped'
+                WHERE status IN ('skipped', 'deleted')
                   AND (
                       (? IS NOT NULL AND file_fingerprint = ?)
                       OR folder_path = ?

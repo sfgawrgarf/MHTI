@@ -258,22 +258,21 @@ class HistoryRepository(BaseRepository):
 
         placeholders = ",".join("?" * len(fingerprints))
         rows = await self._fetch_all(
-            f"SELECT DISTINCT file_fingerprint FROM history_records WHERE file_fingerprint IN ({placeholders})",
-            tuple(fingerprints),
+            f"""SELECT DISTINCT file_fingerprint FROM history_records
+                WHERE file_fingerprint IN ({placeholders}) AND status != ?""",
+            (*fingerprints, TaskStatus.DELETED.value),
         )
         return {row[0] for row in rows if row[0]}
 
     async def delete_record(self, record_id: str) -> bool:
-        """删除历史记录并级联删除关联的 scrape_job。"""
+        """标记历史记录为 deleted，保留审计记录和关联任务。"""
         async with self._connect() as db:
-            # 先获取关联的 scrape_job_id
+            await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
                 "SELECT status, scrape_job_id FROM history_records WHERE id = ?",
                 (record_id,),
             )
             row = await cursor.fetchone()
-            scrape_job_id = row[1] if row else None
-
             if row is None:
                 await db.rollback()
                 return False
@@ -289,33 +288,38 @@ class HistoryRepository(BaseRepository):
                   )
                 LIMIT 1
                 """,
-                (record_id, record_id, scrape_job_id),
+                (record_id, record_id, row[1]),
             )
             if row[0] == TaskStatus.RUNNING.value or await cursor.fetchone():
                 await db.rollback()
                 raise ValueError("记录关联的任务仍在等待或运行中，请先取消任务")
 
-            # 删除历史记录
             cursor = await db.execute(
-                "DELETE FROM history_records WHERE id = ?",
-                (record_id,),
+                """UPDATE history_records
+                   SET status = ?, error_message = ?
+                   WHERE id = ?""",
+                (TaskStatus.DELETED.value, "用户删除", record_id),
             )
             deleted = cursor.rowcount > 0
 
-            # 同时删除关联的 scrape_job
-            if scrape_job_id:
-                await db.execute(
-                    """
-                    DELETE FROM scrape_jobs
-                    WHERE id = ? OR continuation_history_id = ?
-                    """,
-                    (scrape_job_id, record_id),
-                )
-            else:
-                await db.execute(
-                    "DELETE FROM scrape_jobs WHERE continuation_history_id = ?",
-                    (record_id,),
-                )
+            # 已结束或待用户处理的关联任务也保留，但同步成 deleted，避免两套状态漂移。
+            await db.execute(
+                """UPDATE scrape_jobs
+                   SET status = ?,
+                       error_message = COALESCE(error_message, ?),
+                       finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+                   WHERE (history_record_id = ?
+                          OR continuation_history_id = ?
+                          OR id = ?)
+                     AND status NOT IN ('pending', 'running')""",
+                (
+                    "deleted",
+                    "用户删除",
+                    record_id,
+                    record_id,
+                    row[1],
+                ),
+            )
 
             await db.commit()
             return deleted
@@ -462,6 +466,24 @@ class HistoryRepository(BaseRepository):
                 f"UPDATE history_records SET {', '.join(updates)} WHERE id = ?",
                 params,
             )
+            if status is not None:
+                await db.execute(
+                    """UPDATE scrape_jobs
+                       SET status = ?,
+                           error_message = CASE WHEN ? IS NOT NULL
+                                                THEN ? ELSE error_message END,
+                           finished_at = CASE WHEN ? IN ('pending', 'running')
+                                              THEN finished_at
+                                              ELSE COALESCE(finished_at, CURRENT_TIMESTAMP) END
+                       WHERE history_record_id = ?""",
+                    (
+                        status.value,
+                        error_message,
+                        error_message,
+                        status.value,
+                        record_id,
+                    ),
+                )
             await db.commit()
             return cursor.rowcount > 0
 
@@ -472,19 +494,21 @@ class HistoryRepository(BaseRepository):
                 cutoff = (datetime.now() - timedelta(days=before_days)).isoformat()
                 cursor = await db.execute(
                     """
-                    SELECT 1 FROM history_records h
+                    SELECT COUNT(DISTINCT h.id) FROM history_records h
                     LEFT JOIN scrape_jobs j
                       ON j.id = h.scrape_job_id
                       OR j.history_record_id = h.id
                       OR j.continuation_history_id = h.id
                     WHERE h.executed_at < ?
                       AND (h.status = 'running' OR j.status IN ('pending', 'running'))
-                    LIMIT 1
                     """,
                     (cutoff,),
                 )
-                if await cursor.fetchone():
-                    raise ValueError("待清理记录中存在仍在处理的任务，请先取消任务")
+                active_count = (await cursor.fetchone())[0]
+                if active_count:
+                    raise ValueError(
+                        f"待清理记录中有 {active_count} 条记录仍在处理，请先取消任务"
+                    )
                 # 先删除关联的 scrape_jobs
                 await db.execute(
                     """DELETE FROM scrape_jobs WHERE id IN (
@@ -502,17 +526,19 @@ class HistoryRepository(BaseRepository):
             else:
                 cursor = await db.execute(
                     """
-                    SELECT 1 FROM history_records h
+                    SELECT COUNT(DISTINCT h.id) FROM history_records h
                     LEFT JOIN scrape_jobs j
                       ON j.id = h.scrape_job_id
                       OR j.history_record_id = h.id
                       OR j.continuation_history_id = h.id
                     WHERE h.status = 'running' OR j.status IN ('pending', 'running')
-                    LIMIT 1
                     """
                 )
-                if await cursor.fetchone():
-                    raise ValueError("记录中存在仍在处理的任务，请先取消任务")
+                active_count = (await cursor.fetchone())[0]
+                if active_count:
+                    raise ValueError(
+                        f"记录中有 {active_count} 条记录仍在处理，请先取消任务"
+                    )
                 # 先删除关联的 scrape_jobs
                 await db.execute(
                     """DELETE FROM scrape_jobs WHERE id IN (
@@ -550,17 +576,28 @@ class HistoryRepository(BaseRepository):
         episode_still_url: str | None,
         episode_air_date: str | None,
     ) -> None:
-        await self._execute(
-            """UPDATE history_records SET
-               status = ?, folder_path = ?, duration_seconds = ?, success_count = 1,
-               title = ?, original_title = ?, plot = ?, poster_url = ?,
-               release_date = ?, rating = ?, tags = ?,
-               season_number = ?, episode_number = ?, episode_title = ?,
-               episode_overview = ?, episode_still_url = ?, episode_air_date = ?
-               WHERE id = ?""",
-            (TaskStatus.SUCCESS.value, folder_path, duration_seconds,
-             title, original_title, plot, poster_url,
-             release_date, rating, tags_json,
-             season_number, episode_number, episode_title,
-             episode_overview, episode_still_url, episode_air_date, record_id),
-        )
+        async with self._connect() as db:
+            await db.execute(
+                """UPDATE history_records SET
+                   status = ?, folder_path = ?, duration_seconds = ?,
+                   success_count = 1, failed_count = 0,
+                   error_message = NULL, conflict_type = NULL, conflict_data = NULL,
+                   title = ?, original_title = ?, plot = ?, poster_url = ?,
+                   release_date = ?, rating = ?, tags = ?,
+                   season_number = ?, episode_number = ?, episode_title = ?,
+                   episode_overview = ?, episode_still_url = ?, episode_air_date = ?
+                   WHERE id = ?""",
+                (TaskStatus.SUCCESS.value, folder_path, duration_seconds,
+                 title, original_title, plot, poster_url,
+                 release_date, rating, tags_json,
+                 season_number, episode_number, episode_title,
+                 episode_overview, episode_still_url, episode_air_date, record_id),
+            )
+            await db.execute(
+                """UPDATE scrape_jobs
+                   SET status = ?, error_message = NULL,
+                       finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP)
+                   WHERE history_record_id = ?""",
+                (TaskStatus.SUCCESS.value, record_id),
+            )
+            await db.commit()

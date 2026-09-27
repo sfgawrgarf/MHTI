@@ -37,6 +37,7 @@ class ScraperConfigResolver:
                 "download_poster": global_config.series_poster,
                 "download_thumb": global_config.episode_thumb,
                 "download_fanart": global_config.series_backdrop,
+                "overwrite_existing": global_config.overwrite_existing,
             }
         else:
             # 使用任务级设置
@@ -44,6 +45,7 @@ class ScraperConfigResolver:
                 "download_poster": advanced_settings.download_poster,
                 "download_thumb": advanced_settings.download_thumb,
                 "download_fanart": advanced_settings.download_fanart,
+                "overwrite_existing": advanced_settings.overwrite_image,
             }
 
     async def get_effective_nfo_config(

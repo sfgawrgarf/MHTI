@@ -1,13 +1,17 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any, Awaitable
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from server import __version__
 
 # 日志目录
 LOG_DIR = Path(__file__).parent.parent / "data" / "logs"
@@ -22,6 +26,70 @@ logging.basicConfig(
     format=LOG_FORMAT,
 )
 logger = logging.getLogger(__name__)
+
+
+async def _shutdown_step(
+    name: str,
+    operation: Awaitable[Any],
+    *,
+    timeout: float = 15.0,
+) -> Any | None:
+    """Run one shutdown step without preventing later cleanup."""
+    try:
+        return await asyncio.wait_for(operation, timeout=timeout)
+    except TimeoutError:
+        logger.error("Shutdown step timed out: %s", name)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Shutdown step failed: %s", name)
+    return None
+
+
+async def _shutdown_application(
+    watcher: Any | None,
+    log_service: Any | None = None,
+    db_log_handler: Any | None = None,
+    file_handler: Any | None = None,
+) -> None:
+    """Run every cleanup stage even when an earlier stage fails."""
+    logger.info("Shutting down application...")
+
+    from server.application.file_io import shutdown_file_io
+    from server.application.manual_job_service import shutdown_workers as shutdown_manual_workers
+    from server.application.scrape_job_service import shutdown_workers as shutdown_scrape_workers
+
+    await _shutdown_step("manual workers", shutdown_manual_workers())
+    if watcher is not None and watcher._running:
+        await _shutdown_step("watcher", watcher.stop())
+    await _shutdown_step("scrape workers", shutdown_scrape_workers())
+
+    try:
+        shutdown_file_io()
+    except Exception:
+        logger.exception("Shutdown step failed: file I/O executor")
+
+    if db_log_handler is not None:
+        try:
+            db_log_handler.stop()
+            logging.getLogger().removeHandler(db_log_handler)
+        except Exception:
+            logger.exception("Shutdown step failed: database log handler")
+
+    if log_service is not None:
+        await _shutdown_step("logging", log_service.stop())
+
+    await _shutdown_step("service container", cleanup_services())
+
+    if file_handler is not None:
+        try:
+            logging.getLogger().removeHandler(file_handler)
+            file_handler.close()
+        except Exception:
+            logger.exception("Shutdown step failed: file log handler")
+
+    await _shutdown_step("database", close_database())
+    logger.info("Application shutdown complete")
 
 
 def setup_file_logging() -> RotatingFileHandler | None:
@@ -97,120 +165,88 @@ from server.api.middleware import setup_exception_handlers, setup_middleware
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
-    # Startup
     logger.info("Starting application...")
-
-    # Setup file logging (with rotation)
+    watcher = None
+    log_service = None
+    db_log_handler = None
     file_handler = setup_file_logging()
+    try:
+        # Initialize database with connection pool
+        await init_database()
 
-    # Initialize database with connection pool
-    await init_database()
+        # Initialize authentication configuration from database
+        from server.infrastructure.config import get_app_config
+        from server.domain.identity.auth_config_service import get_auth_config_service_async
 
-    # Initialize authentication configuration from database
-    from server.infrastructure.config import get_app_config
-    from server.domain.identity.auth_config_service import get_auth_config_service_async
+        auth_config_service = await get_auth_config_service_async()
+        get_app_config().set_auth_config(await auth_config_service.get_auth_config())
+        logger.info("Authentication configuration loaded from database")
 
-    auth_config_service = await get_auth_config_service_async()
-    get_app_config().set_auth_config(await auth_config_service.get_auth_config())
-    logger.info("Authentication configuration loaded from database")
+        # 注入 Token 校验实现（鉴权端口实现在上层，由组合根装配）
+        from server.api.deps import set_token_verifier
+        from server.domain.identity.auth_service import auth_service
 
-    # 注入 Token 校验实现（鉴权端口实现在上层，由组合根装配）
-    from server.api.deps import set_token_verifier
-    from server.domain.identity.auth_service import auth_service
+        set_token_verifier(auth_service)
 
-    set_token_verifier(auth_service)
+        # Initialize service container
+        await init_services()
 
-    # Initialize service container
-    await init_services()
+        # Rebuild durable task queues before the watcher performs its initial scan.
+        from server.application.scrape_job_service import recover_pending_jobs as recover_scrape_jobs
+        from server.application.manual_job_service import recover_pending_jobs as recover_manual_jobs
 
-    # Rebuild durable task queues before the watcher performs its initial scan.
-    # Interrupted RUNNING rows are reset to pending by these calls; no media
-    # file, provider session, or user configuration is changed here.
-    from server.application.scrape_job_service import recover_pending_jobs as recover_scrape_jobs
-    from server.application.manual_job_service import recover_pending_jobs as recover_manual_jobs
+        recovered_scrape = await recover_scrape_jobs()
+        recovered_manual = await recover_manual_jobs()
+        if recovered_scrape or recovered_manual:
+            logger.info(
+                "Recovered %s scrape jobs and %s manual jobs",
+                recovered_scrape,
+                recovered_manual,
+            )
 
-    recovered_scrape = await recover_scrape_jobs()
-    recovered_manual = await recover_manual_jobs()
-    if recovered_scrape or recovered_manual:
-        logger.info(
-            "Recovered %s scrape jobs and %s manual jobs",
-            recovered_scrape,
-            recovered_manual,
+        # Learn only confirmed aliases from existing successful history. This is
+        # idempotent and never rewrites source media or removes user data.
+        from server.application.media_alias_service import MediaAliasService
+        await MediaAliasService().backfill_confirmed_history()
+
+        # Initialize and start log service
+        from server.bootstrap import get_log_service
+        log_service = get_log_service()
+        await log_service.start()
+
+        # Setup database log handler (仅记录 WARNING 及以上级别，减少性能开销)
+        from server.infrastructure.log_handler import DatabaseLogHandler
+        db_log_handler = DatabaseLogHandler(log_service, batch_size=50, flush_interval=10.0)
+        db_log_handler.setLevel(logging.WARNING)
+        db_log_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        logging.getLogger().addHandler(db_log_handler)
+        db_log_handler.start()
+
+        logger.info("Log service started")
+
+        # Auto-start watcher service if enabled folders exist
+        watcher = get_watcher_service()
+        folders, _ = await watcher.list_folders()
+        if any(f.enabled for f in folders):
+            logger.info("Detected enabled watch folders, starting watcher service")
+            await watcher.start()
+
+        logger.info("Application started successfully")
+        yield
+    finally:
+        await _shutdown_application(
+            watcher,
+            log_service,
+            db_log_handler,
+            file_handler,
         )
-
-    # Learn only confirmed aliases from existing successful history. This is
-    # idempotent and never rewrites source media or removes user data.
-    from server.application.media_alias_service import MediaAliasService
-    await MediaAliasService().backfill_confirmed_history()
-
-    # Initialize and start log service
-    from server.bootstrap import get_log_service
-    log_service = get_log_service()
-    await log_service.start()
-
-    # Setup database log handler (仅记录 WARNING 及以上级别，减少性能开销)
-    from server.infrastructure.log_handler import DatabaseLogHandler
-    db_log_handler = DatabaseLogHandler(log_service, batch_size=50, flush_interval=10.0)
-    db_log_handler.setLevel(logging.WARNING)  # 只记录警告和错误
-    db_log_handler.setFormatter(logging.Formatter(LOG_FORMAT))
-    logging.getLogger().addHandler(db_log_handler)
-    db_log_handler.start()
-
-    logger.info("Log service started")
-
-    # Auto-start watcher service if enabled folders exist
-    watcher = get_watcher_service()
-    folders, _ = await watcher.list_folders()
-    if any(f.enabled for f in folders):
-        logger.info("Detected enabled watch folders, starting watcher service")
-        await watcher.start()
-
-    logger.info("Application started successfully")
-
-    yield
-
-    # Shutdown
-    logger.info("Shutting down application...")
-
-    # 取消后台 worker（刮削 + 手动任务），避免它们阻塞在队列上导致退出卡顿
-    from server.application.scrape_job_service import shutdown_workers as shutdown_scrape_workers
-    from server.application.manual_job_service import shutdown_workers as shutdown_manual_workers
-    from server.application.file_io import shutdown_file_io
-    await shutdown_scrape_workers()
-    await shutdown_manual_workers()
-    shutdown_file_io()
-
-    # Stop watcher service
-    if watcher._running:
-        await watcher.stop()
-
-    # Stop database log handler
-    db_log_handler.stop()
-    logging.getLogger().removeHandler(db_log_handler)
-
-    # Stop log service (flush remaining logs)
-    await log_service.stop()
-    logger.info("Log service stopped")
-
-    # Remove file handler
-    if file_handler:
-        logging.getLogger().removeHandler(file_handler)
-        file_handler.close()
-
-    # Cleanup services
-    await cleanup_services()
-
-    # Close database connections
-    await close_database()
-
-    logger.info("Application shutdown complete")
 
 
 # Create FastAPI application
 app = FastAPI(
     title="MHTI API",
     description="API for scanning and scraping TV series metadata",
-    version="2.0.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -287,16 +323,18 @@ async def health_check() -> dict:
         async with manager.get_connection() as db:
             await db.execute("SELECT 1")
         health_status["checks"]["database"] = "healthy"
-    except Exception as e:
-        health_status["checks"]["database"] = f"unhealthy: {str(e)}"
+    except Exception:
+        # Do not expose database paths, credentials, or driver details through
+        # a public health endpoint.
+        health_status["checks"]["database"] = "unhealthy"
         health_status["status"] = "degraded"
 
     # Check TMDB configuration (non-blocking)
     try:
         from server.bootstrap import get_config_service
         config_service = get_config_service()
-        tmdb_cookie = await config_service.get_tmdb_cookie()
-        tmdb_token = await config_service.get_tmdb_api_token()
+        tmdb_cookie = await config_service.get_cookie()
+        tmdb_token = await config_service.get_api_token()
         if tmdb_cookie and tmdb_token:
             health_status["checks"]["tmdb_configured"] = "configured"
         elif tmdb_cookie or tmdb_token:
@@ -338,11 +376,11 @@ async def readiness_check() -> dict:
         async with manager.get_connection() as db:
             await db.execute("SELECT 1")
         return {"status": "ready"}
-    except Exception as e:
+    except Exception:
         from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=503,
-            content={"status": "not_ready", "reason": str(e)}
+            content={"status": "not_ready", "reason": "database_unavailable"},
         )
 
 
@@ -351,7 +389,7 @@ async def root() -> dict[str, str]:
     """Root endpoint with API information."""
     return {
         "name": "MHTI API",
-        "version": "2.0.0",
+        "version": __version__,
         "docs": "/api/docs",
     }
 

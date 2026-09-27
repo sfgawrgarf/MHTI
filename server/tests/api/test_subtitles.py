@@ -118,12 +118,13 @@ class TestSubtitlesAPI:
         assert data["success"] is True
         assert "Show Name - S01E01.chs.srt" in data["dest_path"]
 
-    def test_rename_not_found(self, client):
+    def test_rename_not_found(self, client, temp_dir):
         """Test renaming non-existent subtitle."""
+        missing_subtitle = Path(temp_dir) / "missing.srt"
         response = client.post(
             "/api/subtitles/rename",
             json={
-                "subtitle_path": "/nonexistent/file.srt",
+                "subtitle_path": str(missing_subtitle),
                 "new_video_name": "New Name",
             },
         )

@@ -14,6 +14,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedEvent
 
 from server.common.path_security import PathSecurityError, validate_media_path
+from server.application.file_io import run_file_io
 from server.infrastructure.db import DATABASE_PATH
 from server.infrastructure.repositories.watcher_repository import WatcherRepository
 from server.models.watcher import (
@@ -71,6 +72,11 @@ class WatchStrategy(ABC):
         self.on_file_detected = on_file_detected
         self._running = False
 
+    @property
+    def running(self) -> bool:
+        """Whether the strategy has successfully acquired its runtime resource."""
+        return self._running
+
     @abstractmethod
     async def start(self) -> None:
         pass
@@ -98,10 +104,14 @@ class RealtimeStrategy(WatchStrategy):
         logger.info(f"[实时模式] 开始监控: {self.folder.path}")
 
     async def stop(self) -> None:
-        if self._observer:
-            self._observer.stop()
-            self._observer.join(timeout=5)
-            self._observer = None
+        observer = self._observer
+        self._observer = None
+        if observer:
+            observer.stop()
+            await run_file_io(observer.join, 5)
+            if observer.is_alive():
+                self._observer = observer
+                raise RuntimeError(f"实时监控线程未在超时内停止: {self.folder.path}")
         self._running = False
 
 
@@ -123,10 +133,12 @@ class CompatStrategy(WatchStrategy):
 
     async def stop(self) -> None:
         self._running = False
-        if self._scan_task:
-            self._scan_task.cancel()
+        task = self._scan_task
+        self._scan_task = None
+        if task:
+            task.cancel()
             try:
-                await self._scan_task
+                await task
             except asyncio.CancelledError:
                 pass
         self._known_files.clear()
@@ -194,10 +206,12 @@ class P115ScanStrategy(WatchStrategy):
 
     async def stop(self) -> None:
         self._running = False
-        if self._scan_task:
-            self._scan_task.cancel()
+        task = self._scan_task
+        self._scan_task = None
+        if task:
+            task.cancel()
             try:
-                await self._scan_task
+                await task
             except asyncio.CancelledError:
                 pass
         self._known_file_ids.clear()
@@ -298,10 +312,12 @@ class P115EventStrategy(WatchStrategy):
 
     async def stop(self) -> None:
         self._running = False
-        if self._scan_task:
-            self._scan_task.cancel()
+        task = self._scan_task
+        self._scan_task = None
+        if task:
+            task.cancel()
             try:
-                await self._scan_task
+                await task
             except asyncio.CancelledError:
                 pass
 
@@ -453,6 +469,8 @@ class WatcherService:
         self._last_detection: datetime | None = None
         self._on_files_detected: Callable[[WatcherNotification], None] | None = None
         self._process_task: asyncio.Task | None = None
+        self._initial_scan_task: asyncio.Task | None = None
+        self._lifecycle_lock = asyncio.Lock()
 
     async def _ensure_db(self) -> None:
         """确保监控目录表可用并完成旧库列迁移。"""
@@ -593,6 +611,11 @@ class WatcherService:
 
         return await self._repo.delete_folder(folder_id)
 
+    async def replace_folders(self, folders: list[WatchedFolder]) -> None:
+        """Replace all watched folders from a validated configuration snapshot."""
+        await self._ensure_db()
+        await self._repo.replace_folders(folders)
+
     async def get_status(self) -> WatcherStatusResponse:
         """Get watcher status."""
         folders, _ = await self.list_folders()
@@ -610,12 +633,14 @@ class WatcherService:
         if folder.id in self._strategies:
             return
         try:
-            self._validate_folder_path(folder.path, folder.provider)
+            normalized_path = self._validate_folder_path(folder.path, folder.provider)
             if folder.output_dir:
                 self._validate_output_path(folder.output_dir, folder.provider)
         except PathSecurityError as exc:
             logger.error("拒绝启动越界监控目录 %s: %s", folder.path, exc)
-            return
+            raise
+        if folder.provider == "local":
+            folder = folder.model_copy(update={"path": normalized_path})
         # 根据 provider + mode 选择策略
         if folder.provider == "115":
             if folder.mode == WatcherMode.EVENT:
@@ -627,6 +652,11 @@ class WatcherService:
         else:
             strategy = CompatStrategy(folder, self._on_file_detected)
         await strategy.start()
+        if not strategy.running:
+            raise RuntimeError(
+                f"监控目录未能启动: {folder.path} "
+                f"(provider={folder.provider}, mode={folder.mode.value})"
+            )
         self._strategies[folder.id] = strategy
 
     async def _stop_folder_watch(self, folder_id: str) -> None:
@@ -645,31 +675,38 @@ class WatcherService:
         self, on_files_detected: Callable[[WatcherNotification], None] | None = None
     ) -> None:
         """Start the watcher service."""
-        if self._running:
-            return
+        async with self._lifecycle_lock:
+            if self._running:
+                return
+            if self._strategies:
+                await self._stop_locked()
+                if self._strategies:
+                    raise RuntimeError("仍有监控策略未能停止，拒绝重复启动")
 
-        self._on_files_detected = on_files_detected
-        self._running = True
-        self._status = WatcherStatus.RUNNING
+            self._on_files_detected = on_files_detected
+            try:
+                # 获取所有启用的监控文件夹
+                folders, _ = await self.list_folders()
+                enabled_folders = [f for f in folders if f.enabled]
 
-        # 获取所有启用的监控文件夹
-        folders, _ = await self.list_folders()
-        enabled_folders = [f for f in folders if f.enabled]
+                if not enabled_folders:
+                    logger.warning("没有启用的监控文件夹")
 
-        if not enabled_folders:
-            logger.warning("没有启用的监控文件夹")
+                # 为每个文件夹启动独立的监控策略
+                for folder in enabled_folders:
+                    await self._start_folder_watch(folder)
 
-        # 为每个文件夹启动独立的监控策略
-        for folder in enabled_folders:
-            await self._start_folder_watch(folder)
+                self._running = True
+                self._status = WatcherStatus.RUNNING
+                self._process_task = asyncio.create_task(self._process_pending_files())
+                self._initial_scan_task = asyncio.create_task(
+                    self._initial_scan(enabled_folders)
+                )
+            except BaseException:
+                await self._stop_locked()
+                raise
 
-        # 启动待处理文件检查任务
-        self._process_task = asyncio.create_task(self._process_pending_files())
-
-        # 在后台执行初始扫描
-        asyncio.create_task(self._initial_scan(enabled_folders))
-
-        logger.info(f"监控服务已启动，共 {len(self._strategies)} 个文件夹")
+            logger.info(f"监控服务已启动，共 {len(self._strategies)} 个文件夹")
 
     async def _initial_scan(self, folders: list[WatchedFolder]) -> None:
         """启动时执行一次全量扫描，跳过已有待处理任务的文件"""
@@ -854,24 +891,52 @@ class WatcherService:
             except Exception as e:
                 logger.error(f"处理待处理文件时出错: {e}")
 
-    async def stop(self) -> None:
+    async def stop(self, *, require_clean: bool = False) -> None:
         """Stop the watcher service."""
+        async with self._lifecycle_lock:
+            await self._stop_locked()
+            if require_clean and self._strategies:
+                raise RuntimeError("仍有监控策略未能停止")
+
+    async def _stop_locked(self) -> None:
+        """Stop watcher resources while the lifecycle lock is held."""
         self._running = False
         self._status = WatcherStatus.STOPPED
 
-        # 停止所有文件夹的监控
-        for folder_id in list(self._strategies.keys()):
-            await self._stop_folder_watch(folder_id)
+        tasks = [
+            task
+            for task in (self._process_task, self._initial_scan_task)
+            if task is not None
+        ]
+        self._process_task = None
+        self._initial_scan_task = None
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        if self._process_task:
-            self._process_task.cancel()
-            try:
-                await self._process_task
-            except asyncio.CancelledError:
-                pass
-            self._process_task = None
+        strategies = list(self._strategies.items())
+        self._strategies.clear()
+        results = await asyncio.gather(
+            *(strategy.stop() for _, strategy in strategies),
+            return_exceptions=True,
+        )
+        for (folder_id, strategy), result in zip(strategies, results):
+            if isinstance(result, BaseException):
+                self._strategies[folder_id] = strategy
+                self._status = WatcherStatus.ERROR
+                logger.error(
+                    "停止监控策略失败 folder=%s path=%s: %s",
+                    folder_id,
+                    strategy.folder.path,
+                    result,
+                )
 
-        logger.info("监控服务已停止")
+        if self._status == WatcherStatus.ERROR:
+            logger.warning("监控服务停止时仍有未清理的策略")
+        else:
+            logger.info("监控服务已停止")
 
     async def _create_jobs_for_files(
         self, files: list[DetectedFile], folder: WatchedFolder | None = None

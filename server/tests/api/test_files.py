@@ -39,6 +39,13 @@ def files_client(override_auth) -> TestClient:
     Returns:
         Configured test client.
     """
+    class StubHistoryService:
+        """Keep scan tests independent from the application's persistent database."""
+
+        async def get_existing_fingerprints(self, fingerprints):
+            return set()
+
+    app.dependency_overrides[get_history_service] = lambda: StubHistoryService()
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -68,6 +75,45 @@ class TestFilesAPI:
         data = response.json()
         assert data["total_files"] == 0
         assert data["files"] == []
+
+    def test_scan_folder_honors_exclude_scraped_and_reports_count(
+        self, files_client, tmp_path, monkeypatch
+    ):
+        """Previously scraped files are optional and their count is reported."""
+        first = tmp_path / "video1.mp4"
+        second = tmp_path / "video2.mkv"
+        first.touch()
+        second.touch()
+
+        monkeypatch.setattr(
+            "server.application.library.calculate_fingerprint",
+            lambda path: f"fingerprint:{path}",
+        )
+
+        class StubHistoryService:
+            async def get_existing_fingerprints(self, fingerprints):
+                return {f"fingerprint:{first}"}
+
+        app.dependency_overrides[get_history_service] = lambda: StubHistoryService()
+
+        excluded = files_client.post(
+            "/api/scan",
+            json={"folder_path": str(tmp_path), "exclude_scraped": True},
+        )
+        assert excluded.status_code == 200
+        excluded_data = excluded.json()
+        assert excluded_data["total_files"] == 1
+        assert excluded_data["scraped_count"] == 1
+        assert excluded_data["files"][0]["path"] == str(second)
+
+        included = files_client.post(
+            "/api/scan",
+            json={"folder_path": str(tmp_path), "exclude_scraped": False},
+        )
+        assert included.status_code == 200
+        included_data = included.json()
+        assert included_data["total_files"] == 2
+        assert included_data["scraped_count"] == 0
 
     def test_scan_folder_not_found(self, files_client):
         """Test 400 response for non-existent folder."""
@@ -194,6 +240,25 @@ class TestFilesAPI:
 class TestHealthCheck:
     """Tests for health check endpoint."""
 
+    def test_health_check_reports_tmdb_configuration(self, monkeypatch):
+        """Health check reads TMDB credentials from ConfigService's public API."""
+        class StubConfigService:
+            async def get_cookie(self):
+                return "tmdb-cookie"
+
+            async def get_api_token(self):
+                return "tmdb-token"
+
+        from server import bootstrap as container
+
+        monkeypatch.setattr(container, "get_config_service", lambda: StubConfigService())
+
+        client = TestClient(app)
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json()["checks"]["tmdb_configured"] == "configured"
+
     def test_health_check(self):
         """Test health check endpoint (no auth required)."""
         # Health check 不需要认证
@@ -206,6 +271,28 @@ class TestHealthCheck:
         # 可能包含 checks 字段
         if "checks" in data:
             assert "database" in data["checks"]
+
+    def test_health_endpoints_do_not_expose_database_errors(self, monkeypatch):
+        from server.infrastructure import db as database
+
+        async def fail_database():
+            raise RuntimeError("secret database path and credentials")
+
+        monkeypatch.setattr(database, "get_db_manager", fail_database)
+        client = TestClient(app)
+
+        health = client.get("/health")
+        readiness = client.get("/health/ready")
+
+        assert health.status_code == 200
+        assert health.json()["checks"]["database"] == "unhealthy"
+        assert "secret" not in health.text
+        assert readiness.status_code == 503
+        assert readiness.json() == {
+            "status": "not_ready",
+            "reason": "database_unavailable",
+        }
+        assert "secret" not in readiness.text
 
 
 class TestFileBrowseAPI:

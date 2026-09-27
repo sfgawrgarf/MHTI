@@ -65,6 +65,19 @@ def verify_token(token: str | None) -> tuple[str | None, str | None]:
     return _get_verifier().verify_token(token)
 
 
+async def authenticate_access_token(token: str) -> AuthContext | None:
+    """Validate a JWT and confirm that its backing session is still active."""
+    from server.domain.identity.session_service import session_service
+
+    token_username, session_id = _get_verifier().verify_token(token)
+    if not token_username or not session_id:
+        return None
+    username = await session_service.get_active_session_username(session_id)
+    if username is None:
+        return None
+    return AuthContext(username=username, session_id=session_id)
+
+
 security = HTTPBearer(auto_error=False)
 
 
@@ -95,15 +108,15 @@ async def require_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    username, session_id = _get_verifier().verify_token(credentials.credentials)
-    if not username or not session_id:
+    auth = await authenticate_access_token(credentials.credentials)
+    if auth is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token 无效或已过期",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return AuthContext(username=username, session_id=session_id)
+    return auth
 
 
 async def optional_auth(
@@ -118,8 +131,4 @@ async def optional_auth(
     if not credentials:
         return None
 
-    username, session_id = _get_verifier().verify_token(credentials.credentials)
-    if not username or not session_id:
-        return None
-
-    return AuthContext(username=username, session_id=session_id)
+    return await authenticate_access_token(credentials.credentials)

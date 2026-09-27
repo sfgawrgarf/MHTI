@@ -439,7 +439,9 @@ async def test_undo_restores_deleted_record_with_its_files(env):
     await _register_scraped_file(env, record.id)
 
     assert await env["history"].delete_record(record.id) is True
-    assert await env["history"].get_record(record.id) is None
+    deleted = await env["history"].get_record(record.id)
+    assert deleted is not None
+    assert deleted.status == TaskStatus.DELETED
 
     undone = await env["history"].undo_last()
 

@@ -1,0 +1,249 @@
+"""Regression tests for authentication and file-operation boundaries."""
+
+import stat
+from unittest.mock import AsyncMock
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from starlette.requests import Request
+from starlette.websockets import WebSocketDisconnect
+
+from server import __version__
+from server.api import deps
+from server.api.deps import AuthContext, authenticate_access_token, get_client_ip
+from server.api.v1.history import AIRetryRequest
+from server.common.path_security import (
+    PathSecurityError,
+    validate_image_url,
+    validate_media_path,
+)
+from server.models.auth import ChangePasswordRequest, LoginRequest, RefreshRequest
+from server.models.image import ImageDownloadRequest
+from server.models.manual_job import ManualJobDeleteRequest
+from server.models.parser import BatchParseRequest, ParseRequest
+from server.models.scraper import BatchScrapeRequest
+from server.models.subtitle import SubtitleRenameRequest
+from server.infrastructure import security as security_module
+
+
+def test_file_operation_routes_require_authentication(client: TestClient) -> None:
+    """Previously public read/write helpers must now reject anonymous callers."""
+    assert client.get("/api/templates/default").status_code == 401
+    assert client.post(
+        "/api/rename/preview",
+        json={
+            "source_path": "/tmp/video.mp4",
+            "title": "Show",
+            "season": 1,
+            "episode": 1,
+        },
+    ).status_code == 401
+    assert client.post(
+        "/api/images/download",
+        json={
+            "url": "https://image.tmdb.org/t/p/w500/poster.jpg",
+            "save_path": "/tmp",
+            "filename": "poster.jpg",
+        },
+    ).status_code == 401
+
+
+def test_frontend_config_remains_public_and_reports_release_version(
+    client: TestClient,
+) -> None:
+    """The login page can read runtime config without reopening private APIs."""
+    response = client.get("/api/config/frontend")
+    assert response.status_code == 200
+    assert response.json()["version"] == __version__
+
+
+@pytest.mark.asyncio
+async def test_access_token_requires_active_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A valid JWT is rejected immediately after its session is revoked."""
+    monkeypatch.setattr(
+        deps,
+        "_get_verifier",
+        lambda: type(
+            "Verifier",
+            (),
+            {"verify_token": lambda self, _token: ("admin", "revoked-session")},
+        )(),
+    )
+    active_check = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "server.domain.identity.session_service.session_service.get_active_session_username",
+        active_check,
+    )
+
+    assert await authenticate_access_token("signed-token") is None
+    active_check.assert_awaited_once_with("revoked-session")
+
+
+@pytest.mark.asyncio
+async def test_access_token_uses_current_username_after_rename(monkeypatch) -> None:
+    """A rename keeps the current session valid without trusting a stale JWT subject."""
+    monkeypatch.setattr(
+        deps,
+        "_get_verifier",
+        lambda: type(
+            "Verifier",
+            (),
+            {"verify_token": lambda self, _token: ("old-name", "active-session")},
+        )(),
+    )
+    monkeypatch.setattr(
+        "server.domain.identity.session_service.session_service.get_active_session_username",
+        AsyncMock(return_value="new-name"),
+    )
+
+    auth = await authenticate_access_token("signed-token")
+
+    assert auth is not None
+    assert auth.username == "new-name"
+    assert auth.session_id == "active-session"
+
+
+def test_websocket_requires_authentication(client: TestClient) -> None:
+    """The socket accepts no subscriptions before a successful auth message."""
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"type": "subscribe", "job_ids": ["secret-job"]})
+            websocket.receive_json()
+    assert exc_info.value.code == 4401
+
+
+def test_websocket_accepts_active_session(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An authenticated socket receives its connection acknowledgement."""
+    auth_check = AsyncMock(return_value=AuthContext("admin", "session-1"))
+    monkeypatch.setattr(
+        "server.api.v1.websocket.authenticate_access_token",
+        auth_check,
+    )
+
+    with client.websocket_connect("/ws?token=valid-token") as websocket:
+        message = websocket.receive_json()
+        assert message["type"] == "connected"
+    auth_check.assert_awaited_once_with("valid-token")
+
+
+def test_websocket_rejects_oversized_auth_token_before_verification(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_check = AsyncMock()
+    monkeypatch.setattr(
+        "server.api.v1.websocket.authenticate_access_token",
+        auth_check,
+    )
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws?token={'x' * 4097}") as websocket:
+            websocket.receive_json()
+
+    assert exc_info.value.code == 4401
+    auth_check.assert_not_awaited()
+
+
+def test_auth_models_bound_untrusted_credential_fields() -> None:
+    with pytest.raises(ValidationError):
+        LoginRequest(username="u" * 33, password="password")
+    with pytest.raises(ValidationError):
+        LoginRequest(username="admin", password="p" * 129)
+    with pytest.raises(ValidationError):
+        RefreshRequest(refresh_token="x" * 513)
+    with pytest.raises(ValidationError):
+        ChangePasswordRequest(current_password="p" * 129, new_password="new-password")
+
+
+def test_login_history_pagination_is_bounded(auth_client: TestClient) -> None:
+    assert auth_client.get("/api/auth/history?limit=101").status_code == 422
+    assert auth_client.get("/api/auth/history?offset=-1").status_code == 422
+
+
+def test_log_export_limit_is_bounded(auth_client: TestClient) -> None:
+    assert auth_client.get("/api/logs/export?limit=10001").status_code == 422
+
+
+def test_batch_request_models_reject_unbounded_work() -> None:
+    with pytest.raises(ValidationError):
+        BatchParseRequest(files=[ParseRequest(filename="episode.mkv")] * 501)
+    with pytest.raises(ValidationError):
+        BatchScrapeRequest(file_paths=["/media/episode.mkv"] * 101)
+    with pytest.raises(ValidationError):
+        ManualJobDeleteRequest(ids=list(range(501)))
+    with pytest.raises(ValidationError):
+        AIRetryRequest(record_ids=[str(index) for index in range(501)])
+
+
+def test_file_paths_stay_inside_configured_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Allowed roots work while system paths remain inaccessible."""
+    monkeypatch.setenv("MHTI_ALLOWED_MEDIA_ROOTS", str(tmp_path))
+    allowed = tmp_path / "poster.jpg"
+    assert validate_media_path(str(allowed)) == allowed.resolve()
+    with pytest.raises(PathSecurityError):
+        validate_media_path("/etc/passwd", must_exist=True)
+
+
+def test_image_and_subtitle_models_reject_path_components() -> None:
+    """Filenames cannot escape their supplied destination directory."""
+    with pytest.raises(ValueError):
+        ImageDownloadRequest(
+            url="https://image.tmdb.org/t/p/w500/poster.jpg",
+            save_path="/tmp",
+            filename="../secret",
+        )
+    with pytest.raises(ValueError):
+        SubtitleRenameRequest(
+            subtitle_path="/tmp/a.srt",
+            new_video_name="../moved",
+        )
+
+
+def test_image_download_hosts_are_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remote downloads cannot target arbitrary or local services."""
+    monkeypatch.setenv("MHTI_ALLOWED_IMAGE_HOSTS", "image.tmdb.org")
+    assert validate_image_url(
+        "https://image.tmdb.org/t/p/w500/poster.jpg"
+    ).startswith("https://")
+    with pytest.raises(PathSecurityError):
+        validate_image_url("http://127.0.0.1/admin")
+    with pytest.raises(PathSecurityError):
+        validate_image_url("https://example.com/image.jpg")
+
+
+def test_encryption_key_is_created_with_private_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Secret material must not be readable by other host users."""
+    key_path = tmp_path / ".secret_key"
+    monkeypatch.setattr(security_module, "_KEY_FILE", key_path)
+
+    first_key = security_module.get_encryption_key()
+    assert security_module.get_encryption_key() == first_key
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+
+
+def test_forwarded_ip_uses_trusted_edge_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Attacker-controlled leftmost XFF values do not bypass rate limiting."""
+    monkeypatch.setenv("MHTI_TRUSTED_PROXY_NETWORKS", "127.0.0.0/8")
+    monkeypatch.setenv("MHTI_TRUSTED_PROXY_HOPS", "1")
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/auth/login",
+            "headers": [
+                (b"x-forwarded-for", b"198.51.100.99, 203.0.113.20"),
+            ],
+            "client": ("127.0.0.1", 12345),
+        }
+    )
+    assert get_client_ip(request) == "203.0.113.20"

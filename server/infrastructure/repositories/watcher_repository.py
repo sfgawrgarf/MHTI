@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import aiosqlite
+from datetime import datetime
 
 from server.infrastructure.repositories.base import BaseRepository
-from server.models.watcher import WatchedFolderCreate, WatchedFolderUpdate
+from server.models.watcher import WatchedFolder, WatchedFolderCreate, WatchedFolderUpdate
 
 _WATCHED_FOLDERS_DDL = """
     CREATE TABLE IF NOT EXISTS watched_folders (
@@ -137,6 +138,37 @@ class WatcherRepository(BaseRepository):
         return await self._execute(
             "DELETE FROM watched_folders WHERE id = ?", (folder_id,)
         ) > 0
+
+    async def replace_folders(self, folders: list[WatchedFolder]) -> None:
+        """Replace the watched-folder snapshot in one database transaction."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("DELETE FROM watched_folders")
+            for folder in folders:
+                await db.execute(
+                    """
+                    INSERT INTO watched_folders
+                    (id, path, enabled, mode, scan_interval_seconds,
+                     file_stable_seconds, auto_scrape, output_dir, provider,
+                     file_id, last_scan, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        folder.id,
+                        folder.path,
+                        1 if folder.enabled else 0,
+                        folder.mode.value,
+                        folder.scan_interval_seconds,
+                        folder.file_stable_seconds,
+                        1 if folder.auto_scrape else 0,
+                        folder.output_dir,
+                        folder.provider,
+                        folder.file_id,
+                        folder.last_scan.isoformat() if folder.last_scan else None,
+                        (folder.created_at or datetime.now()).isoformat(),
+                    ),
+                )
+            await db.commit()
 
     async def update_last_scan(self, folder_id: str, scanned_at: str) -> None:
         await self._execute(

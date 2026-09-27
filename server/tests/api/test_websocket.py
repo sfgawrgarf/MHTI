@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from unittest.mock import AsyncMock
 
 from server.api import deps
 from server.api.deps import set_token_verifier
@@ -19,10 +20,14 @@ class FakeVerifier:
 
 
 @pytest.fixture
-def ws_verifier():
+def ws_verifier(monkeypatch):
     """临时注入固定校验器，用例结束后还原。"""
     original = deps._verifier
     set_token_verifier(FakeVerifier())
+    monkeypatch.setattr(
+        "server.domain.identity.session_service.session_service.get_active_session_username",
+        AsyncMock(return_value="test_user"),
+    )
     yield
     deps._verifier = original
 

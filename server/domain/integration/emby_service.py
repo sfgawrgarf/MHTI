@@ -5,6 +5,7 @@ import time
 
 import httpx
 
+from server.infrastructure.log_security import safe_log_value
 from server.models.emby import (
     ConflictCheckRequest,
     ConflictCheckResult,
@@ -209,8 +210,8 @@ class EmbyService:
 
         if not config.server_url or not config.api_key:
             return ConflictCheckResult(
-                conflict_type=ConflictType.NO_CONFLICT,
-                message="Emby 未配置",
+                conflict_type=ConflictType.CHECK_FAILED,
+                message="Emby 冲突检查已启用，但服务器地址或 API 密钥未配置",
             )
 
         try:
@@ -245,8 +246,8 @@ class EmbyService:
         except Exception as e:
             logger.warning(f"Emby 冲突检查失败: {e}")
             return ConflictCheckResult(
-                conflict_type=ConflictType.NO_CONFLICT,
-                message=f"检查失败: {str(e)}",
+                conflict_type=ConflictType.CHECK_FAILED,
+                message=f"Emby 冲突检查失败: {str(e)}",
             )
 
     async def _search_series(
@@ -265,22 +266,26 @@ class EmbyService:
             "Fields": "ProviderIds,Path",  # 需要获取 ProviderIds
         }
 
-        # 如果指定了单个媒体库，限制搜索范围
-        if config.library_ids and len(config.library_ids) == 1:
-            params["ParentId"] = config.library_ids[0]
-
-        resp = await client.get("/Items", params=params)
-        resp.raise_for_status()
-        data = resp.json()
-
-        items = data.get("Items", [])
-        logger.info(f"Emby 搜索 '{name}' 找到 {len(items)} 个结果")
-
-        # 如果指定了多个媒体库，过滤结果
-        if config.library_ids and len(config.library_ids) > 1:
-            # 需要检查每个 item 是否属于指定的媒体库
-            # 这里简化处理，不做过滤
-            pass
+        items: list[dict] = []
+        if config.library_ids:
+            # Emby only accepts one ParentId per request. Query every selected
+            # library explicitly; a global search cannot prove library membership.
+            seen_ids: set[str] = set()
+            for library_id in dict.fromkeys(config.library_ids):
+                library_params = {**params, "ParentId": library_id}
+                resp = await client.get("/Items", params=library_params)
+                resp.raise_for_status()
+                for item in resp.json().get("Items", []):
+                    item_id = str(item.get("Id") or "")
+                    if item_id and item_id not in seen_ids:
+                        seen_ids.add(item_id)
+                        items.append(item)
+        else:
+            resp = await client.get("/Items", params=params)
+            resp.raise_for_status()
+            items = resp.json().get("Items", [])
+        # name is converted to a bounded single-line value.
+        logger.info("Emby 搜索 '%s' 找到 %d 个结果", safe_log_value(name), len(items))
 
         for item in items:
             provider_ids = item.get("ProviderIds", {})
@@ -329,7 +334,8 @@ class EmbyService:
                     tmdb_id=int(tmdb_str) if tmdb_str else None,
                 )
 
-        logger.info(f"Emby 未找到匹配的剧集: {name}")
+        # name is converted to a bounded single-line value.
+        logger.info("Emby 未找到匹配的剧集: %s", safe_log_value(name))
         return None
 
     async def _check_episode(
@@ -351,13 +357,23 @@ class EmbyService:
         data = resp.json()
 
         items = data.get("Items", [])
-        logger.info(f"Emby 剧集 {series_id} 共有 {len(items)} 集")
+        # series_id is converted to a bounded single-line value.
+        logger.info(
+            "Emby 剧集 %s 共有 %d 集",
+            safe_log_value(series_id),
+            len(items),
+        )
 
         for item in items:
             item_season = item.get("ParentIndexNumber")
             item_episode = item.get("IndexNumber")
             if item_season == season and item_episode == episode:
-                logger.info(f"Emby 找到匹配的集: S{season:02d}E{episode:02d}")
+                # Episode identifiers are converted to bounded single-line values.
+                logger.info(
+                    "Emby 找到匹配的集: S%sE%s",
+                    safe_log_value(f"{season:02d}"),
+                    safe_log_value(f"{episode:02d}"),
+                )
                 return EmbyEpisodeMatch(
                     id=item["Id"],
                     name=item["Name"],
@@ -368,5 +384,10 @@ class EmbyService:
                     series_name=item.get("SeriesName", ""),
                 )
 
-        logger.info(f"Emby 未找到集: S{season:02d}E{episode:02d}")
+        # Episode identifiers are converted to bounded single-line values.
+        logger.info(
+            "Emby 未找到集: S%sE%s",
+            safe_log_value(f"{season:02d}"),
+            safe_log_value(f"{episode:02d}"),
+        )
         return None

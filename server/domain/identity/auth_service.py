@@ -6,11 +6,13 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import aiosqlite
 import jwt
 from jwt import InvalidTokenError as JWTError
 
 from server.infrastructure.db import get_db_manager
 from server.infrastructure.repositories.auth_repository import AuthRepository
+from server.infrastructure.log_security import safe_log_value
 from server.models.auth import ExpireOption, EXPIRE_HOURS_MAP, AuthConfig
 
 logger = logging.getLogger(__name__)
@@ -69,39 +71,73 @@ class AuthService:
 
     async def is_initialized(self) -> bool:
         """Check if admin account exists."""
-        return await self._repo.count_admins() > 0
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM admin")
+            row = await cursor.fetchone()
+            return bool(row and row[0] > 0)
 
     async def register_admin(self, username: str, password: str) -> bool:
         """Register admin account. Returns True if successful."""
-        if await self.is_initialized():
-            return False
-
         hash_value, salt = self._hash_password(password)
         password_hash = f"{salt}${hash_value}"
 
-        try:
-            await self._repo.insert_admin(username, password_hash)
-        except Exception as e:
-            logger.error(f"Failed to create admin account: {e}")
-            return False
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            try:
+                # Serialize the singleton check and insert. The database trigger
+                # remains the final invariant for any other insertion path.
+                await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute("SELECT 1 FROM admin LIMIT 1")
+                if await cursor.fetchone():
+                    await db.rollback()
+                    return False
+                await db.execute(
+                    "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
+                    (username, password_hash),
+                )
+                await db.commit()
+            except aiosqlite.IntegrityError:
+                await db.rollback()
+                logger.warning("Concurrent administrator registration was rejected")
+                return False
+            except Exception as exc:
+                await db.rollback()
+                logger.error("Failed to create admin account: %s", safe_log_value(exc))
+                return False
 
-        logger.info(f"Admin account created: {username}")
+        logger.info("Admin account created: %s", safe_log_value(username))
         return True
 
     async def verify_credentials(self, username: str, password: str) -> bool:
         """Verify username and password from database."""
-        stored_hash = await self._repo.get_password_hash(username)
-        if not stored_hash:
-            return False
-        return self._verify_password(password, stored_hash)
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            cursor = await db.execute(
+                "SELECT password_hash FROM admin WHERE username = ?", (username,)
+            )
+            row = await cursor.fetchone()
+            return bool(row and self._verify_password(password, row[0]))
 
     async def get_user_id(self, username: str) -> int | None:
         """Get user ID by username."""
-        return await self._repo.get_user_id(username)
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            cursor = await db.execute(
+                "SELECT id FROM admin WHERE username = ?", (username,)
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else None
 
     async def get_username_by_id(self, user_id: int) -> str | None:
         """Get username by user ID."""
-        return await self._repo.get_username_by_id(user_id)
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            cursor = await db.execute(
+                "SELECT username FROM admin WHERE id = ?", (user_id,)
+            )
+            row = await cursor.fetchone()
+            return str(row[0]) if row else None
 
     async def is_locked(self, client_ip: str) -> tuple[bool, int]:
         """Check if client is locked out. Returns (is_locked, remaining_minutes)."""
@@ -188,31 +224,95 @@ class AuthService:
         hours = EXPIRE_HOURS_MAP.get(expire_option, 24 * 7)
         return hours * 3600
 
-    async def change_password(self, username: str, old_password: str, new_password: str) -> bool:
-        """Change user password."""
-        if not await self.verify_credentials(username, old_password):
-            return False
-
+    async def change_password(
+        self,
+        username: str,
+        old_password: str,
+        new_password: str,
+        *,
+        except_session_id: str,
+    ) -> tuple[bool, list[str]]:
+        """Change a password and revoke other sessions atomically."""
         hash_value, salt = self._hash_password(new_password)
         password_hash = f"{salt}${hash_value}"
 
-        await self._repo.update_password(username, password_hash)
-        logger.info(f"Password changed for user: {username}")
-        return True
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute(
+                    "SELECT id, password_hash FROM admin WHERE username = ?",
+                    (username,),
+                )
+                row = await cursor.fetchone()
+                if row is None or not self._verify_password(old_password, row[1]):
+                    await db.rollback()
+                    return False, []
+
+                user_id = int(row[0])
+                cursor = await db.execute(
+                    "SELECT id FROM sessions WHERE user_id = ? AND id != ?",
+                    (user_id, except_session_id),
+                )
+                revoked_ids = [str(item[0]) for item in await cursor.fetchall()]
+                await db.execute(
+                    "UPDATE admin SET password_hash = ? WHERE id = ?",
+                    (password_hash, user_id),
+                )
+                await db.execute(
+                    "DELETE FROM sessions WHERE user_id = ? AND id != ?",
+                    (user_id, except_session_id),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+        logger.info("Password changed for user: %s", safe_log_value(username))
+        return True, revoked_ids
 
     async def update_username(self, current_username: str, new_username: str, password: str) -> tuple[bool, str]:
         """Update username. Returns (success, message)."""
-        # 验证密码
-        if not await self.verify_credentials(current_username, password):
-            return False, "密码验证失败"
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute(
+                    "SELECT id, password_hash FROM admin WHERE username = ?",
+                    (current_username,),
+                )
+                row = await cursor.fetchone()
+                if row is None or not self._verify_password(password, row[1]):
+                    await db.rollback()
+                    return False, "密码验证失败"
 
-        # 检查新用户名是否已存在
-        if await self._repo.username_exists_other(new_username, current_username):
-            return False, "用户名已存在"
+                cursor = await db.execute(
+                    "SELECT 1 FROM admin WHERE username = ? AND id != ?",
+                    (new_username, row[0]),
+                )
+                if await cursor.fetchone():
+                    await db.rollback()
+                    return False, "用户名已存在"
 
-        # 更新用户名
-        await self._repo.update_username(new_username, current_username)
-        logger.info(f"Username changed from {current_username} to {new_username}")
+                await db.execute(
+                    "UPDATE admin SET username = ? WHERE id = ?",
+                    (new_username, row[0]),
+                )
+                await db.execute(
+                    "UPDATE login_history SET username = ? "
+                    "WHERE username = ? AND success = 1",
+                    (new_username, current_username),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+        logger.info(
+            "Username changed from %s to %s",
+            safe_log_value(current_username),
+            safe_log_value(new_username),
+        )
         return True, "用户名修改成功"
 
     async def get_user_profile(self, username: str) -> dict | None:

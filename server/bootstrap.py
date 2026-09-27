@@ -32,7 +32,7 @@ async def init_services() -> None:
     from server.domain.artifacts.rename_service import RenameService
     from server.domain.artifacts.subtitle_service import SubtitleService
     from server.domain.system.template_service import TemplateService
-    from server.infrastructure.realtime import ConnectionManager
+    from server.infrastructure.realtime import get_ws_manager
 
     # Register core services (stateless, can be singletons)
     container.register(Services.CONFIG, ConfigService)
@@ -43,7 +43,7 @@ async def init_services() -> None:
     container.register(Services.TEMPLATE, TemplateService)
 
     # Register WebSocket manager as singleton instance
-    container.register_instance(Services.WEBSOCKET, ConnectionManager())
+    container.register_instance(Services.WEBSOCKET, get_ws_manager())
 
     # Services with dependencies (IMAGE, TMDB, EMBY, SCRAPER) will be created lazily
     # via their respective get_*_service() functions
@@ -351,11 +351,9 @@ def get_scraper_service():
 
 def get_websocket_manager():
     """FastAPI dependency for ConnectionManager."""
-    return _get_singleton_service(
-        Services.WEBSOCKET,
-        "server.infrastructure.realtime",
-        "ConnectionManager"
-    )
+    from server.infrastructure.realtime import get_ws_manager
+
+    return get_ws_manager()
 
 
 def get_watcher_service():

@@ -30,7 +30,7 @@ class TestParserAPI:
         assert data["result"]["is_parsed"] is True
 
     def test_parse_with_filepath(self, client):
-        """Test parsing with filepath context."""
+        """File paths are accepted as context but do not infer seasons by themselves."""
         response = client.post(
             "/api/parse",
             json={
@@ -41,8 +41,11 @@ class TestParserAPI:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["result"]["season"] == 1
-        assert data["result"]["episode"] == 1
+        # The parser deliberately derives metadata from the filename only. A
+        # directory named "Season 1" and an ambiguous bare "E01" filename
+        # must not silently produce season or episode metadata.
+        assert data["result"]["season"] is None
+        assert data["result"]["episode"] is None
 
     def test_parse_chinese_format(self, client):
         """Test parsing Chinese format filename."""

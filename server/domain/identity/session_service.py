@@ -1,11 +1,14 @@
 """Session management service - database-backed."""
 
+import asyncio
 import hashlib
 import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from server.infrastructure.db import get_db_manager
+from server.infrastructure.log_security import safe_log_value
 from server.infrastructure.repositories.session_repository import SessionRepository
 from server.models.auth import SessionInfo, LoginHistoryItem, EXPIRE_HOURS_MAP, ExpireOption
 
@@ -87,6 +90,33 @@ class SessionService:
     def __init__(self) -> None:
         self._repo = SessionRepository()
 
+    async def get_active_session_username(self, session_id: str) -> str | None:
+        """Return the username attached to a non-expired session."""
+        now = datetime.now(timezone.utc).isoformat()
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            cursor = await db.execute(
+                """
+                SELECT a.username
+                FROM sessions AS s
+                JOIN admin AS a ON a.id = s.user_id
+                WHERE s.id = ? AND s.expires_at > ?
+                LIMIT 1
+                """,
+                (session_id, now),
+            )
+            row = await cursor.fetchone()
+            return str(row[0]) if row is not None else None
+
+    async def is_session_active(
+        self, session_id: str, username: str | None = None
+    ) -> bool:
+        """Return whether a non-expired session belongs to the expected user."""
+        active_username = await self.get_active_session_username(session_id)
+        return active_username is not None and (
+            username is None or active_username == username
+        )
+
     async def _get_max_sessions(self) -> int:
         """Get max sessions from config."""
         from server.domain.identity.auth_config_service import get_auth_config_service_async
@@ -119,19 +149,48 @@ class SessionService:
         if not device_name:
             device_name = _generate_device_name(user_agent, ip_address)
 
-        # Cleanup excess sessions
-        await self._cleanup_excess_sessions(user_id)
+        max_sessions = max(1, await self._get_max_sessions())
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                """
+                SELECT id FROM sessions
+                WHERE user_id = ?
+                ORDER BY last_used_at ASC, created_at ASC
+                """,
+                (user_id,),
+            )
+            existing_ids = [str(row[0]) for row in await cursor.fetchall()]
+            remove_count = max(0, len(existing_ids) - max_sessions + 1)
+            evicted_ids = existing_ids[:remove_count]
+            if evicted_ids:
+                placeholders = ",".join("?" * len(evicted_ids))
+                await db.execute(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})",
+                    evicted_ids,
+                )
+            await db.execute(
+                """
+                INSERT INTO sessions
+                (id, user_id, refresh_token_hash, device_name, device_type,
+                 ip_address, user_agent, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    user_id,
+                    refresh_token_hash,
+                    device_name,
+                    device_type,
+                    ip_address,
+                    user_agent,
+                    expires_at.isoformat(),
+                ),
+            )
+            await db.commit()
 
-        await self._repo.insert_session(
-            session_id=session_id,
-            user_id=user_id,
-            refresh_token_hash=refresh_token_hash,
-            device_name=device_name,
-            device_type=device_type,
-            ip_address=ip_address,
-            user_agent=user_agent,
-            expires_at=expires_at.isoformat(),
-        )
+        await self.close_session_connections(evicted_ids)
 
         logger.info(f"Session created: {session_id[:8]}... for user {user_id}")
         return session_id, refresh_token
@@ -176,17 +235,73 @@ class SessionService:
         logger.debug(f"Refresh token verified: session_id={row[0]}, user_id={row[1]}")
         return row[0], row[1]
 
-    async def revoke_session(self, session_id: str) -> bool:
-        """Revoke a session by ID."""
-        deleted = await self._repo.delete_session(session_id)
+    async def close_session_connections(self, session_ids: list[str]) -> None:
+        """Close live WebSockets after their backing sessions were deleted."""
+        if not session_ids:
+            return
+        from server.infrastructure.realtime import get_ws_manager
+
+        manager = get_ws_manager()
+        results = await asyncio.gather(
+            *(manager.close_session(session_id) for session_id in session_ids),
+            return_exceptions=True,
+        )
+        if any(isinstance(result, BaseException) for result in results):
+            logger.error("Some revoked-session WebSockets could not be closed")
+
+    async def revoke_session(
+        self,
+        session_id: str,
+        *,
+        user_id: int | None = None,
+    ) -> bool:
+        """Revoke a session, optionally requiring ownership by one user."""
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            if user_id is None:
+                cursor = await db.execute(
+                    "DELETE FROM sessions WHERE id = ?", (session_id,)
+                )
+            else:
+                cursor = await db.execute(
+                    "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+                    (session_id, user_id),
+                )
+            await db.commit()
+            deleted = cursor.rowcount > 0
         if deleted:
-            logger.info(f"Session revoked: {session_id[:8]}...")
+            logger.info("Session revoked: %s...", safe_log_value(session_id[:8]))
+            await self.close_session_connections([session_id])
         return deleted
 
     async def revoke_all_sessions(self, user_id: int, except_session_id: str | None = None) -> int:
         """Revoke all sessions for a user, optionally except one."""
-        count = await self._repo.delete_user_sessions(user_id, except_session_id)
+        manager = await get_db_manager()
+        async with manager.get_connection() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if except_session_id:
+                cursor = await db.execute(
+                    "SELECT id FROM sessions WHERE user_id = ? AND id != ?",
+                    (user_id, except_session_id),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT id FROM sessions WHERE user_id = ?", (user_id,)
+                )
+            revoked_ids = [str(row[0]) for row in await cursor.fetchall()]
+            if except_session_id:
+                cursor = await db.execute(
+                    "DELETE FROM sessions WHERE user_id = ? AND id != ?",
+                    (user_id, except_session_id),
+                )
+            else:
+                cursor = await db.execute(
+                    "DELETE FROM sessions WHERE user_id = ?", (user_id,)
+                )
+            await db.commit()
+            count = cursor.rowcount
         logger.info(f"Revoked {count} sessions for user {user_id}")
+        await self.close_session_connections(revoked_ids)
         return count
 
     async def get_sessions(self, user_id: int, current_session_id: str | None = None) -> list[SessionInfo]:

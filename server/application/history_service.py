@@ -11,6 +11,7 @@ from pathlib import Path
 
 from server.application.undo_store import UndoSnapshot, UndoStore
 from server.infrastructure.db import DATABASE_PATH
+from server.infrastructure.csv_security import neutralize_csv_formula
 from server.infrastructure.repositories.history_repository import HistoryRepository
 from server.infrastructure.repositories.scraped_file_repository import ScrapedFileRepository
 from server.models.history import (
@@ -217,7 +218,7 @@ class HistoryService:
         return await self._repo.get_fingerprints(fingerprints)
 
     async def delete_record(self, record_id: str) -> bool:
-        """Delete a history record and its associated scrape job."""
+        """Mark a history record as deleted while retaining its audit trail."""
         await self._ensure_db()
 
         # 先留快照再删：删除是不可逆的 DB 操作，撤销只能靠这份现场
@@ -240,7 +241,9 @@ class HistoryService:
             if snapshot is not None:
                 self._undo.push(snapshot)
             notifier = get_notifier()
-            await notifier.notify_history_deleted(record_id)
+            update_data = {"status": TaskStatus.DELETED.value}
+            await notifier.notify_history_updated(record_id, update_data)
+            await notifier.notify_history_detail_update(record_id, update_data)
 
         return deleted
 
@@ -409,16 +412,16 @@ class HistoryService:
 
         for record in records:
             writer.writerow([
-                record.id,
-                record.task_name,
-                record.folder_path,
-                record.executed_at.isoformat(),
-                record.status.value,
+                neutralize_csv_formula(str(record.id)),
+                neutralize_csv_formula(record.task_name),
+                neutralize_csv_formula(record.folder_path),
+                neutralize_csv_formula(record.executed_at.isoformat()),
+                neutralize_csv_formula(record.status.value),
                 record.total_files,
                 record.success_count,
                 record.failed_count,
                 record.duration_seconds,
-                record.error_message or "",
+                neutralize_csv_formula(record.error_message or ""),
             ])
 
         return output.getvalue()

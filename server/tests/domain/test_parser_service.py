@@ -1,5 +1,7 @@
 """Unit tests for ParserService."""
 
+import unicodedata
+
 import pytest
 
 from server.domain.parsing.parser_service import ParserService
@@ -152,6 +154,25 @@ class TestParserService:
         assert result.episode == 1
         assert result.is_parsed is True
 
+    @pytest.mark.parametrize(
+        "filename,expected_episode",
+        [
+            ("[Maho.sub][WHITE BEAR]ツンデレ淫乱少女すくみ 1.strm", 1),
+            ("[Maho.sub][WHITE BEAR]ツンデレ淫乱少女すくみ 2[10bit].strm", 2),
+        ],
+    )
+    def test_parse_normalizes_unicode_and_strm_trailing_episode(
+        self, parser_service, filename, expected_episode
+    ):
+        """Decomposed Japanese titles and .strm suffixes retain only the series title."""
+        result = parser_service.parse(filename)
+
+        assert result.original_filename == filename
+        assert result.series_name == "ツンデレ淫乱少女すくみ"
+        assert unicodedata.is_normalized("NFC", result.series_name)
+        assert result.season == 1
+        assert result.episode == expected_episode
+
     # Test empty batch
     def test_parse_batch_empty(self, parser_service):
         """Test batch parsing with empty list."""
@@ -302,24 +323,89 @@ class TestJapaneseEpisodeParser:
 
         assert result.episode == 3, f"Expected episode 3, got {result.episode}"
 
+    @pytest.mark.parametrize(
+        "filename,expected_name,expected_episode",
+        [
+            ("[妄想実現めでぃあ]OVAヴァルキリーハザード.strm", "ヴァルキリーハザード", 1),
+            ("dokidokiりとる大家さん お家賃6突き目.strm", "dokidokiりとる大家さん", 6),
+            ("キスハグ 1［水平 線］.strm", "キスハグ", 1),
+        ],
+    )
+    def test_parse_hentai_anime_release_conventions(
+        self, parser_service, filename, expected_name, expected_episode
+    ):
+        """Common Japanese adult-animation release conventions retain clean titles."""
+        result = parser_service.parse(filename)
+        assert result.series_name == expected_name
+        assert result.season == 1
+        assert result.episode == expected_episode
+
+    @pytest.mark.parametrize(
+        "filename,expected_name,expected_episode",
+        [
+            (
+                "[Maho.sub]花粉少女注意報！～THE ANIMATION～ "
+                "ATTACK NO.3「女のコ何人シテるかな？」[10bit].strm",
+                "花粉少女注意報！",
+                3,
+            ),
+            (
+                "[Maho.sub]不良にハメられて受精する巨乳お母さん "
+                "THE ANIMATION Insert.2『じゃあね…バイバイ』.strm",
+                "不良にハメられて受精する巨乳お母さん",
+                2,
+            ),
+            (
+                "[Maho.sub]彼女が見舞いに来ない理由（わけ） "
+                "理由3「擦り切れゆく想い」.strm",
+                "彼女が見舞いに来ない理由（わけ）",
+                3,
+            ),
+            (
+                "[Maho.sub]HHH トリプルエッチ 3rd. みゆき編.strm",
+                "HHH トリプルエッチ",
+                3,
+            ),
+            (
+                "[Maho.sub]ヴァンパイア 第二夜【720P】.strm",
+                "ヴァンパイア",
+                2,
+            ),
+            (
+                "[Maho.sub]学園催眠隷奴 anime：03 "
+                "いやっ、絶対まだ妊娠なんてしてないっ.strm",
+                "学園催眠隷奴",
+                3,
+            ),
+        ],
+    )
+    def test_parse_adult_ova_installment_markers(
+        self,
+        parser_service,
+        filename,
+        expected_name,
+        expected_episode,
+    ):
+        result = parser_service.parse(filename)
+        assert result.series_name == expected_name
+        assert result.season == 1
+        assert result.episode == expected_episode
+
     # ===== 罗马数字测试 =====
     @pytest.mark.parametrize(
         "filename,expected_episode",
         [
-            ("剧名 Ⅰ.mp4", 1),
-            ("剧名 Ⅱ.mp4", 2),
-            ("剧名 Ⅲ.mp4", 3),
-            ("剧名 Ⅳ.mp4", 4),
-            ("剧名 Ⅴ.mp4", 5),
+            ("剧名 第Ⅰ話.mp4", 1),
+            ("剧名 第Ⅱ話.mp4", 2),
+            ("剧名 第Ⅲ話.mp4", 3),
+            ("剧名 第Ⅳ話.mp4", 4),
+            ("剧名 第Ⅴ話.mp4", 5),
         ],
     )
     def test_parse_roman_numerals(self, parser_service, filename, expected_episode):
         """Test Roman numeral episode parsing."""
-        # Note: Roman numerals are in KANJI_NUMBERS but need specific pattern to match
-        # This test documents expected behavior
         result = parser_service.parse(filename)
-        # Roman numerals might not be matched without explicit pattern
-        # assert result.episode == expected_episode or result.episode is None
+        assert result.episode == expected_episode
 
     # ===== 全角数字测试 =====
     @pytest.mark.parametrize(

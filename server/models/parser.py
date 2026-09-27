@@ -1,6 +1,6 @@
 """Parser data models."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ParsedInfo(BaseModel):
@@ -26,7 +26,7 @@ class ParseRequest(BaseModel):
 class BatchParseRequest(BaseModel):
     """Request model for batch filename parsing."""
 
-    files: list[ParseRequest]
+    files: list[ParseRequest] = Field(max_length=500)
 
 
 class ParseResponse(BaseModel):

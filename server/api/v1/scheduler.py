@@ -33,7 +33,10 @@ async def create_task(
     scheduler_service: SchedulerService = Depends(get_scheduler_service),
 ) -> ScheduledTaskResponse:
     """Create a new scheduled task."""
-    created = await scheduler_service.create_task(task)
+    try:
+        created = await scheduler_service.create_task(task)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ScheduledTaskResponse(**created.model_dump())
 
 
@@ -56,7 +59,10 @@ async def update_task(
     scheduler_service: SchedulerService = Depends(get_scheduler_service),
 ) -> ScheduledTaskResponse:
     """Update a scheduled task."""
-    task = await scheduler_service.update_task(task_id, update)
+    try:
+        task = await scheduler_service.update_task(task_id, update)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return ScheduledTaskResponse(**task.model_dump())

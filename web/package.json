@@ -1,12 +1,14 @@
 {
   "name": "mhti",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.1.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "build:check": "vue-tsc -b && vite build",
+    "lint": "eslint src --max-warnings=0",
+    "test:unit": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -30,6 +32,7 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.52.0",
     "vite": "^7.2.4",
+    "vitest": "^5.0.1",
     "vue-tsc": "^3.1.4"
   }
 }

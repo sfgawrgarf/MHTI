@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -34,6 +36,8 @@ from server.models.history import (
 )
 from server.models.organize import OrganizeMode
 from server.models.scraper import ScrapeByIdRequest
+from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
+from server.models.storage import is_p115_to_local
 from server.application.history_service import HistoryService
 from server.application.manual_job_service import ManualJobService
 from server.application.scrape_job_service import ScrapeJobService
@@ -102,6 +106,96 @@ class AIRetryRequest(BaseModel):
     record_ids: list[str] | None = Field(default=None, max_length=500)
     limit: int = Field(default=100, ge=1, le=500)
     all_pending: bool = False
+
+
+async def _restore_locators_from_scrape_job(record) -> dict:
+    """Restore persisted job storage context for a manual history action."""
+    if not getattr(record, "scrape_job_id", None):
+        return {}
+    try:
+        from server.application import scrape_job_service as scrape_job_module
+
+        service = scrape_job_module.ScrapeJobService()
+        job = await service.get_job(record.scrape_job_id)
+        if job is None:
+            return {}
+        allow_local_output = bool(getattr(job, "allow_local_output", False))
+        if (
+            not allow_local_output
+            and getattr(job, "source", ScrapeJobSource.MANUAL) == ScrapeJobSource.WATCHER
+            and is_p115_to_local(
+                source_path=job.file_path,
+                source_locator=getattr(job, "file_locator", None),
+                target_path=job.output_dir,
+                target_locator=getattr(job, "output_locator", None),
+            )
+        ):
+            allow_local_output = True
+        values = {
+            "file_locator": getattr(job, "file_locator", None),
+            "output_locator": getattr(job, "output_locator", None),
+            "metadata_locator": getattr(job, "metadata_locator", None),
+            "allow_local_output": allow_local_output,
+            "output_dir": getattr(job, "output_dir", None),
+            "metadata_dir": getattr(job, "metadata_dir", None),
+            "link_mode": getattr(job, "link_mode", None),
+            "advanced_settings": getattr(job, "advanced_settings", None),
+        }
+        return {
+            key: value
+            for key, value in values.items()
+            if value is not None and value is not False
+        }
+    except Exception:
+        return {}
+
+
+async def _execute_scrape_and_update(
+    history_service: HistoryService,
+    record_id: str,
+    scrape_request: ScrapeByIdRequest,
+    user_selection_log: str | None = None,
+) -> dict:
+    """Queue a manual history action through the durable scrape-job worker."""
+    from server.application import scrape_job_service as scrape_job_module
+
+    record = await history_service.get_record(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    service = scrape_job_module.ScrapeJobService()
+    job = await service.create_job(
+        ScrapeJobCreate(
+            file_path=scrape_request.file_path,
+            output_dir=scrape_request.output_dir or str(Path(scrape_request.file_path).parent),
+            metadata_dir=scrape_request.metadata_dir,
+            file_locator=scrape_request.file_locator,
+            output_locator=scrape_request.output_locator,
+            metadata_locator=scrape_request.metadata_locator,
+            allow_local_output=scrape_request.allow_local_output,
+            link_mode=scrape_request.link_mode,
+            advanced_settings=scrape_request.advanced_settings,
+            source=ScrapeJobSource.MANUAL,
+            source_id=getattr(record, "manual_job_id", None),
+            replaces_job_id=getattr(record, "scrape_job_id", None),
+            continuation_history_id=record_id,
+            correction_tmdb_id=scrape_request.tmdb_id,
+            correction_season=scrape_request.season,
+            correction_episode=scrape_request.episode,
+            file_action=scrape_request.file_action,
+            skip_emby_check=scrape_request.skip_emby_check,
+            selection_log=user_selection_log,
+        ),
+        skip_duplicate_check=True,
+    )
+    if job is None:
+        raise HTTPException(status_code=409, detail="该记录或文件已在处理中，请勿重复提交")
+    return {
+        "success": True,
+        "queued": True,
+        "job_id": job.id,
+        "message": "已加入刮削队列，请在记录页查看结果",
+    }
 
 
 async def _list_all_pending_record_ids(history_service: HistoryService) -> list[str]:
@@ -276,7 +370,8 @@ class ResolveConflictRequest(BaseModel):
     season: int | None = None
     episode: int | None = None
     # FILE_CONFLICT: 处理方式
-    file_action: str | None = None  # "overwrite" | "skip" | "rename"
+    file_action: Literal["overwrite", "skip", "rename", "force"] | None = None
+    resolution_action: Literal["rematch"] | None = None
 
 
 def get_history_file_service(
@@ -338,6 +433,186 @@ def _build_scrape_request(
     return ScrapeByIdRequest(**kwargs)
 
 
+async def _resolve_conflict_compat(
+    record_id: str,
+    request: ResolveConflictRequest,
+    history_service: HistoryService,
+) -> dict:
+    """Compatibility path for direct callers of the pre-use-case route API."""
+    record = await history_service.get_record(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    if record.status not in (
+        TaskStatus.PENDING_ACTION,
+        TaskStatus.SKIPPED,
+        TaskStatus.DELETED,
+    ):
+        raise HTTPException(status_code=400, detail="该记录不需要处理")
+    if record.conflict_type != request.conflict_type:
+        raise HTTPException(status_code=400, detail="冲突类型不匹配")
+
+    if request.file_action == "skip" and request.resolution_action != "rematch":
+        await history_service.update_record(
+            record_id, status=TaskStatus.SKIPPED, error_message="用户跳过"
+        )
+        return {"success": True, "message": "已跳过"}
+
+    conflict_data = record.conflict_data or {}
+    locators = await _restore_locators_from_scrape_job(record)
+    output_dir = locators.pop("output_dir", conflict_data.get("output_dir"))
+    metadata_dir = locators.pop("metadata_dir", conflict_data.get("metadata_dir"))
+    link_mode = locators.pop("link_mode", None)
+    if link_mode is None and conflict_data.get("link_mode"):
+        link_mode = OrganizeMode(conflict_data["link_mode"])
+
+    if request.resolution_action == "rematch":
+        if request.tmdb_id is None:
+            raise HTTPException(status_code=400, detail="请选择 TMDB ID")
+        if request.season is None or request.episode is None:
+            raise HTTPException(status_code=400, detail="请提供季/集号")
+        return await _execute_scrape_and_update(
+            history_service,
+            record_id,
+            ScrapeByIdRequest(
+                file_path=record.folder_path,
+                tmdb_id=request.tmdb_id,
+                season=request.season,
+                episode=request.episode,
+                output_dir=output_dir,
+                metadata_dir=metadata_dir,
+                link_mode=link_mode,
+                file_action=request.file_action,
+                **locators,
+            ),
+            f"用户重新匹配: TMDB ID {request.tmdb_id}, S{request.season:02d}E{request.episode:02d}",
+        )
+
+    if request.conflict_type == HistoryConflictType.NEED_SELECTION:
+        if request.tmdb_id is None:
+            raise HTTPException(status_code=400, detail="请选择 TMDB ID")
+        if request.season is None or request.episode is None:
+            raise HTTPException(status_code=400, detail="请提供季/集号")
+        selected_name = f"TMDB ID: {request.tmdb_id}"
+        for result in conflict_data.get("search_results", []):
+            if result.get("id") == request.tmdb_id:
+                selected_name = result.get("name", selected_name)
+                break
+        message = f"用户选择了「{selected_name}」S{request.season:02d}E{request.episode:02d}"
+        return await _execute_scrape_and_update(
+            history_service,
+            record_id,
+            _build_scrape_request(
+                record,
+                tmdb_id=request.tmdb_id,
+                season=request.season,
+                episode=request.episode,
+                output_dir=output_dir,
+                metadata_dir=metadata_dir,
+                link_mode=link_mode,
+                locators=locators,
+                file_action=request.file_action,
+            ),
+            message,
+        )
+
+    if request.conflict_type == HistoryConflictType.NEED_SEASON_EPISODE:
+        if request.season is None or request.episode is None:
+            raise HTTPException(status_code=400, detail="请提供季/集号")
+        tmdb_id = conflict_data.get("tmdb_id")
+        if tmdb_id is None:
+            raise HTTPException(status_code=400, detail="缺少 TMDB ID")
+        return await _execute_scrape_and_update(
+            history_service,
+            record_id,
+            _build_scrape_request(
+                record,
+                tmdb_id=tmdb_id,
+                season=request.season,
+                episode=request.episode,
+                output_dir=output_dir,
+                metadata_dir=metadata_dir,
+                link_mode=link_mode,
+                locators=locators,
+                file_action=request.file_action,
+            ),
+            f"用户选择了 S{request.season:02d}E{request.episode:02d}",
+        )
+
+    if request.conflict_type == HistoryConflictType.FILE_CONFLICT:
+        if request.file_action not in ("overwrite", "rename"):
+            raise HTTPException(status_code=400, detail="无效的处理方式")
+        tmdb_id = conflict_data.get("tmdb_id")
+        if tmdb_id is None:
+            raise HTTPException(status_code=400, detail="缺少 TMDB ID")
+        action_text = "覆盖" if request.file_action == "overwrite" else "重命名"
+        return await _execute_scrape_and_update(
+            history_service,
+            record_id,
+            _build_scrape_request(
+                record,
+                tmdb_id=tmdb_id,
+                season=conflict_data.get("season", 1),
+                episode=conflict_data.get("episode", 1),
+                output_dir=output_dir,
+                metadata_dir=metadata_dir,
+                link_mode=link_mode,
+                locators=locators,
+                file_action=request.file_action,
+            ),
+            f"用户选择了{action_text}文件",
+        )
+
+    if request.conflict_type in (
+        HistoryConflictType.NO_MATCH,
+        HistoryConflictType.SEARCH_FAILED,
+        HistoryConflictType.API_FAILED,
+    ):
+        if request.tmdb_id is None:
+            raise HTTPException(status_code=400, detail="请输入 TMDB ID")
+        if request.season is None or request.episode is None:
+            raise HTTPException(status_code=400, detail="请提供季/集号")
+        return await _execute_scrape_and_update(
+            history_service,
+            record_id,
+            _build_scrape_request(
+                record,
+                tmdb_id=request.tmdb_id,
+                season=request.season,
+                episode=request.episode,
+                output_dir=output_dir,
+                metadata_dir=metadata_dir,
+                link_mode=link_mode,
+                locators=locators,
+            ),
+            f"用户手动输入 TMDB ID: {request.tmdb_id}, S{request.season:02d}E{request.episode:02d}",
+        )
+
+    if request.conflict_type == HistoryConflictType.EMBY_CONFLICT:
+        tmdb_id = conflict_data.get("tmdb_id")
+        if tmdb_id is None:
+            raise HTTPException(status_code=400, detail="缺少 TMDB ID")
+        season = request.season if request.season is not None else conflict_data.get("season", 1)
+        episode = request.episode if request.episode is not None else conflict_data.get("episode", 1)
+        return await _execute_scrape_and_update(
+            history_service,
+            record_id,
+            _build_scrape_request(
+                record,
+                tmdb_id=tmdb_id,
+                season=season,
+                episode=episode,
+                output_dir=output_dir,
+                metadata_dir=metadata_dir,
+                link_mode=link_mode,
+                locators=locators,
+                skip_emby_check=True,
+            ),
+            f"用户选择刮削为 S{season:02d}E{episode:02d}",
+        )
+
+    raise HTTPException(status_code=400, detail="未知的冲突类型")
+
+
 @router.put("/{record_id}/resolve")
 async def resolve_conflict(
     record_id: str,
@@ -346,12 +621,20 @@ async def resolve_conflict(
     actions: HistoryScrapeActions = Depends(get_history_scrape_actions),
 ) -> dict:
     """处理待处理的冲突记录"""
+    # 保留旧路由函数的直接调用兼容性；生产请求由 FastAPI 注入新的用例对象。
+    if not isinstance(actions, HistoryScrapeActions):
+        return await _resolve_conflict_compat(record_id, request, history_service)
+
     # 获取记录
     record = await history_service.get_record(record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="记录不存在")
 
-    if record.status != TaskStatus.PENDING_ACTION:
+    if record.status not in (
+        TaskStatus.PENDING_ACTION,
+        TaskStatus.SKIPPED,
+        TaskStatus.DELETED,
+    ):
         raise HTTPException(status_code=400, detail="该记录不需要处理")
 
     if record.conflict_type != request.conflict_type:
@@ -365,6 +648,28 @@ async def resolve_conflict(
 
     # 恢复 locator（支持 115 等云端文件重试）
     locators = await actions.restore_locators(record)
+
+    if request.resolution_action == "rematch":
+        if request.tmdb_id is None:
+            raise HTTPException(status_code=400, detail="请选择 TMDB ID")
+        if request.season is None or request.episode is None:
+            raise HTTPException(status_code=400, detail="请提供季/集号")
+        scrape_request = ScrapeByIdRequest(
+            file_path=record.folder_path,
+            tmdb_id=request.tmdb_id,
+            season=request.season,
+            episode=request.episode,
+            output_dir=output_dir,
+            metadata_dir=metadata_dir,
+            link_mode=link_mode,
+            **locators,
+        )
+        return await actions.queue_scrape_and_update(
+            record_id,
+            scrape_request,
+            f"用户重新匹配: TMDB ID {request.tmdb_id}, "
+            f"S{request.season:02d}E{request.episode:02d}",
+        )
 
     # 根据冲突类型处理
     if request.conflict_type == HistoryConflictType.NEED_SELECTION:
@@ -510,6 +815,83 @@ class RetryRequest(BaseModel):
     episode: int  # 集号
 
 
+class SuccessRematchRequest(BaseModel):
+    """为成功记录创建显式的纠正任务，不直接改写原记录。"""
+
+    tmdb_id: int
+    season: int
+    episode: int
+
+
+def _get_success_output_path(record) -> Path | None:
+    """从成功记录中取出当前本地产物路径。"""
+    marker = " => "
+    folder_path = getattr(record, "folder_path", "")
+    if marker not in folder_path:
+        return None
+    _, output_path = folder_path.rsplit(marker, 1)
+    output_path = output_path.strip()
+    return Path(output_path) if output_path else None
+
+
+@router.post("/{record_id}/rematch")
+async def rematch_successful_record(
+    record_id: str,
+    request: SuccessRematchRequest,
+    history_service: HistoryService = Depends(get_history_service),
+) -> dict:
+    """为成功记录排队纠正任务，只有新任务成功后才替代原记录。"""
+    record = await history_service.get_record(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    if record.status != TaskStatus.SUCCESS:
+        raise HTTPException(status_code=400, detail="仅支持修改成功记录的匹配")
+    if not getattr(record, "scrape_job_id", None):
+        raise HTTPException(status_code=409, detail="该成功记录缺少原始任务，无法安全纠正")
+
+    current_output = _get_success_output_path(record)
+    if current_output is None or not current_output.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail="当前已整理文件不存在或不是本地输出，无法创建可回退的纠正任务",
+        )
+
+    from server.application import scrape_job_service as scrape_job_module
+
+    jobs = scrape_job_module.ScrapeJobService()
+    old_job = await jobs.get_job(record.scrape_job_id)
+    if old_job is None:
+        raise HTTPException(status_code=409, detail="原始任务不存在，无法安全纠正")
+
+    correction = await jobs.create_job(
+        ScrapeJobCreate(
+            file_path=str(current_output),
+            output_dir=old_job.output_dir,
+            metadata_dir=getattr(old_job, "metadata_dir", None),
+            output_locator=getattr(old_job, "output_locator", None),
+            metadata_locator=getattr(old_job, "metadata_locator", None),
+            allow_local_output=getattr(old_job, "allow_local_output", False),
+            link_mode=getattr(old_job, "link_mode", None),
+            source=ScrapeJobSource.MANUAL,
+            source_id=getattr(old_job, "source_id", None),
+            advanced_settings=getattr(old_job, "advanced_settings", None),
+            replaces_job_id=old_job.id,
+            correction_history_id=record.id,
+            correction_tmdb_id=request.tmdb_id,
+            correction_season=request.season,
+            correction_episode=request.episode,
+        )
+    )
+    if correction is None:
+        raise HTTPException(status_code=409, detail="当前文件已有待处理任务，请等待其完成后再修改匹配")
+
+    return {
+        "success": True,
+        "job_id": correction.id,
+        "message": "已创建纠正任务；新任务成功后才会替代原成功记录，并保留 7 天备份",
+    }
+
+
 @router.post("/{record_id}/retry")
 async def retry_scrape(
     record_id: str,
@@ -527,14 +909,65 @@ async def retry_scrape(
     输入文件不由调用方指定：后端按「源文件优先、源文件不存在就用整理后的产物」
     自行解析（resolve_input），否则拿 folder_path 那串「源 => 产物」当路径会直接报文件不存在。
     """
+    # 直接调用旧函数签名时，使用兼容路径；生产请求走持久化用例。
+    if not isinstance(actions, HistoryScrapeActions):
+        record = await history_service.get_record(record_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        retryable_statuses = {
+            TaskStatus.FAILED,
+            TaskStatus.TIMEOUT,
+            TaskStatus.CANCELLED,
+            TaskStatus.SKIPPED,
+            TaskStatus.DELETED,
+        }
+        if record.status not in retryable_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=f"该记录状态为 {record.status.value}，不支持重试",
+            )
+        conflict_data = record.conflict_data or {}
+        locators = await _restore_locators_from_scrape_job(record)
+        output_dir = locators.pop("output_dir", conflict_data.get("output_dir"))
+        metadata_dir = locators.pop("metadata_dir", conflict_data.get("metadata_dir"))
+        link_mode = locators.pop("link_mode", None)
+        if link_mode is None and conflict_data.get("link_mode"):
+            link_mode = OrganizeMode(conflict_data["link_mode"])
+        scrape_request = _build_scrape_request(
+            record,
+            tmdb_id=request.tmdb_id,
+            season=request.season,
+            episode=request.episode,
+            output_dir=output_dir,
+            metadata_dir=metadata_dir,
+            link_mode=link_mode,
+            locators=locators,
+        )
+        return await _execute_scrape_and_update(
+            history_service,
+            record_id,
+            scrape_request,
+            f"用户手动重试: TMDB ID {request.tmdb_id}, S{request.season:02d}E{request.episode:02d}",
+        )
+
     # 1. 获取并验证记录
     record = await history_service.get_record(record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="记录不存在")
 
-    # 2. 正在处理中的记录不允许并发重刮
-    if record.status == TaskStatus.RUNNING:
-        raise HTTPException(status_code=400, detail="该记录正在处理中，请稍后再试")
+    # 2. 只有明确的失败/终止状态允许重试；成功记录走独立纠正接口。
+    retryable_statuses = {
+        TaskStatus.FAILED,
+        TaskStatus.TIMEOUT,
+        TaskStatus.CANCELLED,
+        TaskStatus.SKIPPED,
+        TaskStatus.DELETED,
+    }
+    if record.status not in retryable_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"该记录状态为 {record.status.value}，不支持重试",
+        )
 
     # 3. 从 conflict_data 恢复原始参数
     conflict_data = record.conflict_data or {}
@@ -546,6 +979,9 @@ async def retry_scrape(
     # 4. 构建刮削请求（恢复 locator 以支持 115 等云端文件）
     user_log = f"用户手动重试: TMDB ID {request.tmdb_id}, S{request.season:02d}E{request.episode:02d}"
     locators = await actions.restore_locators(record)
+    output_dir = locators.pop("output_dir", output_dir)
+    metadata_dir = locators.pop("metadata_dir", metadata_dir)
+    link_mode = locators.pop("link_mode", link_mode)
 
     scrape_request = _build_scrape_request(
         record,

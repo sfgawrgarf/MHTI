@@ -45,11 +45,16 @@ async def scan_folder(
         InvalidFolderError: 无效文件夹路径 (400)
         PermissionDeniedError: 权限被拒绝 (403)
     """
-    folder_path, files = await use_case.scan(request.folder_path, request.locator)
+    folder_path, files, scraped_count = await use_case.scan(
+        request.folder_path,
+        request.locator,
+        request.exclude_scraped,
+    )
     return ScanResponse(
         folder_path=folder_path,
         total_files=len(files),
         files=files,
+        scraped_count=scraped_count,
     )
 
 

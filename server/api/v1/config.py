@@ -3,13 +3,16 @@
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends
 
-from server.application.watching import WatcherConfigUseCase
+from server.application.watching import (
+    WatcherConfigUseCase,
+    effective_watcher_mode,
+    watch_scan_interval,
+)
 from server.api.deps import require_auth
 from server.api.deps import (
     get_config_service,
     get_p115_service,
     get_tmdb_service,
-    get_watcher_service,
 )
 from server.models.cloud_115 import (
     Cloud115AccountInfo,
@@ -38,6 +41,7 @@ from server.models.watcher import (
     WatcherConfig,
     WatcherConfigRequest,
     WatcherConfigResponse,
+    WatcherMode,
 )
 from server.models.nfo import NfoConfig
 from server.models.system import SystemConfig
@@ -45,8 +49,19 @@ from server.domain.system.config_service import ConfigService
 from server.domain.integration.p115_service import P115Service
 from server.domain.metadata.tmdb_service import TMDBService
 from server.application.watcher_service import WatcherService
+from server.bootstrap import get_watcher_service
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
+
+
+def _effective_watcher_mode(path: str, requested_mode: WatcherMode) -> WatcherMode:
+    """Compatibility wrapper for callers that used the old route helper."""
+    return effective_watcher_mode(path, requested_mode)
+
+
+def _watch_scan_interval(performance_mode: bool) -> int:
+    """Compatibility wrapper for callers that used the old route helper."""
+    return watch_scan_interval(performance_mode)
 
 
 class Cloud115LoginRequest(BaseModel):
@@ -314,19 +329,35 @@ async def save_watcher_config(
     use_case: WatcherConfigUseCase = Depends(get_watcher_config_use_case),
 ) -> WatcherConfigResponse:
     """Save watcher configuration and sync to watcher service."""
+    # Direct callers and focused tests may pass a ConfigService as the second
+    # argument; keep that seam while the HTTP path uses the injected use case.
+    if not isinstance(use_case, WatcherConfigUseCase):
+        config_service = use_case
+        use_case = WatcherConfigUseCase(
+            config_service=config_service,
+            watcher_service=get_watcher_service(),
+            p115_service=P115Service(config_service),
+        )
     config = WatcherConfig(
         enabled=request.enabled,
         mode=request.mode,
         performance_mode=request.performance_mode,
         watch_dirs=request.watch_dirs,
     )
-    await use_case.save_and_sync(config)
+    try:
+        effective_config = await use_case.save_and_sync(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return WatcherConfigResponse(
-        enabled=config.enabled,
-        mode=config.mode,
-        performance_mode=config.performance_mode,
-        watch_dirs=config.watch_dirs,
+        enabled=effective_config.enabled,
+        mode=effective_config.mode,
+        performance_mode=effective_config.performance_mode,
+        watch_dirs=effective_config.watch_dirs,
     )
 
 

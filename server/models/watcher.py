@@ -2,7 +2,11 @@
 
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+from server.models.storage import is_p115_virtual_path
 
 
 class WatcherMode(str, Enum):
@@ -19,7 +23,7 @@ class WatcherConfig(BaseModel):
     enabled: bool = False  # 启用目录监控
     mode: WatcherMode = WatcherMode.REALTIME  # 监控模式
     performance_mode: bool = False  # 性能模式
-    watch_dirs: list[str] = []  # 监控目录列表
+    watch_dirs: list[str] = Field(default_factory=list)  # 监控目录列表
 
 
 class WatcherConfigRequest(BaseModel):
@@ -28,7 +32,17 @@ class WatcherConfigRequest(BaseModel):
     enabled: bool = False
     mode: WatcherMode = WatcherMode.REALTIME
     performance_mode: bool = False
-    watch_dirs: list[str] = []
+    watch_dirs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_watch_dirs(self) -> "WatcherConfigRequest":
+        normalized = [path.strip() for path in self.watch_dirs]
+        if any(not path for path in normalized):
+            raise ValueError("监控目录不能为空")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("监控目录不能重复")
+        self.watch_dirs = normalized
+        return self
 
 
 class WatcherConfigResponse(BaseModel):
@@ -49,6 +63,33 @@ class WatcherStatus(str, Enum):
     ERROR = "error"
 
 
+WatcherProvider = Literal["local", "115"]
+MIN_SCAN_INTERVAL_SECONDS = 5
+MAX_WATCH_INTERVAL_SECONDS = 86400
+MIN_FILE_STABLE_SECONDS = 0
+
+
+def _validate_watched_folder_selection(
+    *,
+    path: str,
+    provider: WatcherProvider,
+    mode: WatcherMode,
+    output_dir: str | None,
+) -> None:
+    """Reject watcher configurations that select conflicting storage modes."""
+    path_is_p115 = is_p115_virtual_path(path)
+    if provider == "115" and not path_is_p115:
+        raise ValueError("115 监控目录必须使用 /115网盘 路径")
+    if provider == "local" and path_is_p115:
+        raise ValueError("115 网盘路径不能声明为本地监控目录")
+    if provider == "115" and mode == WatcherMode.REALTIME:
+        raise ValueError("115 监控目录不支持实时文件系统模式")
+    if provider == "local" and mode == WatcherMode.EVENT:
+        raise ValueError("本地监控目录不支持 115 事件模式")
+    if provider == "local" and output_dir and is_p115_virtual_path(output_dir):
+        raise ValueError("暂不支持将本地监控文件输出到 115 网盘")
+
+
 class WatchedFolder(BaseModel):
     """Watched folder model."""
 
@@ -56,14 +97,28 @@ class WatchedFolder(BaseModel):
     path: str
     enabled: bool = True
     mode: WatcherMode = WatcherMode.REALTIME  # 每个文件夹独立监控模式
-    scan_interval_seconds: int = 60
-    file_stable_seconds: int = 30
+    scan_interval_seconds: int = Field(
+        60, ge=MIN_SCAN_INTERVAL_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
+    file_stable_seconds: int = Field(
+        30, ge=MIN_FILE_STABLE_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
     auto_scrape: bool = True
     output_dir: str | None = None  # 独立整理目录（留空则用全局配置）
-    provider: str = "local"  # 存储提供方：local / 115
+    provider: WatcherProvider = "local"  # 存储提供方：local / 115
     file_id: str | None = None  # 115 目录的 file_id（provider=115 时用）
     last_scan: datetime | None = None
     created_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_storage_selection(self) -> "WatchedFolder":
+        _validate_watched_folder_selection(
+            path=self.path,
+            provider=self.provider,
+            mode=self.mode,
+            output_dir=self.output_dir,
+        )
+        return self
 
 
 class WatchedFolderCreate(BaseModel):
@@ -72,12 +127,26 @@ class WatchedFolderCreate(BaseModel):
     path: str
     enabled: bool = True
     mode: WatcherMode = WatcherMode.REALTIME
-    scan_interval_seconds: int = 60
-    file_stable_seconds: int = 30
+    scan_interval_seconds: int = Field(
+        60, ge=MIN_SCAN_INTERVAL_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
+    file_stable_seconds: int = Field(
+        30, ge=MIN_FILE_STABLE_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
     auto_scrape: bool = True
     output_dir: str | None = None
-    provider: str = "local"
+    provider: WatcherProvider = "local"
     file_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_storage_selection(self) -> "WatchedFolderCreate":
+        _validate_watched_folder_selection(
+            path=self.path,
+            provider=self.provider,
+            mode=self.mode,
+            output_dir=self.output_dir,
+        )
+        return self
 
 
 class WatchedFolderUpdate(BaseModel):
@@ -86,11 +155,15 @@ class WatchedFolderUpdate(BaseModel):
     path: str | None = None
     enabled: bool | None = None
     mode: WatcherMode | None = None
-    scan_interval_seconds: int | None = None
-    file_stable_seconds: int | None = None
+    scan_interval_seconds: int | None = Field(
+        None, ge=MIN_SCAN_INTERVAL_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
+    file_stable_seconds: int | None = Field(
+        None, ge=MIN_FILE_STABLE_SECONDS, le=MAX_WATCH_INTERVAL_SECONDS
+    )
     auto_scrape: bool | None = None
     output_dir: str | None = None
-    provider: str | None = None
+    provider: WatcherProvider | None = None
     file_id: str | None = None
 
 
@@ -105,7 +178,7 @@ class WatchedFolderResponse(BaseModel):
     file_stable_seconds: int
     auto_scrape: bool
     output_dir: str | None = None
-    provider: str = "local"
+    provider: WatcherProvider = "local"
     file_id: str | None = None
     last_scan: datetime | None
     created_at: datetime | None

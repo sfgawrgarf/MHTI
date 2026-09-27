@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from server.infrastructure.repositories.log_repository import LogRepository
+from server.infrastructure.csv_security import neutralize_csv_formula
 from server.models.log import (
     LogConfig,
     LogConfigUpdate,
@@ -250,9 +251,12 @@ class LogService:
             lines = ["timestamp,level,logger,message,request_id,user_id"]
             for item in items:
                 # 转义 CSV 中的特殊字符
-                message = item.message.replace('"', '""')
+                message = neutralize_csv_formula(item.message).replace('"', '""')
+                logger_name = neutralize_csv_formula(item.logger).replace('"', '""')
+                request_id = neutralize_csv_formula(item.request_id or "").replace('"', '""')
+                user_id = neutralize_csv_formula(str(item.user_id or "")).replace('"', '""')
                 lines.append(
-                    f'"{item.timestamp.isoformat()}","{item.level.value}","{item.logger}","{message}","{item.request_id or ""}","{item.user_id or ""}"'
+                    f'"{item.timestamp.isoformat()}","{item.level.value}","{logger_name}","{message}","{request_id}","{user_id}"'
                 )
             return "\n".join(lines)
         else:

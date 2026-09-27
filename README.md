@@ -2,8 +2,8 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)
-![Python](https://img.shields.io/badge/Python-3.11+-green.svg)
+![Version](https://img.shields.io/badge/version-2.1.6-blue.svg)
+![Python](https://img.shields.io/badge/Python-3.12+-green.svg)
 ![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen.svg)
 ![Node](https://img.shields.io/badge/Node-24-339933.svg)
 ![License](https://img.shields.io/badge/license-MIT-orange.svg)

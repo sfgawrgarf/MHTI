@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from server.api.deps import verify_token
+from server.api.deps import authenticate_access_token
 from server.infrastructure.realtime import get_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -26,15 +26,20 @@ async def websocket_endpoint(websocket: WebSocket):
     - 使用 try-except 包装所有发送操作，避免单次错误导致连接断开
     """
     # 查询参数鉴权（浏览器 WebSocket 无法携带 Authorization 头）
-    username, session_id = verify_token(websocket.query_params.get("token"))
-    if not username or not session_id:
+    token = websocket.query_params.get("token")
+    if not token or len(token) > 4096:
+        await websocket.close(code=4401)
+        return
+
+    auth = await authenticate_access_token(token)
+    if auth is None:
         await websocket.close(code=4401)
         return
 
     manager = get_ws_manager()
     client_id = str(uuid.uuid4())[:8]
 
-    await manager.connect(client_id, websocket)
+    await manager.connect(client_id, websocket, auth.session_id)
 
     # 创建心跳任务和超时检测任务
     heartbeat_task = None
@@ -52,7 +57,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
         # 启动超时检测任务
         last_pong_time = asyncio.get_event_loop().time()
-        timeout_task = asyncio.create_task(_timeout_monitor(websocket, client_id, manager, last_pong_time))
+        timeout_task = asyncio.create_task(
+            _timeout_monitor(
+                websocket,
+                client_id,
+                manager,
+                last_pong_time,
+                session_id=auth.session_id,
+                username=auth.username,
+            )
+        )
 
         while True:
             data = await websocket.receive_json()
@@ -64,7 +78,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 更新超时任务
                 if timeout_task:
                     timeout_task.cancel()
-                    timeout_task = asyncio.create_task(_timeout_monitor(websocket, client_id, manager, last_pong_time))
+                    timeout_task = asyncio.create_task(
+                        _timeout_monitor(
+                            websocket,
+                            client_id,
+                            manager,
+                            last_pong_time,
+                            session_id=auth.session_id,
+                            username=auth.username,
+                        )
+                    )
                 # 响应 pong
                 try:
                     await websocket.send_json({"type": "pong"})
@@ -74,11 +97,13 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "subscribe":
                 # 订阅任务进度
                 job_ids = data.get("job_ids", [])
-                manager.subscribe(client_id, job_ids)
+                accepted_job_ids = manager.subscribe(
+                    client_id, job_ids if isinstance(job_ids, list) else []
+                )
                 try:
-                    await websocket.send_json({
+                    await manager.send_to_client(client_id, {
                         "type": "subscribed",
-                        "job_ids": job_ids,
+                        "job_ids": accepted_job_ids,
                     })
                 except Exception as e:
                     logger.warning(f"[{client_id}] 发送订阅确认失败: {e}")
@@ -139,7 +164,15 @@ async def _heartbeat_loop(websocket: WebSocket, client_id: str):
         pass
 
 
-async def _timeout_monitor(websocket: WebSocket, client_id: str, manager, last_pong_time: float):
+async def _timeout_monitor(
+    websocket: WebSocket,
+    client_id: str,
+    manager,
+    last_pong_time: float,
+    *,
+    session_id: str | None = None,
+    username: str | None = None,
+):
     """客户端超时检测
 
     检测客户端是否在规定时间内响应心跳，
@@ -148,14 +181,40 @@ async def _timeout_monitor(websocket: WebSocket, client_id: str, manager, last_p
     try:
         while True:
             await asyncio.sleep(10)  # 每10秒检查一次
+            if session_id:
+                from server.domain.identity.session_service import session_service
+
+                try:
+                    session_active = await session_service.is_session_active(
+                        session_id, username
+                    )
+                except Exception:
+                    logger.exception("[%s] 无法重新验证 WebSocket 会话", client_id)
+                    await manager.close_client(
+                        client_id,
+                        code=1011,
+                        reason="Session validation failed",
+                    )
+                    break
+                if not session_active:
+                    logger.info("[%s] 会话已失效，关闭 WebSocket", client_id)
+                    await manager.close_client(
+                        client_id,
+                        code=4401,
+                        reason="Session revoked",
+                    )
+                    break
             current_time = asyncio.get_event_loop().time()
             if current_time - last_pong_time > CLIENT_TIMEOUT:
                 logger.warning(f"[{client_id}] 客户端超时（{CLIENT_TIMEOUT}s 无响应），主动断开")
                 try:
-                    await websocket.close()
+                    await manager.close_client(
+                        client_id,
+                        code=1001,
+                        reason="Client heartbeat timeout",
+                    )
                 except Exception:
                     pass
-                manager.disconnect(client_id)
                 break
     except asyncio.CancelledError:
         pass

@@ -1,8 +1,9 @@
 """Data models for subtitle processing."""
 
 from enum import Enum
+from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 
 class SubtitleLanguage(str, Enum):
@@ -64,8 +65,16 @@ class SubtitleRenameRequest(BaseModel):
     """Request to rename subtitle file."""
 
     subtitle_path: str
-    new_video_name: str  # New video filename (without extension)
+    new_video_name: str = Field(min_length=1, max_length=255)
     preserve_language: bool = True
+
+    @field_validator("new_video_name")
+    @classmethod
+    def validate_new_video_name(cls, value: str) -> str:
+        """Keep the new name in the subtitle's current directory."""
+        if "\x00" in value or value in {".", ".."} or Path(value).name != value:
+            raise ValueError("new_video_name 必须是单个文件名")
+        return value
 
 
 class SubtitleRenameResult(BaseModel):
@@ -80,7 +89,7 @@ class SubtitleRenameResult(BaseModel):
 class BatchSubtitleRenameRequest(BaseModel):
     """Batch subtitle rename request."""
 
-    items: list[SubtitleRenameRequest]
+    items: list[SubtitleRenameRequest] = Field(default_factory=list, max_length=100)
 
 
 class BatchSubtitleRenameResponse(BaseModel):

@@ -9,6 +9,18 @@ from server.models.storage import StorageLocator, StorageProvider
 from server.domain.media.file_service import FileService
 from server.domain.media.fingerprint_service import calculate_fingerprint
 from server.application.history_service import HistoryService
+from server.application.file_io import check_file_cancelled, run_file_io
+
+
+def _fingerprints(files: list[ScannedFile]) -> dict[str, str]:
+    """Calculate local file fingerprints in the bounded file-I/O executor."""
+    result: dict[str, str] = {}
+    for file in files:
+        check_file_cancelled()
+        fingerprint = calculate_fingerprint(file.path)
+        if fingerprint:
+            result[file.path] = fingerprint
+    return result
 
 
 class FolderScanUseCase:
@@ -26,11 +38,12 @@ class FolderScanUseCase:
         self,
         folder_path: str,
         locator: StorageLocator | None,
-    ) -> tuple[str, list[ScannedFile]]:
+        exclude_scraped: bool = True,
+    ) -> tuple[str, list[ScannedFile], int]:
         """执行扫描。
 
         Returns:
-            (显示用目录路径, 待刮削的文件列表)
+            (显示用目录路径, 待刮削的文件列表, 被排除的已刮削文件数)
         """
         is_p115 = bool(locator and locator.provider == StorageProvider.P115)
 
@@ -43,16 +56,15 @@ class FolderScanUseCase:
                 locator=locator,
             )
             # 115 文件没有本地指纹，直接返回
-            return locator.path or folder_path, files
+            return locator.path or folder_path, files, 0
 
         files = self._file_service.scan_folder(folder_path)
 
+        if not exclude_scraped:
+            return folder_path, files, 0
+
         # 计算文件指纹并过滤已刮削的文件
-        fingerprint_map = {}  # path -> fingerprint
-        for f in files:
-            fp = calculate_fingerprint(f.path)
-            if fp:
-                fingerprint_map[f.path] = fp
+        fingerprint_map = await run_file_io(_fingerprints, files)
 
         # 查询已存在的指纹
         existing_fps = await self._history_service.get_existing_fingerprints(
@@ -64,4 +76,4 @@ class FolderScanUseCase:
             f for f in files
             if fingerprint_map.get(f.path) not in existing_fps
         ]
-        return folder_path, filtered_files
+        return folder_path, filtered_files, len(files) - len(filtered_files)
