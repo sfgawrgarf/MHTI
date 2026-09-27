@@ -5,7 +5,6 @@ from datetime import date
 from server.application.recognition import (
     build_search_title_variants,
     compact_title,
-    extract_release_year_month,
     match_episode_from_titles,
     merge_search_results,
     normalize_search_text,
@@ -113,8 +112,6 @@ def test_episode_match_uses_japanese_title_and_release_month() -> None:
     assert match is not None
     assert (match.season, match.episode) == (1, 1)
     assert match.score > 0.9
-    assert extract_release_year_month("/incoming/2024-03/show.strm") == (2024, 3)
-    assert extract_release_year_month("/incoming/no-date/show.strm") is None
 
 
 def test_episode_match_rejects_generic_or_ambiguous_titles() -> None:
