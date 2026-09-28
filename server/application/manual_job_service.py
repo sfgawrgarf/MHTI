@@ -426,8 +426,11 @@ async def _job_worker() -> None:
 
 async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
     """Execute a single manual job - 扫描文件并投递到刮削任务队列"""
+    from server.application.organize_filters import OrganizeFilter
     from server.domain.media.file_service import FileService
+    from server.domain.system.config_service import ConfigService, ORGANIZE_CONFIG_KEY
     from server.application.scrape_job_service import ScrapeJobService
+    from server.models.file import ScannedFile
     from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
 
     if not await service.claim_job(job_id):
@@ -455,17 +458,48 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
         else:
             scan_path = Path(job.scan_path)
 
+        organize_filter = None
+        if job.advanced_settings is not None and not job.advanced_settings.use_global_organize:
+            organize_filter = OrganizeFilter.from_task_settings(job.advanced_settings)
+        else:
+            config_service = ConfigService(db_path=service.db_path)
+            if await config_service.exists(ORGANIZE_CONFIG_KEY):
+                organize_filter = OrganizeFilter.from_global_config(
+                    await config_service.get_organize_config()
+                )
+
         if is_p115_source:
             scan_result = await file_service.scan_folder_async(
                 job.scan_locator.path or job.scan_path,
                 locator=job.scan_locator,
             )
-            files = [f.path for f in scan_result]
         elif scan_path.is_file():
-            files = [str(scan_path)]
+            stat = scan_path.stat()
+            scan_result = [
+                ScannedFile(
+                    filename=scan_path.name,
+                    path=str(scan_path),
+                    size=stat.st_size,
+                    extension=scan_path.suffix.lower(),
+                )
+            ]
         else:
             scan_result = file_service.scan_folder(job.scan_path)
-            files = [f.path for f in scan_result]
+
+        discovered_count = len(scan_result)
+        if organize_filter is not None:
+            scan_result = [
+                scanned
+                for scanned in scan_result
+                if organize_filter.allows(scanned.filename, scanned.size)
+            ]
+            if len(scan_result) != discovered_count:
+                logger.info(
+                    "手动任务 #%s 按整理过滤跳过 %s 个文件",
+                    job_id,
+                    discovered_count - len(scan_result),
+                )
+        files = [f.path for f in scan_result]
 
         total_count = len(files)
         await service.update_job_status(job_id, ManualJobStatus.RUNNING, total_count=total_count)
@@ -482,6 +516,9 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
         # 为每个文件创建刮削任务
         scrape_service = ScrapeJobService()
         organize_mode = _link_mode_to_organize_mode(job.link_mode)
+        child_settings = (
+            job.advanced_settings or ManualJobAdvancedSettings()
+        ).model_copy(update={"delete_empty_parent": job.delete_empty_parent})
         dispatched_count = 0
         skipped_count = 0
 
@@ -508,7 +545,7 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
                 link_mode=organize_mode,
                 source=ScrapeJobSource.MANUAL,
                 source_id=job_id,
-                advanced_settings=job.advanced_settings,
+                advanced_settings=child_settings,
             )
             created = await scrape_service.create_job(job_create)
             if created is not None:

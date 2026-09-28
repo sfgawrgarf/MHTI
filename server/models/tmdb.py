@@ -62,6 +62,9 @@ class TMDBSeries(BaseModel):
     vote_average: float | None = None
     poster_path: str | None = None
     backdrop_path: str | None = None
+    logo_path: str | None = None
+    banner_path: str | None = None
+    extra_backdrop_paths: list[str] = []
     genres: list[str] = []
     status: str | None = None
     number_of_seasons: int | None = None

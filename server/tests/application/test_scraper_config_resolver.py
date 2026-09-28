@@ -9,6 +9,7 @@ from server.common.exceptions import TMDBInvalidCredentialsError, TMDBNotConfigu
 from server.models.download import DownloadConfig
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.nfo import NfoConfig
+from server.models.template import NamingTemplate
 
 
 class FakeConfigService:
@@ -22,6 +23,12 @@ class FakeConfigService:
 
     async def get_nfo_config(self) -> NfoConfig:
         return NfoConfig(enabled=False)
+
+    async def get_naming_config(self) -> NamingTemplate:
+        return NamingTemplate()
+
+    async def exists(self, _key: str) -> bool:
+        return False
 
 
 class FakeTMDBService:
@@ -73,6 +80,23 @@ async def test_effective_configs_choose_global_or_task_values() -> None:
     assert task_nfo["tvshow"]["title"] is True
     assert task_nfo["season"]["seasonnumber"] is True
     assert task_nfo["episode"]["plot"] is True
+
+
+@pytest.mark.asyncio
+async def test_effective_task_naming_config_is_used_when_global_is_disabled() -> None:
+    resolver = ScraperConfigResolver(FakeConfigService(), FakeTMDBService())
+    settings = ManualJobAdvancedSettings(
+        use_global_naming=False,
+        series_folder_template="{title}",
+        season_folder_template="S{season:02d}",
+        episode_file_template="{title}-{episode:02d}",
+    )
+
+    assert await resolver.get_effective_naming_config(settings) == NamingTemplate(
+        series_folder="{title}",
+        season_folder="S{season:02d}",
+        episode_file="{title}-{episode:02d}",
+    )
 
 
 @pytest.mark.asyncio

@@ -80,6 +80,10 @@ class ConfigService:
         """按前缀批量删除配置项（115 登录中间态清理等）。"""
         return await self._repo.delete_by_prefix(prefix)
 
+    async def list_by_prefix(self, prefix: str) -> list[tuple[str, str, bool]]:
+        """列出指定配置命名空间，供带 TTL 的中间态清理使用。"""
+        return await self._repo.list_by_prefix(prefix)
+
     # Cookie-specific methods
     async def save_cookie(self, cookie: str) -> None:
         """Save TMDB cookie (encrypted)."""
@@ -134,7 +138,9 @@ class ConfigService:
             "password": config.password,
         }
         # Encrypt if has credentials
-        encrypted = bool(config.username and config.password)
+        # Encrypt as soon as either credential is present. Encrypting only
+        # complete pairs left a lone username/password in plaintext.
+        encrypted = bool(config.username or config.password)
         await self.set(PROXY_CONFIG_KEY, json.dumps(data), encrypted=encrypted)
 
     async def get_proxy_config(self) -> ProxyConfig:

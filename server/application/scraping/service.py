@@ -179,6 +179,71 @@ class ScraperService:
     ) -> dict:
         return await self._config_resolver.get_effective_nfo_config(advanced_settings)
 
+    async def _get_effective_image_config(
+        self,
+        advanced_settings: ManualJobAdvancedSettings | None,
+    ) -> dict:
+        # Keep the historical four-key method as the compatibility seam used
+        # by integrations/tests while adding the complete image settings.
+        legacy = await self._get_effective_download_config(advanced_settings)
+        try:
+            config = await self._config_resolver.get_effective_image_config(
+                advanced_settings
+            )
+            if not isinstance(config, dict):
+                raise TypeError("图片配置不是字典")
+        except (AttributeError, TypeError, ValueError):
+            # Some isolated callers intentionally provide only the legacy
+            # configuration seam. Keep those calls image-free safely.
+            config = {
+                "series_poster": False,
+                "series_backdrop": False,
+                "series_logo": False,
+                "series_banner": False,
+                "season_poster": False,
+                "episode_thumb": False,
+                "extra_backdrops": False,
+                "extra_backdrops_count": 0,
+                "overwrite_existing": False,
+            }
+        config.update(
+            {
+                "series_poster": legacy.get(
+                    "download_poster", config.get("series_poster", False)
+                ),
+                "series_backdrop": legacy.get(
+                    "download_fanart", config.get("series_backdrop", False)
+                ),
+                "episode_thumb": legacy.get(
+                    "download_thumb", config.get("episode_thumb", False)
+                ),
+                "overwrite_existing": legacy.get(
+                    "overwrite_existing", config.get("overwrite_existing", False)
+                ),
+            }
+        )
+        return config
+
+    async def _get_effective_naming_config(
+        self,
+        advanced_settings: ManualJobAdvancedSettings | None,
+    ):
+        return await self._config_resolver.get_effective_naming_config(advanced_settings)
+
+    async def _sanitize_scrape_filename(
+        self,
+        filename: str,
+        advanced_settings: ManualJobAdvancedSettings | None = None,
+    ) -> str:
+        from server.application.organize_filters import OrganizeFilter
+
+        config = await self._config_resolver.get_effective_organize_config(
+            advanced_settings
+        )
+        if config is None:
+            return filename
+        return OrganizeFilter.from_global_config(config).sanitize_filename(filename)
+
     # ---- 元数据/NFO（转发到 ScraperMetadataResolver，保持原方法面）----
 
     async def _enrich_search_results(
@@ -217,9 +282,14 @@ class ScraperService:
         series_folder: str,
         download_poster: bool = True,
         download_fanart: bool = True,
+        image_config: Mapping[str, object] | None = None,
     ) -> None:
         await self._media_pipeline.download_series_images(
-            series, series_folder, download_poster, download_fanart
+            series,
+            series_folder,
+            download_poster,
+            download_fanart,
+            image_config=image_config,
         )
 
     async def _download_episode_image(
@@ -229,9 +299,29 @@ class ScraperService:
         episode_num: int,
         season_folder: str,
         video_stem: str,
+        image_config: Mapping[str, object] | None = None,
     ) -> None:
         await self._media_pipeline.download_episode_image(
-            season_info, season_num, episode_num, season_folder, video_stem
+            season_info,
+            season_num,
+            episode_num,
+            season_folder,
+            video_stem,
+            image_config=image_config,
+        )
+
+    async def _download_season_image(
+        self,
+        season_info: TMDBSeason | None,
+        season_num: int,
+        season_folder: str,
+        image_config: Mapping[str, object],
+    ) -> None:
+        await self._media_pipeline.download_season_image(
+            season_info,
+            season_num,
+            season_folder,
+            image_config,
         )
 
     def _process_subtitles(self, source_video_path: str, dest_video_path: str) -> list[str]:
@@ -318,6 +408,7 @@ class ScraperService:
         link_mode: OrganizeMode | None,
         year: int | None = None,
         conflict_action: str | None = None,
+        naming_template=None,
     ) -> RenameRequest:
         return self._output_writer.build_rename_request(
             source_path=source_path,
@@ -328,6 +419,7 @@ class ScraperService:
             link_mode=link_mode,
             year=year,
             conflict_action=conflict_action,
+            naming_template=naming_template,
         )
 
     async def _finalize_storage_output(
@@ -342,6 +434,7 @@ class ScraperService:
         episode: int,
         source_path: str,
         year: int | None = None,
+        advanced_settings: ManualJobAdvancedSettings | None = None,
     ) -> StorageLocator:
         return await self._output_writer.finalize_storage_output(
             file_locator=file_locator,
@@ -353,6 +446,7 @@ class ScraperService:
             episode=episode,
             source_path=source_path,
             year=year,
+            advanced_settings=advanced_settings,
         )
 
     async def _write_local_metadata_only(
@@ -610,6 +704,33 @@ class ScraperService:
             metadata_dir=metadata_dir,
         )
 
+    async def _cleanup_source_parent_if_enabled(
+        self,
+        *,
+        request: ScrapeRequest | ScrapeByIdRequest,
+        source_path: str,
+    ) -> None:
+        """Clean one empty local source directory after a successful move."""
+        settings = request.advanced_settings
+        if (
+            settings is None
+            or not settings.delete_empty_parent
+            or request.link_mode not in (None, OrganizeMode.MOVE)
+            or self._is_provider_source(request.file_locator)
+        ):
+            return
+
+        from server.application.source_cleanup import remove_empty_source_parent
+
+        try:
+            removed = await run_file_io(remove_empty_source_parent, source_path)
+            if removed:
+                logger.info("已清理空源目录: %s", Path(source_path).parent)
+        except (OSError, PathSecurityError) as exc:
+            # Cleanup is best-effort and must never turn a completed move into
+            # a failed scrape.
+            logger.warning("清理空源目录失败 %s: %s", Path(source_path).parent, exc)
+
     async def _move_and_finalize(
         self,
         *,
@@ -638,6 +759,9 @@ class ScraperService:
             await notify_log_update()
         try:
             year = series.first_air_date.year if series.first_air_date else None
+            naming_template = await self._get_effective_naming_config(
+                request.advanced_settings
+            )
             source_display_path, effective_output_dir, effective_metadata_dir = self._resolve_move_input(
                 file_path=file_path,
                 file_locator=request.file_locator,
@@ -678,6 +802,7 @@ class ScraperService:
                         episode=episode_num,
                         source_path=source_display_path,
                         year=year,
+                        advanced_settings=request.advanced_settings,
                     )
                     result.dest_path = dest_locator.path
                     move_step.logs.append(ScrapeLogEntry(message=f"文件{mode_name}成功: {dest_locator.path}"))
@@ -731,6 +856,7 @@ class ScraperService:
                             output_dir=effective_output_dir,
                             link_mode=request.link_mode,
                             conflict_action=file_action,
+                            naming_template=naming_template,
                         )
 
                         dest_file, season_folder, series_folder = await self._organize_local_output(
@@ -757,6 +883,7 @@ class ScraperService:
                     output_dir=effective_output_dir,
                     link_mode=request.link_mode,
                     conflict_action=file_action,
+                    naming_template=naming_template,
                 )
 
                 dest_file, season_folder, series_folder = await self._organize_local_output(
@@ -825,15 +952,25 @@ class ScraperService:
             scrape_logs.append(image_step)
             await notify_log_update()
 
-            download_config = await self._get_effective_download_config(request.advanced_settings)
+            image_config = await self._get_effective_image_config(request.advanced_settings)
 
             # 下载剧集封面和背景图到元数据剧集文件夹
-            if download_config["download_poster"] or download_config["download_fanart"]:
+            if any(
+                image_config.get(key)
+                for key in (
+                    "series_poster",
+                    "series_backdrop",
+                    "series_logo",
+                    "series_banner",
+                    "extra_backdrops",
+                )
+            ):
                 await self._download_series_images(
                     series,
                     str(metadata_series_folder),
-                    download_poster=download_config["download_poster"],
-                    download_fanart=download_config["download_fanart"],
+                    download_poster=bool(image_config["series_poster"]),
+                    download_fanart=bool(image_config["series_backdrop"]),
+                    image_config=image_config,
                 )
                 image_step.logs.append(ScrapeLogEntry(message="剧集图片处理完成"))
             else:
@@ -841,9 +978,21 @@ class ScraperService:
             await notify_log_update()
 
             # 下载集封面图到元数据季度文件夹
-            if download_config["download_thumb"]:
+            if image_config.get("season_poster"):
+                await self._download_season_image(
+                    season_info,
+                    season_num,
+                    str(metadata_season_folder),
+                    image_config,
+                )
+            if image_config["episode_thumb"]:
                 await self._download_episode_image(
-                    season_info, season_num, episode_num, str(metadata_season_folder), dest_file.stem
+                    season_info,
+                    season_num,
+                    episode_num,
+                    str(metadata_season_folder),
+                    dest_file.stem,
+                    image_config=image_config,
                 )
                 image_step.logs.append(ScrapeLogEntry(message="集封面图处理完成"))
             else:
@@ -853,6 +1002,10 @@ class ScraperService:
             # 处理关联字幕文件
             if should_process_subtitles:
                 self._process_subtitles(local_source_path, str(dest_file))
+            await self._cleanup_source_parent_if_enabled(
+                request=request,
+                source_path=source_display_path,
+            )
 
         except FileExistsError:
             result.scrape_logs = scrape_logs
@@ -899,7 +1052,8 @@ class ScraperService:
         path = validate_media_path(file_path, must_exist=True, require_file=True)
 
         # Parse filename
-        parsed = self.parser_service.parse(path.name, file_path)
+        parsed_filename = await self._sanitize_scrape_filename(path.name)
+        parsed = self.parser_service.parse(parsed_filename, file_path)
 
         preview = ScrapePreview(
             file_path=file_path,
@@ -976,7 +1130,11 @@ class ScraperService:
         # Step 1: Parse filename
         parse_step = ScrapeLogStep(name="解析文件名", logs=[])
         parse_step.logs.append(ScrapeLogEntry(message=f"视频文件路径: {file_path}"))
-        parsed = self.parser_service.parse(path.name, file_path)
+        parsed_filename = await self._sanitize_scrape_filename(
+            path.name,
+            request.advanced_settings,
+        )
+        parsed = self.parser_service.parse(parsed_filename, file_path)
 
         result = ScrapeResult(
             file_path=file_path,

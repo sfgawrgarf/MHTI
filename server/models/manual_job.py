@@ -82,6 +82,10 @@ class ManualJobAdvancedSettings(BaseModel):
     nfo_enabled: bool = True
     process_subtitle: bool = True
 
+    # Internal handoff flag. It is persisted with the child scrape job so
+    # cleanup happens only after the asynchronous move succeeds.
+    delete_empty_parent: bool = False
+
 
 class ManualJob(BaseModel):
     """Manual job record."""
@@ -186,8 +190,6 @@ class ManualJobCreate(BaseModel):
         if not settings.use_global_organize:
             if settings.delete_metadata_on_fail:
                 unsupported.append("delete_metadata_on_fail")
-            if settings.file_sanitize_list:
-                unsupported.append("file_sanitize_list")
             if settings.protect_ext_whitelist:
                 unsupported.append("protect_ext_whitelist")
             if settings.delete_by_size:

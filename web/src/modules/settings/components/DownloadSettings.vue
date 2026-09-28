@@ -79,7 +79,7 @@ onMounted(reload)
         </NCheckbox>
         <NCheckbox v-model:checked="config.series_backdrop">
           剧集背景图
-          <span class="file-note">fanart.jpg</span>
+          <span class="file-note">backdrop.jpg</span>
         </NCheckbox>
         <NCheckbox v-model:checked="config.series_logo">
           剧集 Logo
@@ -102,7 +102,7 @@ onMounted(reload)
     <SettingsGroup title="剧集截图" hint="保存到季目录，Emby 与 Kodi 的剧集缩略图">
       <NCheckbox v-model:checked="config.episode_thumb">
         剧集截图
-        <span class="file-note">S01E01-thumb.jpg</span>
+        <span class="file-note">与视频同名 .jpg</span>
       </NCheckbox>
     </SettingsGroup>
 

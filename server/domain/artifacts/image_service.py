@@ -256,7 +256,14 @@ class ImageService:
         save_path: str,
         poster_path: str | None = None,
         backdrop_path: str | None = None,
-        size: ImageSize = ImageSize.W500,
+        size: ImageSize | None = None,
+        *,
+        logo_path: str | None = None,
+        banner_path: str | None = None,
+        extra_backdrop_paths: list[str] | None = None,
+        poster_size: ImageSize = ImageSize.W500,
+        backdrop_size: ImageSize = ImageSize.W780,
+        extra_backdrop_count: int = 0,
     ) -> list[ImageDownloadRequest]:
         """
         Generate download requests for series images.
@@ -265,15 +272,20 @@ class ImageService:
             save_path: Directory to save images.
             poster_path: TMDB poster path.
             backdrop_path: TMDB backdrop path.
-            size: Image size.
+            poster_size: Poster image size.
+            backdrop_size: Backdrop/banner image size.
+            extra_backdrop_count: Maximum number of extra backdrops.
 
         Returns:
             List of ImageDownloadRequest objects.
         """
+        if size is not None:
+            poster_size = size
+            backdrop_size = ImageSize.ORIGINAL if size == ImageSize.ORIGINAL else ImageSize.W780
         requests = []
 
         if poster_path:
-            url = self.get_full_image_url(poster_path, size)
+            url = self.get_full_image_url(poster_path, poster_size)
             if url:
                 requests.append(
                     ImageDownloadRequest(
@@ -284,8 +296,6 @@ class ImageService:
                 )
 
         if backdrop_path:
-            # Backdrop usually needs larger size
-            backdrop_size = ImageSize.W780 if size != ImageSize.ORIGINAL else size
             url = self.get_full_image_url(backdrop_path, backdrop_size)
             if url:
                 requests.append(
@@ -295,6 +305,38 @@ class ImageService:
                         filename="backdrop.jpg",
                     )
                 )
+
+        for path, filename in (
+            (logo_path, "logo.png"),
+            (banner_path, "banner.jpg"),
+        ):
+            if not path:
+                continue
+            url = self.get_full_image_url(
+                path,
+                poster_size if filename == "logo.png" else backdrop_size,
+            )
+            if url:
+                requests.append(
+                    ImageDownloadRequest(
+                        url=url,
+                        save_path=save_path,
+                        filename=filename,
+                    )
+                )
+
+        if extra_backdrop_paths and extra_backdrop_count > 0:
+            extra_folder = str(Path(save_path) / "extrafanart")
+            for index, path in enumerate(extra_backdrop_paths[:extra_backdrop_count], 1):
+                url = self.get_full_image_url(path, backdrop_size)
+                if url:
+                    requests.append(
+                        ImageDownloadRequest(
+                            url=url,
+                            save_path=extra_folder,
+                            filename=f"{index:03d}.jpg",
+                        )
+                    )
 
         return requests
 
@@ -337,6 +379,7 @@ class ImageService:
         episode_number: int,
         still_path: str | None,
         size: ImageSize = ImageSize.W500,
+        filename: str | None = None,
     ) -> ImageDownloadRequest | None:
         """
         Generate download request for episode thumbnail.
@@ -361,5 +404,5 @@ class ImageService:
         return ImageDownloadRequest(
             url=url,
             save_path=save_path,
-            filename=f"S{season_number:02d}E{episode_number:02d}.jpg",
+            filename=filename or f"S{season_number:02d}E{episode_number:02d}.jpg",
         )

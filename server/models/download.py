@@ -19,7 +19,7 @@ class DownloadConfig(BaseModel):
 
     # ===== 剧集级别图片 (TV Show) =====
     series_poster: bool = True  # 剧集海报 (poster.jpg)
-    series_backdrop: bool = True  # 剧集背景图 (fanart.jpg)
+    series_backdrop: bool = True  # 剧集背景图 (backdrop.jpg)
     series_logo: bool = False  # 剧集 Logo (logo.png)
     series_banner: bool = False  # 剧集横幅 (banner.jpg)
 
@@ -27,7 +27,7 @@ class DownloadConfig(BaseModel):
     season_poster: bool = True  # 季海报 (season01-poster.jpg)
 
     # ===== 集级别图片 (Episode) =====
-    episode_thumb: bool = True  # 剧集截图/缩略图 (S01E01-thumb.jpg)
+    episode_thumb: bool = True  # 剧集截图/缩略图（与视频同名 .jpg）
 
     # ===== 额外图片 =====
     extra_backdrops: bool = False  # 额外背景图 (extrafanart/)

@@ -16,6 +16,7 @@ from server.models.organize import OrganizeMode
 from server.models.rename import RenameRequest
 from server.models.scraper import ScrapeResult, ScrapeStatus
 from server.models.storage import StorageLocator, StorageProvider
+from server.models.template import NamingTemplate
 
 if TYPE_CHECKING:
     from server.application.scraping.service import ScraperService
@@ -66,6 +67,7 @@ class OutputWriter:
         link_mode: OrganizeMode | None,
         year: int | None = None,
         conflict_action: str | None = None,
+        naming_template: NamingTemplate | None = None,
     ) -> RenameRequest:
         """构建统一的整理请求。"""
         return RenameRequest(
@@ -77,6 +79,7 @@ class OutputWriter:
             output_dir=output_dir,
             link_mode=link_mode,
             conflict_action=conflict_action,
+            naming_template=naming_template,
         )
 
     async def finalize_storage_output(
@@ -91,6 +94,7 @@ class OutputWriter:
         episode: int,
         source_path: str,
         year: int | None = None,
+        advanced_settings: ManualJobAdvancedSettings | None = None,
     ) -> StorageLocator:
         """处理 115 网盘输出分支。"""
         if file_locator.provider != StorageProvider.P115:
@@ -98,6 +102,7 @@ class OutputWriter:
 
         facade = self._facade
         mode = link_mode or OrganizeMode.MOVE
+        naming_template = await facade._get_effective_naming_config(advanced_settings)
         rename_request = self.build_rename_request(
             source_path=source_path,
             title=title,
@@ -106,6 +111,7 @@ class OutputWriter:
             output_dir=output_locator.path,
             link_mode=mode,
             year=year,
+            naming_template=naming_template,
         )
         preview = facade.rename_service.preview_rename(rename_request)
         dest_path = Path(preview.dest_path)
@@ -152,6 +158,7 @@ class OutputWriter:
                     output_dir=output_locator.path,
                     link_mode=mode,
                     year=year,
+                    naming_template=naming_template,
                 )
                 rename_result = facade.rename_service.execute_rename(
                     local_request,
@@ -230,6 +237,9 @@ class OutputWriter:
                 year=year,
                 output_dir=output_dir_for_preview,
                 link_mode=link_mode,
+                naming_template=await facade._get_effective_naming_config(
+                    advanced_settings
+                ),
             )
             preview = facade.rename_service.preview_rename(preview_request)
             dest_path = Path(preview.dest_path)
@@ -287,18 +297,40 @@ class OutputWriter:
         await notify_log_update()
 
         # 图片
-        download_config = await facade._get_effective_download_config(advanced_settings)
-        if download_config["download_poster"] or download_config["download_fanart"]:
+        image_config = await facade._get_effective_image_config(advanced_settings)
+        if any(
+            image_config.get(key)
+            for key in (
+                "series_poster",
+                "series_backdrop",
+                "series_logo",
+                "series_banner",
+                "extra_backdrops",
+            )
+        ):
             await facade._download_series_images(
                 series,
                 str(metadata_series_folder),
-                download_poster=download_config["download_poster"],
-                download_fanart=download_config["download_fanart"],
+                download_poster=bool(image_config["series_poster"]),
+                download_fanart=bool(image_config["series_backdrop"]),
+                image_config=image_config,
             )
             move_step.logs.append(ScrapeLogEntry(message="剧集图片处理完成"))
-        if download_config["download_thumb"]:
+        if image_config.get("season_poster"):
+            await facade._download_season_image(
+                season_info,
+                season,
+                str(metadata_season_folder),
+                image_config,
+            )
+        if image_config["episode_thumb"]:
             await facade._download_episode_image(
-                season_info, season, episode, str(metadata_season_folder), dest_path.stem
+                season_info,
+                season,
+                episode,
+                str(metadata_season_folder),
+                dest_path.stem,
+                image_config=image_config,
             )
             move_step.logs.append(ScrapeLogEntry(message="集封面图处理完成"))
         await notify_log_update()

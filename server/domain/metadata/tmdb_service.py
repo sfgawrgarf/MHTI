@@ -537,7 +537,7 @@ class TMDBService:
         try:
             response = await self._make_api_request(
                 f"/tv/{tmdb_id}",
-                params={"language": language},
+                params={"language": language, "append_to_response": "images"},
             )
 
             if response.status_code == 404:
@@ -557,6 +557,27 @@ class TMDBService:
     def _parse_series_json(self, data: dict) -> TMDBSeries:
         """Parse series data from API JSON response."""
         genres = [g["name"] for g in data.get("genres", [])]
+        images = data.get("images") if isinstance(data.get("images"), dict) else {}
+        logos = images.get("logos") if isinstance(images.get("logos"), list) else []
+        backdrops = (
+            images.get("backdrops") if isinstance(images.get("backdrops"), list) else []
+        )
+        logo_path = next(
+            (
+                image.get("file_path")
+                for image in logos
+                if isinstance(image, dict) and image.get("file_path")
+            ),
+            None,
+        )
+        primary_backdrop = data.get("backdrop_path")
+        extra_backdrop_paths = [
+            image["file_path"]
+            for image in backdrops
+            if isinstance(image, dict)
+            and image.get("file_path")
+            and image["file_path"] != primary_backdrop
+        ]
 
         seasons = []
         for s in data.get("seasons", []):
@@ -579,7 +600,10 @@ class TMDBService:
             first_air_date=self._parse_date(data.get("first_air_date")),
             vote_average=data.get("vote_average"),
             poster_path=data.get("poster_path"),
-            backdrop_path=data.get("backdrop_path"),
+            backdrop_path=primary_backdrop,
+            logo_path=logo_path,
+            banner_path=data.get("banner_path") or primary_backdrop,
+            extra_backdrop_paths=extra_backdrop_paths,
             genres=genres,
             status=data.get("status"),
             number_of_seasons=data.get("number_of_seasons"),

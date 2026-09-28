@@ -7,6 +7,7 @@ import pytest
 
 from server.application.watcher_service import (
     PendingFile,
+    P115EventStrategy,
     P115ScanStrategy,
     WatcherService,
 )
@@ -188,3 +189,56 @@ def test_115_detection_keeps_locator_metadata_until_handoff(temp_db) -> None:
 
     assert service._pending_files[path].file_id == "file-1"
     assert strategy.detected_meta[path]["file_id"] == "file-1"
+
+
+@pytest.mark.asyncio
+async def test_115_event_directory_collection_paginates_and_has_no_depth_limit() -> None:
+    folder = WatchedFolder(
+        id="event-folder",
+        path="/115网盘/待整理",
+        provider="115",
+        mode=WatcherMode.EVENT,
+        file_id="root",
+    )
+    strategy = P115EventStrategy(folder, lambda _path, _folder: None)
+
+    class FakeBrowseService:
+        async def browse(self, *, path, file_id, page, page_size):
+            if file_id == "root" and page == 1:
+                entries = [
+                    {"is_dir": False, "file_id": f"file-{index}"}
+                    for index in range(99)
+                ]
+                entries.append(
+                    {"is_dir": True, "file_id": "child-page-1", "path": f"{path}/p1"}
+                )
+                return {"entries": entries, "total": 101}
+            if file_id == "root" and page == 2:
+                return {
+                    "entries": [
+                        {
+                            "is_dir": True,
+                            "file_id": "child-page-2",
+                            "path": f"{path}/p2",
+                        }
+                    ],
+                    "total": 101,
+                }
+            if file_id == "child-page-1":
+                return {
+                    "entries": [
+                        {
+                            "is_dir": True,
+                            "file_id": "deep-child",
+                            "path": f"{path}/deep",
+                        }
+                    ],
+                    "total": 1,
+                }
+            return {"entries": [], "total": 0}
+
+    await strategy._collect_subdir_ids(FakeBrowseService(), folder.path, folder.file_id)
+
+    assert {"child-page-1", "child-page-2", "deep-child"}.issubset(
+        strategy._watched_dir_ids
+    )

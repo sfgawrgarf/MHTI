@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 
 from server.models.cloud_115 import Cloud115Config
+from server.models.config import ProxyConfig, ProxyType
 from server.models.storage import StorageLocator, StorageProvider
 from server.domain.system.config_service import ConfigService
 from server.models.template import NamingTemplate
@@ -141,6 +142,32 @@ class TestConfigService:
         result = await config_service.get_naming_config()
 
         assert result == config
+
+    @pytest.mark.asyncio
+    async def test_proxy_credentials_are_encrypted_when_only_one_is_present(
+        self, config_service
+    ):
+        """A partial credential must never be persisted as plaintext."""
+        await config_service.save_proxy_config(
+            ProxyConfig(
+                type=ProxyType.HTTP,
+                host="proxy.example",
+                port=8080,
+                username="only-user",
+            )
+        )
+
+        async with aiosqlite.connect(config_service.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT value, encrypted FROM config WHERE key = ?",
+                ("proxy_config",),
+            )
+            row = await cursor.fetchone()
+
+        assert row is not None
+        assert row["encrypted"] == 1
+        assert "only-user" not in row["value"]
 
     @pytest.mark.asyncio
     async def test_legacy_cloud_metadata_directory_is_ignored(self, config_service):

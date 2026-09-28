@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from server.common.path_security import validate_media_path
 from server.models.emby import ConflictCheckRequest, ConflictCheckResult, ConflictType
+from server.models.image import ImageSize
 from server.models.tmdb import TMDBSeason, TMDBSeries
 
 if TYPE_CHECKING:
@@ -17,6 +18,15 @@ if TYPE_CHECKING:
     from server.domain.artifacts.subtitle_service import SubtitleService
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_image_size(value: object, default: ImageSize) -> ImageSize:
+    """Convert persisted ImageQuality enum/string values safely."""
+    raw_value = getattr(value, "value", value)
+    try:
+        return ImageSize(str(raw_value))
+    except (TypeError, ValueError):
+        return default
 
 
 class ScraperMediaPipeline:
@@ -38,6 +48,7 @@ class ScraperMediaPipeline:
         series_folder: str,
         download_poster: bool = True,
         download_fanart: bool = True,
+        image_config: Mapping[str, object] | None = None,
     ) -> None:
         """下载剧集海报和背景图。
 
@@ -47,37 +58,46 @@ class ScraperMediaPipeline:
             download_poster: 是否下载海报图。
             download_fanart: 是否下载背景图。
         """
-        folder = Path(series_folder)
-
-        # 检查图片是否已存在，避免重复下载
-        poster_path = folder / "poster.jpg"
-        backdrop_path = folder / "backdrop.jpg"
-
-        # 根据配置和文件存在情况决定是否需要下载
-        need_poster = download_poster and not poster_path.exists()
-        need_backdrop = download_fanart and not backdrop_path.exists()
-
-        if not need_poster and not need_backdrop:
-            logger.info("剧集图片已存在或配置禁用，跳过下载")
+        if self.image_service is None:
             return
+        config = dict(image_config or {})
+        config.setdefault("series_poster", download_poster)
+        config.setdefault("series_backdrop", download_fanart)
+        overwrite_existing = bool(config.get("overwrite_existing", False))
 
-        # 生成下载请求
+        poster_size = _coerce_image_size(config.get("poster_quality"), ImageSize.W500)
+        backdrop_size = _coerce_image_size(
+            config.get("backdrop_quality"), ImageSize.W780
+        )
         requests = self.image_service.generate_series_image_requests(
             save_path=series_folder,
-            poster_path=series.poster_path if need_poster else None,
-            backdrop_path=series.backdrop_path if need_backdrop else None,
+            poster_path=series.poster_path if config.get("series_poster") else None,
+            backdrop_path=series.backdrop_path if config.get("series_backdrop") else None,
+            logo_path=series.logo_path if config.get("series_logo") else None,
+            banner_path=(series.banner_path or series.backdrop_path)
+            if config.get("series_banner")
+            else None,
+            extra_backdrop_paths=(
+                series.extra_backdrop_paths
+                if config.get("extra_backdrops")
+                else None
+            ),
+            poster_size=poster_size,
+            backdrop_size=backdrop_size,
+            extra_backdrop_count=max(
+                0, int(config.get("extra_backdrops_count") or 0)
+            ),
         )
 
         if not requests:
             logger.info("没有可下载的剧集图片")
             return
 
-        # 过滤已存在的图片
-        filtered_requests = []
-        for req in requests:
-            target_path = Path(req.save_path) / req.filename
-            if not target_path.exists():
-                filtered_requests.append(req)
+        filtered_requests = [
+            req
+            for req in requests
+            if overwrite_existing or not (Path(req.save_path) / req.filename).exists()
+        ]
 
         if not filtered_requests:
             logger.info("剧集图片已存在，跳过下载")
@@ -88,6 +108,33 @@ class ScraperMediaPipeline:
         result = await self.image_service.download_batch(filtered_requests)
         logger.info(f"图片下载完成: 成功 {result.success}, 失败 {result.failed}")
 
+    async def download_season_image(
+        self,
+        season_info: TMDBSeason | None,
+        season_num: int,
+        season_folder: str,
+        image_config: Mapping[str, object],
+    ) -> None:
+        """Download the configured season poster."""
+        if self.image_service is None or not image_config.get("season_poster") or not season_info:
+            return
+        request = self.image_service.generate_season_image_request(
+            save_path=season_folder,
+            season_number=season_num,
+            poster_path=season_info.poster_path,
+            size=_coerce_image_size(
+                image_config.get("poster_quality"), ImageSize.W500
+            ),
+        )
+        if request is None:
+            return
+        target = Path(request.save_path) / request.filename
+        if target.exists() and not image_config.get("overwrite_existing"):
+            return
+        result = await self.image_service.download_batch([request])
+        if result.failed:
+            logger.warning("季海报下载失败: %s", result.results[0].error)
+
     async def download_episode_image(
         self,
         season_info: TMDBSeason | None,
@@ -95,6 +142,7 @@ class ScraperMediaPipeline:
         episode_num: int,
         season_folder: str,
         video_stem: str,
+        image_config: Mapping[str, object] | None = None,
     ) -> None:
         """下载集封面图，使用与视频文件相同的文件名。
 
@@ -105,6 +153,8 @@ class ScraperMediaPipeline:
             season_folder: 季度文件夹路径。
             video_stem: 视频文件名（不含扩展名）。
         """
+        if self.image_service is None:
+            return
         if not season_info or not season_info.episodes:
             logger.info("没有季度信息，跳过集封面图下载")
             return
@@ -121,23 +171,30 @@ class ScraperMediaPipeline:
             return
 
         # 使用与视频文件相同的文件名
+        config = dict(image_config or {})
         target_filename = f"{video_stem}.jpg"
         target_path = Path(season_folder) / target_filename
-        if target_path.exists():
+        if target_path.exists() and not config.get("overwrite_existing"):
             logger.info(f"集封面图已存在: {target_filename}")
             return
 
-        # 获取图片 URL
-        url = self.image_service.get_full_image_url(still_path)
-        if not url:
+        request = self.image_service.generate_episode_image_request(
+            save_path=season_folder,
+            season_number=season_num,
+            episode_number=episode_num,
+            still_path=still_path,
+            size=_coerce_image_size(config.get("thumb_quality"), ImageSize.W500),
+            filename=target_filename,
+        )
+        if request is None:
             return
 
         # 下载图片
         logger.info(f"开始下载集封面图: {target_filename}")
         result = await self.image_service.download_image(
-            url=url,
-            save_path=season_folder,
-            filename=target_filename,
+            url=request.url,
+            save_path=request.save_path,
+            filename=request.filename,
         )
         if result.success:
             logger.info(f"集封面图下载成功: {target_filename}")

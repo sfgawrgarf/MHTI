@@ -733,6 +733,29 @@ class TestP115Service:
         assert "os_windows" not in row["value"]
 
     @pytest.mark.asyncio
+    async def test_cleanup_expired_qr_payloads_keeps_fresh_sessions(
+        self, config_service: ConfigService
+    ):
+        """Startup maintenance removes only expired encrypted QR sessions."""
+        service = P115Service(config_service=config_service)
+        await config_service.set(
+            service._qr_payload_key("old"),
+            '{"uid":"old","time":1000,"sign":"old"}',
+            encrypted=True,
+        )
+        await config_service.set(
+            service._qr_payload_key("fresh"),
+            '{"uid":"fresh","time":1500,"sign":"fresh"}',
+            encrypted=True,
+        )
+
+        deleted = await service.cleanup_expired_qr_payloads(now=1500 + 600)
+
+        assert deleted == 1
+        assert await config_service.get(service._qr_payload_key("old")) is None
+        assert await config_service.get(service._qr_payload_key("fresh")) is not None
+
+    @pytest.mark.asyncio
     async def test_poll_qr_login_works_with_fresh_service_instance(
         self,
         config_service: ConfigService,

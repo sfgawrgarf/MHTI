@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from server.models.download import DownloadConfig
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.nfo import NfoConfig
+from server.models.organize import OrganizeConfig
+from server.models.template import NamingTemplate
 
 if TYPE_CHECKING:
     from server.domain.system.config_service import ConfigService
@@ -48,6 +51,76 @@ class ScraperConfigResolver:
                 "download_fanart": advanced_settings.download_fanart,
                 "overwrite_existing": advanced_settings.overwrite_image,
             }
+
+    async def get_effective_image_config(
+        self,
+        advanced_settings: ManualJobAdvancedSettings | None,
+    ) -> dict:
+        """Return the complete image configuration used by the media pipeline."""
+        if advanced_settings is None or advanced_settings.use_global_download:
+            return (await self.config_service.get_download_config()).model_dump()
+
+        defaults = DownloadConfig()
+        return {
+            "series_poster": advanced_settings.download_poster,
+            "series_backdrop": advanced_settings.download_fanart,
+            "series_logo": defaults.series_logo,
+            "series_banner": defaults.series_banner,
+            "season_poster": defaults.season_poster,
+            "episode_thumb": advanced_settings.download_thumb,
+            "extra_backdrops": defaults.extra_backdrops,
+            "extra_backdrops_count": defaults.extra_backdrops_count,
+            "poster_quality": defaults.poster_quality.value,
+            "backdrop_quality": defaults.backdrop_quality.value,
+            "thumb_quality": defaults.thumb_quality.value,
+            "overwrite_existing": advanced_settings.overwrite_image,
+        }
+
+    async def get_effective_organize_config(
+        self,
+        advanced_settings: ManualJobAdvancedSettings | None,
+    ) -> OrganizeConfig | None:
+        """Return effective organize filters without inventing saved defaults."""
+        if advanced_settings is not None and not advanced_settings.use_global_organize:
+            return OrganizeConfig(
+                min_file_size_mb=advanced_settings.file_size_filter,
+                file_type_whitelist=(
+                    advanced_settings.file_ext_whitelist
+                    + advanced_settings.extra_ext_whitelist
+                ),
+                filename_blacklist=advanced_settings.file_name_blacklist,
+                junk_pattern_filter=advanced_settings.file_sanitize_list,
+            )
+
+        from server.domain.system.config_service import ORGANIZE_CONFIG_KEY
+
+        if not await self.config_service.exists(ORGANIZE_CONFIG_KEY):
+            return None
+        return await self.config_service.get_organize_config()
+
+    async def get_effective_naming_config(
+        self,
+        advanced_settings: ManualJobAdvancedSettings | None,
+    ) -> NamingTemplate:
+        """Return task-level naming templates when global naming is disabled."""
+        if advanced_settings is None or advanced_settings.use_global_naming:
+            return await self.config_service.get_naming_config()
+
+        defaults = NamingTemplate()
+        return NamingTemplate(
+            series_folder=(
+                advanced_settings.series_folder_template.strip()
+                or defaults.series_folder
+            ),
+            season_folder=(
+                advanced_settings.season_folder_template.strip()
+                or defaults.season_folder
+            ),
+            episode_file=(
+                advanced_settings.episode_file_template.strip()
+                or defaults.episode_file
+            ),
+        )
 
     async def get_effective_nfo_config(
         self,

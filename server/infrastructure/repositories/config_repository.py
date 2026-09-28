@@ -59,6 +59,15 @@ class ConfigRepository(BaseRepository):
             (len(prefix), prefix),
         )
 
+    async def list_by_prefix(self, prefix: str) -> list[tuple[str, str, bool]]:
+        """List config rows under a namespace for TTL/maintenance tasks."""
+        rows = await self._fetch_all(
+            "SELECT key, value, encrypted FROM config "
+            "WHERE substr(key, 1, ?) = ? ORDER BY key",
+            (len(prefix), prefix),
+        )
+        return [(row["key"], row["value"], bool(row["encrypted"])) for row in rows]
+
     async def exists(self, key: str) -> bool:
         row = await self._fetch_one("SELECT 1 FROM config WHERE key = ?", (key,))
         return row is not None

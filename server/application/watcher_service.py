@@ -361,20 +361,49 @@ class P115EventStrategy(WatchStrategy):
     async def _collect_subdir_ids(
         self, svc: Any, path: str, file_id: str | None, depth: int = 0
     ) -> None:
-        """递归收集子目录 id（限制深度避免过深）。"""
-        if depth > 5:
-            return
-        try:
-            result = await svc.browse(path=path, file_id=file_id, page=1, page_size=100)
-            for entry in result.get("entries", []):
-                if entry.get("is_dir") and entry.get("file_id"):
-                    self._watched_dir_ids.add(str(entry["file_id"]))
-                    # 递归收集子目录
-                    await self._collect_subdir_ids(
-                        svc, entry["path"], entry["file_id"], depth + 1
+        """收集任意深度的子目录，并完整遍历每个目录的分页。"""
+        queue: list[tuple[str, str | None]] = [(path, file_id)]
+        visited: set[str] = set()
+        page_size = 100
+
+        while queue:
+            current_path, current_id = queue.pop(0)
+            visit_key = str(current_id or current_path)
+            if visit_key in visited:
+                continue
+            visited.add(visit_key)
+
+            page = 1
+            while True:
+                try:
+                    result = await svc.browse(
+                        path=current_path,
+                        file_id=current_id,
+                        page=page,
+                        page_size=page_size,
                     )
-        except Exception as e:
-            logger.warning(f"[115事件] 收集子目录失败: {e}")
+                except Exception as exc:
+                    logger.warning(
+                        "[115事件] 收集子目录失败 path=%s page=%s: %s",
+                        current_path,
+                        page,
+                        exc,
+                    )
+                    break
+
+                entries = result.get("entries", [])
+                for entry in entries:
+                    if entry.get("is_dir") and entry.get("file_id"):
+                        child_id = str(entry["file_id"])
+                        self._watched_dir_ids.add(child_id)
+                        queue.append((entry.get("path", ""), child_id))
+
+                total = result.get("total")
+                if len(entries) < page_size or (
+                    isinstance(total, int) and total <= page * page_size
+                ):
+                    break
+                page += 1
 
     def _extract_events(self, resp: Any) -> list[dict]:
         """从 life_list 响应提取事件列表。"""
@@ -439,7 +468,7 @@ class P115EventStrategy(WatchStrategy):
             return
 
         # 检查是否视频文件（ico 字段是扩展名，如 "mp4"）
-        if f".{ico}" not in VIDEO_EXTENSIONS:
+        if f".{ico.lower()}" not in VIDEO_EXTENSIONS:
             return
 
         # 路径匹配：parent_id 在监控目录的子目录 id 集合里才处理
@@ -1030,13 +1059,20 @@ class WatcherService:
 
         folder.output_dir 优先于全局整理目录配置。
         """
+        from server.application.organize_filters import OrganizeFilter
         from server.application.scrape_job_service import ScrapeJobService
         from server.domain.system.config_service import ConfigService
+        from server.domain.system.config_service import ORGANIZE_CONFIG_KEY
         from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
         from server.models.organize import OrganizeMode
+        from server.models.manual_job import ManualJobAdvancedSettings
 
         try:
-            config_service = ConfigService()
+            try:
+                config_service = ConfigService(db_path=self.db_path)
+            except TypeError:
+                # Keep lightweight injected config doubles compatible.
+                config_service = ConfigService()
             organize_config = await config_service.get_organize_config()
         except Exception:
             logger.exception("读取整理配置失败，监控文件将保留等待重试")
@@ -1046,6 +1082,15 @@ class WatcherService:
         organize_dir = folder.output_dir if folder and folder.output_dir else organize_config.organize_dir
         metadata_dir = organize_config.metadata_dir
         link_mode = organize_config.organize_mode  # 读取整理模式配置
+        organize_filter = None
+        exists_config = getattr(config_service, "exists", None)
+        has_saved_config = (
+            await exists_config(ORGANIZE_CONFIG_KEY)
+            if exists_config is not None
+            else False
+        )
+        if has_saved_config:
+            organize_filter = OrganizeFilter.from_global_config(organize_config)
 
         if not organize_dir:
             logger.warning("未配置整理目录，跳过创建任务")
@@ -1078,6 +1123,14 @@ class WatcherService:
         completed: set[str] = set()
         for file in files:
             try:
+                if organize_filter is not None and not organize_filter.allows(
+                    Path(file.path).name,
+                    file.file_size,
+                ):
+                    logger.info("监控文件按整理过滤跳过: %s", file.path)
+                    completed.add(file.path)
+                    continue
+
                 logger.info(f"为文件创建刮削任务: {file.path}")
 
                 # 115 源文件构造 file_locator（携带 file_id 以便刮削下载/在线处理）
@@ -1127,6 +1180,11 @@ class WatcherService:
                     allow_local_output=allow_local_output,
                     link_mode=effective_link_mode,
                     source=ScrapeJobSource.WATCHER,
+                    advanced_settings=ManualJobAdvancedSettings(
+                        delete_empty_parent=bool(
+                            getattr(organize_config, "auto_clean_source", False)
+                        ),
+                    ),
                 )
                 await scrape_service.create_job(job_create)
                 completed.add(file.path)

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
@@ -53,6 +54,7 @@ SESSION_INVALID_CODES = (99, 40101032)
 DEFAULT_APP = "alipaymini"
 PROJECT_P115_HOME = DATA_DIR / "p115-home"
 QRCODE_PAYLOAD_PREFIX = "cloud_115_qr_payload:"
+QRCODE_PAYLOAD_TTL_SECONDS = 10 * 60
 VIRTUAL_115_ROOT_PATH = "/115网盘"
 # Mirrors file_service.SUPPORTED_VIDEO_EXTENSIONS (kept local to avoid a circular import).
 SCAN_VIDEO_EXTENSIONS = {
@@ -406,6 +408,7 @@ class P115Service:
         """
         normalized_app = self._normalize_app(app)
         p115_module, _ = await _load_p115client()
+        await self.cleanup_expired_qr_payloads()
         await self._delete_all_qr_payloads()
         token_response = await self._call_login_api(
             p115_module.P115Client.login_qrcode_token,
@@ -890,6 +893,28 @@ class P115Service:
     async def _delete_all_qr_payloads(self) -> None:
         """Remove every persisted QR payload so login cannot resume after logout."""
         await self.config_service.delete_by_prefix(QRCODE_PAYLOAD_PREFIX)
+
+    async def cleanup_expired_qr_payloads(self, now: int | None = None) -> int:
+        """Delete abandoned QR payloads after the provider token TTL."""
+        current_time = now if now is not None else int(time.time())
+        deleted = 0
+        rows = await self.config_service.list_by_prefix(QRCODE_PAYLOAD_PREFIX)
+        for key, _, encrypted in rows:
+            value = await self.config_service.get(key, encrypted=encrypted)
+            try:
+                payload = json.loads(value or "")
+            except json.JSONDecodeError:
+                payload = None
+
+            timestamp = self._coerce_int(payload.get("time")) if isinstance(payload, dict) else None
+            if timestamp is not None and timestamp > 10**11:
+                timestamp //= 1000
+            if timestamp is None or current_time - timestamp > QRCODE_PAYLOAD_TTL_SECONDS:
+                if await self.config_service.delete(key):
+                    deleted += 1
+        if deleted:
+            logger.info("已清理 %s 个过期 115 二维码会话", deleted)
+        return deleted
 
     def _is_qr_token_invalid(self, response: dict[str, Any]) -> bool:
         """判断状态响应是否表示二维码令牌已失效（过期）。"""

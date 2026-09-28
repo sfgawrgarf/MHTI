@@ -415,6 +415,13 @@ class TestTMDBServiceSearch:
             "vote_average": 8.9,
             "poster_path": "/poster.jpg",
             "backdrop_path": "/backdrop.jpg",
+            "images": {
+                "logos": [{"file_path": "/logo.png"}],
+                "backdrops": [
+                    {"file_path": "/backdrop.jpg"},
+                    {"file_path": "/extra.jpg"},
+                ],
+            },
             "genres": [{"id": 18, "name": "Drama"}],
             "status": "Ended",
             "number_of_seasons": 5,
@@ -443,6 +450,9 @@ class TestTMDBServiceSearch:
             assert result.name == "Breaking Bad"
             assert len(result.genres) == 1
             assert result.genres[0] == "Drama"
+            assert result.logo_path == "/logo.png"
+            assert result.banner_path == "/backdrop.jpg"
+            assert result.extra_backdrop_paths == ["/extra.jpg"]
 
     @pytest.mark.asyncio
     async def test_get_series_by_api_not_found(self, tmdb_service):

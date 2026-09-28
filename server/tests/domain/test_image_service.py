@@ -286,6 +286,31 @@ class TestImageServiceHelpers:
 
         assert len(requests) == 0
 
+    def test_generate_complete_series_image_requests(self, image_service):
+        """Logo, banner and bounded extra backdrops use configured sizes."""
+        requests = image_service.generate_series_image_requests(
+            save_path="/path/to/show",
+            poster_path="/poster.jpg",
+            backdrop_path="/backdrop.jpg",
+            logo_path="/logo.png",
+            banner_path="/banner.jpg",
+            extra_backdrop_paths=["/extra1.jpg", "/extra2.jpg"],
+            poster_size=ImageSize.W1280,
+            backdrop_size=ImageSize.ORIGINAL,
+            extra_backdrop_count=1,
+        )
+
+        assert [request.filename for request in requests] == [
+            "poster.jpg",
+            "backdrop.jpg",
+            "logo.png",
+            "banner.jpg",
+            "001.jpg",
+        ]
+        assert "w1280" in requests[0].url
+        assert "original" in requests[1].url
+        assert requests[-1].save_path.endswith("extrafanart")
+
     def test_generate_season_image_request(self, image_service):
         """Test season image request generation."""
         request = image_service.generate_season_image_request(

@@ -30,15 +30,15 @@ const emit = defineEmits<{
   <template v-if="!useGlobal">
     <NForm :model="formData" label-placement="top" class="settings-form">
       <NFormItem label="剧集文件夹模板">
-        <NInput v-model:value="formData.series_folder_template" placeholder="{series_name} ({year})" />
+        <NInput v-model:value="formData.series_folder_template" placeholder="{title} ({year})" />
       </NFormItem>
       <NFormItem label="季文件夹模板">
         <NInput v-model:value="formData.season_folder_template" placeholder="Season {season}" />
       </NFormItem>
       <NFormItem label="剧集文件模板">
-        <NInput v-model:value="formData.episode_file_template" placeholder="{series_name} - S{season:02d}E{episode:02d}" />
+        <NInput v-model:value="formData.episode_file_template" placeholder="{title} - S{season:02d}E{episode:02d}" />
       </NFormItem>
-      <div class="form-hint">可用变量: {series_name}, {year}, {season}, {episode}, {episode_title}</div>
+      <div class="form-hint">可用变量: {title}, {original_title}, {year}, {season}, {episode}, {episode_title}, {air_date}</div>
     </NForm>
   </template>
 </template>

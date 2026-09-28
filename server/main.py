@@ -191,6 +191,15 @@ async def lifespan(app: FastAPI):
         # Initialize service container
         await init_services()
 
+        # QR token payloads are encrypted intermediate state, but abandoned
+        # sessions still need a TTL cleanup after users close the dialog.
+        from server.domain.integration.p115_service import P115Service
+        from server.domain.system.config_service import ConfigService
+        try:
+            await P115Service(ConfigService()).cleanup_expired_qr_payloads()
+        except Exception:
+            logger.exception("清理过期 115 二维码会话失败")
+
         # Rebuild durable task queues before the watcher performs its initial scan.
         from server.application.scrape_job_service import recover_pending_jobs as recover_scrape_jobs
         from server.application.manual_job_service import recover_pending_jobs as recover_manual_jobs
