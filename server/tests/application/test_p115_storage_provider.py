@@ -15,6 +15,7 @@ import pytest
 from server.application.scraping.p115_storage_provider import P115StorageProvider
 from server.domain.system.config_service import ConfigService
 from server.models.cloud_115 import Cloud115Config
+from server.models.storage import StorageLocator, StorageProvider
 
 
 class StrictFakeP115Client:
@@ -174,3 +175,53 @@ async def test_find_file_ids_reads_later_directory_pages(storage_provider) -> No
 
     assert result == {"later-1", "later-2"}
     assert calls == [0, 100]
+
+
+@pytest.mark.asyncio
+async def test_directory_read_failure_is_not_treated_as_empty(storage_provider) -> None:
+    class FailingClient:
+        async def fs_files(self, payload: dict, async_: bool = False) -> dict:
+            raise RuntimeError("temporary provider failure")
+
+    with pytest.raises(ValueError, match="115 目录读取失败"):
+        await storage_provider._find_file_ids_in_dir(
+            FailingClient(), "parent", "episode.mkv"
+        )
+
+
+@pytest.mark.asyncio
+async def test_copy_does_not_copy_when_initial_snapshot_fails(
+    storage_provider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FailingClient:
+        copy_calls = 0
+
+        async def fs_files(self, payload: dict, async_: bool = False) -> dict:
+            raise RuntimeError("temporary provider failure")
+
+        async def fs_copy(self, file_id: str, pid: str, async_: bool = False) -> dict:
+            self.copy_calls += 1
+            return {"state": True}
+
+    client = FailingClient()
+
+    async def fake_get_client() -> tuple[FailingClient, str]:
+        return client, "harmony"
+
+    monkeypatch.setattr(storage_provider, "_get_client", fake_get_client)
+    locator = StorageLocator(
+        provider=StorageProvider.P115,
+        path="/115网盘/待整理/episode.mkv",
+        file_id="source-1",
+        parent_id="source-parent",
+        is_dir=False,
+    )
+
+    with pytest.raises(ValueError, match="115 目录读取失败"):
+        await storage_provider.copy(
+            locator,
+            "episode.mkv",
+            "target-parent",
+        )
+
+    assert client.copy_calls == 0

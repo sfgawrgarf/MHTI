@@ -205,7 +205,18 @@ class P115StorageProvider:
         new_id = self._extract_response_id(resp).get("id")
         if not new_id or new_id == file_id:
             for attempt in range(3):
-                after_ids = await self._find_file_ids_in_dir(client, target_parent_id, source_name)
+                try:
+                    after_ids = await self._find_file_ids_in_dir(
+                        client, target_parent_id, source_name
+                    )
+                except ValueError as exc:
+                    if attempt == 2:
+                        raise ValueError(
+                            "115 复制后无法读取目标目录，复制状态未知；请先确认网盘结果再重试"
+                        ) from exc
+                    await asyncio.sleep(0.05)
+                    continue
+
                 candidates = after_ids - before_ids
                 if len(candidates) == 1:
                     new_id = candidates.pop()
@@ -261,8 +272,11 @@ class P115StorageProvider:
                     },
                     async_=True,
                 )
-            except Exception:
-                return []
+            except Exception as exc:
+                # An unreadable listing is not an empty directory.  Returning
+                # [] could make copy/rename continue with an incomplete
+                # snapshot and create duplicate files on a later retry.
+                raise ValueError(f"115 目录读取失败: {parent_pid}") from exc
 
             page = response.get("data", []) if isinstance(response, dict) else []
             if not isinstance(page, list) or not page:

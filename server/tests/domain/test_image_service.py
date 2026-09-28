@@ -112,6 +112,32 @@ class TestImageServiceDownload:
             assert "404" in result.error
 
     @pytest.mark.asyncio
+    async def test_download_image_zero_retries_still_attempts_once(
+        self, image_service, mock_config_service, temp_dir
+    ):
+        """A zero retry setting still allows the initial request."""
+        mock_config_service.get_system_config = AsyncMock(return_value=SystemConfig(
+            retry_count=0,
+            concurrent_downloads=3,
+            task_timeout=30,
+        ))
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.get.side_effect = httpx.TimeoutException("timeout")
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await image_service.download_image(
+                url="https://example.com/image.jpg",
+                save_path=temp_dir,
+                filename="test.jpg",
+            )
+
+            assert result.success is False
+            assert result.error == "Download timeout"
+            mock_instance.get.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_download_image_timeout_retry(self, image_service, mock_config_service, temp_dir):
         """Test download retry on timeout."""
         # Use fewer retries for testing
@@ -135,6 +161,7 @@ class TestImageServiceDownload:
 
                 assert result.success is False
                 assert "timeout" in result.error.lower()
+                assert mock_instance.get.await_count == 3
 
     @pytest.mark.asyncio
     async def test_download_image_connection_error(self, image_service, mock_config_service, temp_dir):

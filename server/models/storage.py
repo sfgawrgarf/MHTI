@@ -140,11 +140,10 @@ def validate_storage_capabilities(
         )
     )
 
-    if metadata_locator and metadata_locator.provider != StorageProvider.LOCAL and not (
-        source_provider == StorageProvider.P115
-        and target_provider == StorageProvider.P115
-        and allow_local_output
-    ):
+    # Metadata is written by OutputWriter's local NFO/image pipeline.  A
+    # provider-aware locator must therefore never point at 115, even when the
+    # video itself stays in 115 and local output permission is enabled.
+    if metadata_locator and metadata_locator.provider != StorageProvider.LOCAL:
         raise ValueError("元数据目录仅支持本地媒体目录")
 
     if source_provider == StorageProvider.P115 and source_locator is None:
