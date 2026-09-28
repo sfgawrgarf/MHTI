@@ -29,6 +29,7 @@ from server.domain.artifacts.image_service import ImageService
 from server.domain.artifacts.nfo_service import NFOService
 from server.domain.artifacts.rename_service import RenameService
 from server.domain.artifacts.subtitle_service import SubtitleService
+from server.infrastructure.log_security import safe_log_value
 from server.domain.integration.emby_service import EmbyService
 from server.domain.metadata.tmdb_service import TMDBService
 from server.domain.parsing.parser_service import ParserService
@@ -725,11 +726,18 @@ class ScraperService:
         try:
             removed = await run_file_io(remove_empty_source_parent, source_path)
             if removed:
-                logger.info("已清理空源目录: %s", Path(source_path).parent)
+                logger.info(
+                    "已清理空源目录: %s",
+                    safe_log_value(Path(source_path).parent),
+                )
         except (OSError, PathSecurityError) as exc:
             # Cleanup is best-effort and must never turn a completed move into
             # a failed scrape.
-            logger.warning("清理空源目录失败 %s: %s", Path(source_path).parent, exc)
+            logger.warning(
+                "清理空源目录失败 %s: %s",
+                safe_log_value(Path(source_path).parent),
+                safe_log_value(exc),
+            )
 
     async def _move_and_finalize(
         self,
