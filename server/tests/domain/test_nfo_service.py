@@ -1,7 +1,9 @@
 """Unit tests for NFO service."""
 
-import pytest
+import xml.etree.ElementTree as ET
 from datetime import date
+
+import pytest
 
 from server.domain.artifacts.nfo_service import NFOService
 from server.models.nfo import TVShowNFO, SeasonNFO, EpisodeNFO
@@ -225,9 +227,45 @@ class TestNFOServiceSpecialCharacters:
 
         nfo = nfo_service.generate_tvshow_nfo(data)
 
-        # XML should be properly escaped
-        assert "Tom &amp; Jerry" in nfo or "Tom & Jerry" in nfo
-        assert "&lt;" in nfo or "<wave>" not in nfo.split("</plot>")[0]
+        root = ET.fromstring(nfo)
+        assert root.findtext("title") == "Tom & Jerry"
+        assert root.findtext("plot") == 'He said "Hello" and <wave>.'
+
+    def test_cdata_preserves_escaped_text_and_terminator(self, nfo_service):
+        """CDATA must preserve XML characters and remain valid for ``]]>``."""
+        plot = "A & B <wave> ]]> and ]]>"
+        data = TVShowNFO(title="Test", plot=plot)
+
+        nfo = nfo_service.generate_tvshow_nfo(data)
+
+        root = ET.fromstring(nfo)
+        assert root.findtext("plot") == plot
+        assert root.findtext("outline") == plot
+
+    def test_field_switches_control_generated_elements(self, nfo_service):
+        """Per-file NFO field switches must be honored by all generators."""
+        tvshow = nfo_service.generate_tvshow_nfo(
+            TVShowNFO(title="Show", plot="Plot", tmdb_id=1),
+            fields={"title": False, "plot": False, "outline": False, "tmdbid": False},
+        )
+        episode = nfo_service.generate_episode_nfo(
+            EpisodeNFO(title="Episode", season=1, episode=1, plot="Plot", rating=8.0),
+            fields={"title": False, "plot": False, "rating": False},
+        )
+        season = nfo_service.generate_season_nfo(
+            SeasonNFO(season_number=1, title="Season", plot="Plot"),
+            fields={"title": False, "plot": False, "seasonnumber": False},
+        )
+
+        assert ET.fromstring(tvshow).find("title") is None
+        assert ET.fromstring(tvshow).find("plot") is None
+        assert ET.fromstring(tvshow).find("tmdbid") is None
+        assert ET.fromstring(episode).find("title") is None
+        assert ET.fromstring(episode).find("plot") is None
+        assert ET.fromstring(episode).find("rating") is None
+        assert ET.fromstring(season).find("title") is None
+        assert ET.fromstring(season).find("plot") is None
+        assert ET.fromstring(season).find("seasonnumber") is None
 
     def test_apostrophe_in_title(self, nfo_service):
         """Test handling of apostrophes."""

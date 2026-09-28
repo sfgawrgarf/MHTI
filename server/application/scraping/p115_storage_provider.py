@@ -10,6 +10,8 @@ from typing import Any
 from server.models.storage import StorageLocator
 from server.domain.system.config_service import ConfigService
 
+DIRECTORY_PAGE_SIZE = 100
+
 
 class P115StorageProvider:
     """115 网盘文件输出适配层。"""
@@ -109,15 +111,7 @@ class P115StorageProvider:
         name: str,
     ) -> str | None:
         """在父目录下按名字查找子目录的 cid（fs_mkdir 命中已存在目录时用）。"""
-        try:
-            response = await client.fs_files(
-                {"cid": parent_pid, "offset": 0, "limit": 100, "show_dir": 1},
-                async_=True,
-            )
-        except Exception:
-            return None
-        rows = response.get("data", []) if isinstance(response, dict) else []
-        for row in rows:
+        for row in await self._list_directory_rows(client, parent_pid):
             if not isinstance(row, dict):
                 continue
             row_name = row.get("n") or row.get("name") or ""
@@ -240,21 +234,44 @@ class P115StorageProvider:
         name: str,
     ) -> set[str]:
         """Return all matching file ids in a directory."""
-        try:
-            response = await client.fs_files(
-                {"cid": parent_pid, "offset": 0, "limit": 100, "show_dir": 1},
-                async_=True,
-            )
-        except Exception:
-            return set()
-        rows = response.get("data", []) if isinstance(response, dict) else []
         return {
             str(row.get("fid"))
-            for row in rows
+            for row in await self._list_directory_rows(client, parent_pid)
             if isinstance(row, dict)
             and (row.get("n") or row.get("name") or "") == name
             and row.get("fid")
         }
+
+    async def _list_directory_rows(
+        self,
+        client: Any,
+        parent_pid: str,
+    ) -> list[dict[str, Any]]:
+        """Read every page of a 115 directory listing."""
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            try:
+                response = await client.fs_files(
+                    {
+                        "cid": parent_pid,
+                        "offset": offset,
+                        "limit": DIRECTORY_PAGE_SIZE,
+                        "show_dir": 1,
+                    },
+                    async_=True,
+                )
+            except Exception:
+                return []
+
+            page = response.get("data", []) if isinstance(response, dict) else []
+            if not isinstance(page, list) or not page:
+                break
+            rows.extend(row for row in page if isinstance(row, dict))
+            if len(page) < DIRECTORY_PAGE_SIZE:
+                break
+            offset += DIRECTORY_PAGE_SIZE
+        return rows
 
     async def _find_file_id_in_dir(
         self,

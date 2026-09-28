@@ -133,3 +133,44 @@ class TestGetClient:
 
         with pytest.raises(ValueError, match="请先登录"):
             await storage_provider._get_client()
+
+
+@pytest.mark.asyncio
+async def test_find_subdir_id_reads_later_directory_pages(storage_provider) -> None:
+    calls: list[int] = []
+
+    class PagedClient:
+        async def fs_files(self, payload: dict, async_: bool = False) -> dict:
+            calls.append(payload["offset"])
+            if payload["offset"] == 0:
+                return {"data": [{"n": f"other-{i}", "cid": str(i)} for i in range(100)]}
+            return {"data": [{"n": "target", "cid": "target-1"}]}
+
+    result = await storage_provider._find_subdir_id(PagedClient(), "parent", "target")
+
+    assert result == "target-1"
+    assert calls == [0, 100]
+
+
+@pytest.mark.asyncio
+async def test_find_file_ids_reads_later_directory_pages(storage_provider) -> None:
+    calls: list[int] = []
+
+    class PagedClient:
+        async def fs_files(self, payload: dict, async_: bool = False) -> dict:
+            calls.append(payload["offset"])
+            if payload["offset"] == 0:
+                return {"data": [{"n": f"other-{i}", "fid": str(i)} for i in range(100)]}
+            return {
+                "data": [
+                    {"n": "episode.mkv", "fid": "later-1"},
+                    {"n": "episode.mkv", "fid": "later-2"},
+                ]
+            }
+
+    result = await storage_provider._find_file_ids_in_dir(
+        PagedClient(), "parent", "episode.mkv"
+    )
+
+    assert result == {"later-1", "later-2"}
+    assert calls == [0, 100]

@@ -48,7 +48,10 @@ async def test_effective_configs_choose_global_or_task_values() -> None:
         "overwrite_existing": True,
     }
     global_nfo = await resolver.get_effective_nfo_config(None)
-    assert global_nfo == {"nfo_enabled": False}
+    assert global_nfo["nfo_enabled"] is False
+    assert global_nfo["tvshow"]["title"] is True
+    assert global_nfo["season"]["seasonnumber"] is True
+    assert global_nfo["episode"]["plot"] is True
 
     task_settings = ManualJobAdvancedSettings(
         use_global_download=False,
@@ -65,7 +68,32 @@ async def test_effective_configs_choose_global_or_task_values() -> None:
         "download_fanart": True,
         "overwrite_existing": True,
     }
-    assert await resolver.get_effective_nfo_config(task_settings) == {"nfo_enabled": True}
+    task_nfo = await resolver.get_effective_nfo_config(task_settings)
+    assert task_nfo["nfo_enabled"] is True
+    assert task_nfo["tvshow"]["title"] is True
+    assert task_nfo["season"]["seasonnumber"] is True
+    assert task_nfo["episode"]["plot"] is True
+
+
+@pytest.mark.asyncio
+async def test_effective_nfo_config_preserves_global_field_switches() -> None:
+    from server.models.nfo import EpisodeNfoFields, NfoConfig, TVShowNfoFields
+
+    class FieldConfigService(FakeConfigService):
+        async def get_nfo_config(self) -> NfoConfig:
+            return NfoConfig(
+                enabled=True,
+                tvshow=TVShowNfoFields(title=False, plot=False),
+                episode=EpisodeNfoFields(rating=False),
+            )
+
+    resolver = ScraperConfigResolver(FieldConfigService(), FakeTMDBService())
+    config = await resolver.get_effective_nfo_config(None)
+
+    assert config["nfo_enabled"] is True
+    assert config["tvshow"]["title"] is False
+    assert config["tvshow"]["plot"] is False
+    assert config["episode"]["rating"] is False
 
 
 @pytest.mark.asyncio

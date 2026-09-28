@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from server.models.nfo import EpisodeNFO, SeasonNFO
@@ -94,6 +95,7 @@ class ScraperMetadataResolver:
         season_num: int,
         episode_num: int,
         season_info: TMDBSeason | None = None,
+        fields: Mapping[str, bool] | None = None,
     ) -> str:
         """生成剧集 NFO 内容。
 
@@ -142,7 +144,7 @@ class ScraperMetadataResolver:
             rating=episode_rating,
         )
 
-        return self.nfo_service.generate_episode_nfo(nfo_data)
+        return self.nfo_service.generate_episode_nfo(nfo_data, fields=fields)
 
     def get_season_nfo_data(self, series: TMDBSeries, season_num: int) -> SeasonNFO:
         """从剧集信息中获取季度 NFO 数据。

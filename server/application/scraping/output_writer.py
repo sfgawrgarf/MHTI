@@ -247,31 +247,41 @@ class OutputWriter:
         nfo_config = await facade._get_effective_nfo_config(advanced_settings)
         nfo_path_str = ""
         if nfo_config["nfo_enabled"]:
-            nfo_path = validate_media_path(
-                str(metadata_season_folder / f"{dest_path.stem}.nfo")
-            )
-            nfo_path.write_text(nfo_content, encoding="utf-8")
-            nfo_path_str = str(nfo_path)
-            move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
+            episode_fields = nfo_config.get("episode") or {}
+            if episode_fields.get("enabled", True):
+                nfo_path = validate_media_path(
+                    str(metadata_season_folder / f"{dest_path.stem}.nfo")
+                )
+                nfo_path.write_text(nfo_content, encoding="utf-8")
+                nfo_path_str = str(nfo_path)
+                move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
 
-            tvshow_nfo_path = validate_media_path(
-                str(metadata_series_folder / "tvshow.nfo")
-            )
-            if not tvshow_nfo_path.exists():
-                metadata_series_folder.mkdir(parents=True, exist_ok=True)
-                tvshow_nfo_data = facade.nfo_service.tvshow_from_tmdb(series)
-                tvshow_nfo_content = facade.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
-                tvshow_nfo_path.write_text(tvshow_nfo_content, encoding="utf-8")
-                move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
+            if (nfo_config.get("tvshow") or {}).get("enabled", True):
+                tvshow_nfo_path = validate_media_path(
+                    str(metadata_series_folder / "tvshow.nfo")
+                )
+                if not tvshow_nfo_path.exists():
+                    metadata_series_folder.mkdir(parents=True, exist_ok=True)
+                    tvshow_nfo_data = facade.nfo_service.tvshow_from_tmdb(series)
+                    tvshow_nfo_content = facade.nfo_service.generate_tvshow_nfo(
+                        tvshow_nfo_data,
+                        fields=nfo_config.get("tvshow"),
+                    )
+                    tvshow_nfo_path.write_text(tvshow_nfo_content, encoding="utf-8")
+                    move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
 
-            season_nfo_path = validate_media_path(
-                str(metadata_season_folder / "season.nfo")
-            )
-            if not season_nfo_path.exists():
-                season_nfo_data = facade._get_season_nfo_data(series, season)
-                season_nfo_content = facade.nfo_service.generate_season_nfo(season_nfo_data)
-                season_nfo_path.write_text(season_nfo_content, encoding="utf-8")
-                move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
+            if (nfo_config.get("season") or {}).get("enabled", True):
+                season_nfo_path = validate_media_path(
+                    str(metadata_season_folder / "season.nfo")
+                )
+                if not season_nfo_path.exists():
+                    season_nfo_data = facade._get_season_nfo_data(series, season)
+                    season_nfo_content = facade.nfo_service.generate_season_nfo(
+                        season_nfo_data,
+                        fields=nfo_config.get("season"),
+                    )
+                    season_nfo_path.write_text(season_nfo_content, encoding="utf-8")
+                    move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
         else:
             move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
         await notify_log_update()

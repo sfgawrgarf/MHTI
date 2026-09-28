@@ -8,7 +8,7 @@
 """
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -200,9 +200,10 @@ class ScraperService:
         season_num: int,
         episode_num: int,
         season_info: TMDBSeason | None = None,
+        fields: Mapping[str, bool] | None = None,
     ) -> str:
         return self._metadata_resolver.generate_episode_nfo(
-            series, season_num, episode_num, season_info
+            series, season_num, episode_num, season_info, fields
         )
 
     def _get_season_nfo_data(self, series: TMDBSeries, season_num: int) -> SeasonNFO:
@@ -697,6 +698,7 @@ class ScraperService:
                         move_step=move_step,
                         notify_log_update=notify_log_update,
                         link_mode=request.link_mode,
+                        advanced_settings=request.advanced_settings,
                     )
                     result.nfo_path = nfo_path_str or None
                     result.status = ScrapeStatus.SUCCESS
@@ -776,33 +778,43 @@ class ScraperService:
             # Write episode NFO file (if enabled)
             nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
             if nfo_config["nfo_enabled"]:
-                nfo_path = validate_media_path(
-                    str(metadata_season_folder / f"{dest_file.stem}.nfo")
-                )
-                nfo_path.write_text(nfo_content, encoding="utf-8")
-                result.nfo_path = str(nfo_path)
-                move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
+                episode_fields = nfo_config.get("episode") or {}
+                if episode_fields.get("enabled", True):
+                    nfo_path = validate_media_path(
+                        str(metadata_season_folder / f"{dest_file.stem}.nfo")
+                    )
+                    nfo_path.write_text(nfo_content, encoding="utf-8")
+                    result.nfo_path = str(nfo_path)
+                    move_step.logs.append(ScrapeLogEntry(message=f"NFO 文件已写入: {nfo_path}"))
 
                 # 生成 tvshow.nfo（剧集信息）到剧集文件夹
-                tvshow_nfo_path = validate_media_path(
-                    str(metadata_series_folder / "tvshow.nfo")
-                )
-                if not tvshow_nfo_path.exists():
-                    metadata_series_folder.mkdir(parents=True, exist_ok=True)
-                    tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
-                    tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(tvshow_nfo_data)
-                    tvshow_nfo_path.write_text(tvshow_nfo_content, encoding="utf-8")
-                    move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
+                if (nfo_config.get("tvshow") or {}).get("enabled", True):
+                    tvshow_nfo_path = validate_media_path(
+                        str(metadata_series_folder / "tvshow.nfo")
+                    )
+                    if not tvshow_nfo_path.exists():
+                        metadata_series_folder.mkdir(parents=True, exist_ok=True)
+                        tvshow_nfo_data = self.nfo_service.tvshow_from_tmdb(series)
+                        tvshow_nfo_content = self.nfo_service.generate_tvshow_nfo(
+                            tvshow_nfo_data,
+                            fields=nfo_config.get("tvshow"),
+                        )
+                        tvshow_nfo_path.write_text(tvshow_nfo_content, encoding="utf-8")
+                        move_step.logs.append(ScrapeLogEntry(message="tvshow.nfo 已生成"))
 
                 # 生成 season.nfo 到季度文件夹
-                season_nfo_path = validate_media_path(
-                    str(metadata_season_folder / "season.nfo")
-                )
-                if not season_nfo_path.exists():
-                    season_nfo_data = self._get_season_nfo_data(series, season_num)
-                    season_nfo_content = self.nfo_service.generate_season_nfo(season_nfo_data)
-                    season_nfo_path.write_text(season_nfo_content, encoding="utf-8")
-                    move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
+                if (nfo_config.get("season") or {}).get("enabled", True):
+                    season_nfo_path = validate_media_path(
+                        str(metadata_season_folder / "season.nfo")
+                    )
+                    if not season_nfo_path.exists():
+                        season_nfo_data = self._get_season_nfo_data(series, season_num)
+                        season_nfo_content = self.nfo_service.generate_season_nfo(
+                            season_nfo_data,
+                            fields=nfo_config.get("season"),
+                        )
+                        season_nfo_path.write_text(season_nfo_content, encoding="utf-8")
+                        move_step.logs.append(ScrapeLogEntry(message="season.nfo 已生成"))
             else:
                 move_step.logs.append(ScrapeLogEntry(message="NFO 生成已跳过（配置禁用）"))
 
@@ -1350,7 +1362,14 @@ class ScraperService:
         nfo_step = ScrapeLogStep(name="生成 NFO", logs=[])
         scrape_logs.append(nfo_step)
         try:
-            nfo_content = self._generate_episode_nfo(series, season_num, episode_num, season_info)
+            nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
+            nfo_content = self._generate_episode_nfo(
+                series,
+                season_num,
+                episode_num,
+                season_info,
+                fields=nfo_config.get("episode"),
+            )
             nfo_step.logs.append(ScrapeLogEntry(message="NFO 内容生成成功"))
             await notify_log_update()
         except Exception as e:
@@ -1508,8 +1527,13 @@ class ScraperService:
         scrape_logs.append(nfo_step)
         await notify_log_update()
         try:
+            nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
             nfo_content = self._generate_episode_nfo(
-                series, request.season, request.episode, season_info
+                series,
+                request.season,
+                request.episode,
+                season_info,
+                fields=nfo_config.get("episode"),
             )
             nfo_step.logs.append(ScrapeLogEntry(message="NFO 内容生成成功"))
             await notify_log_update()
@@ -1612,8 +1636,13 @@ class ScraperService:
         scrape_logs.append(nfo_step)
         await notify_log_update()
         try:
+            nfo_config = await self._get_effective_nfo_config(request.advanced_settings)
             nfo_content = self._generate_episode_nfo(
-                series, request.season, request.episode, season_info
+                series,
+                request.season,
+                request.episode,
+                season_info,
+                fields=nfo_config.get("episode"),
             )
             nfo_step.logs.append(ScrapeLogEntry(message="NFO 内容生成成功"))
             await notify_log_update()

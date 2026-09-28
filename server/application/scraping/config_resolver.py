@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from server.models.manual_job import ManualJobAdvancedSettings
+from server.models.nfo import NfoConfig
 
 if TYPE_CHECKING:
     from server.domain.system.config_service import ConfigService
@@ -58,16 +59,23 @@ class ScraperConfigResolver:
             advanced_settings: 可选的高级设置。
 
         Returns:
-            包含 nfo_enabled 的配置字典。
+            包含总开关和剧集/季/集字段开关的配置字典。
         """
         if advanced_settings is None or advanced_settings.use_global_metadata:
             global_config = await self.config_service.get_nfo_config()
             return {
                 "nfo_enabled": global_config.enabled,
+                "tvshow": global_config.tvshow.model_dump(),
+                "season": global_config.season.model_dump(),
+                "episode": global_config.episode.model_dump(),
             }
         else:
+            default_config = NfoConfig()
             return {
                 "nfo_enabled": advanced_settings.nfo_enabled,
+                "tvshow": default_config.tvshow.model_dump(),
+                "season": default_config.season.model_dump(),
+                "episode": default_config.episode.model_dump(),
             }
 
     async def check_config(self) -> tuple[bool, str | None]:

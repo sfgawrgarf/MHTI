@@ -2,6 +2,7 @@
 
 import json
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from datetime import datetime
 from xml.dom import minidom
 
@@ -13,6 +14,11 @@ XML_DECLARATION = '<?xml version="1.0" encoding="utf-8" standalone="yes"?>'
 
 class NFOService:
     """Service for generating NFO files."""
+
+    @staticmethod
+    def _field_enabled(fields: Mapping[str, bool] | None, name: str) -> bool:
+        """Return whether an optional NFO field should be emitted."""
+        return fields is None or fields.get(name, True)
 
     def _prettify(self, elem: ET.Element) -> str:
         """
@@ -46,19 +52,31 @@ class NFOService:
         Returns:
             Pretty-printed XML string with CDATA sections.
         """
-        result = self._prettify(elem)
-        # 将 plot 和 outline 的内容包装为 CDATA
-        import re
-        result = re.sub(
-            r'<plot>([^<]*)</plot>',
-            lambda m: f'<plot><![CDATA[{m.group(1)}]]></plot>',
-            result
-        )
-        result = re.sub(
-            r'<outline>([^<]*)</outline>',
-            lambda m: f'<outline><![CDATA[{m.group(1)}]]></outline>',
-            result
-        )
+        # ElementTree/minidom do not provide native CDATA nodes. Replace the
+        # selected text with safe placeholders before pretty-printing so that
+        # already-escaped ``&``/``<`` sequences are never wrapped in CDATA.
+        placeholders: list[tuple[str, ET.Element, str]] = []
+        for index, child in enumerate(elem.iter()):
+            if child.tag not in {"plot", "outline"} or child.text is None:
+                continue
+            placeholder = f"__MHTI_CDATA_{index}__"
+            placeholders.append((placeholder, child, child.text))
+            child.text = placeholder
+
+        try:
+            result = self._prettify(elem)
+        finally:
+            for _placeholder, child, original_text in placeholders:
+                child.text = original_text
+
+        for placeholder, _child, text in placeholders:
+            # ``]]>`` terminates a CDATA section, so split it into adjacent
+            # sections while preserving the original parsed text.
+            cdata_text = text.replace("]]>", "]]]]><![CDATA[>")
+            result = result.replace(
+                f">{placeholder}<",
+                f"><![CDATA[{cdata_text}]]><",
+            )
         return result
 
     def _escape_xml(self, text: str | None) -> str:
@@ -81,7 +99,11 @@ class NFOService:
             return elem
         return None
 
-    def generate_tvshow_nfo(self, data: TVShowNFO) -> str:
+    def generate_tvshow_nfo(
+        self,
+        data: TVShowNFO,
+        fields: Mapping[str, bool] | None = None,
+    ) -> str:
         """
         Generate tvshow.nfo XML content.
 
@@ -94,9 +116,10 @@ class NFOService:
         root = ET.Element("tvshow")
 
         # plot 和 outline 使用 CDATA
-        if data.plot:
+        if self._field_enabled(fields, "plot") and data.plot:
             plot_elem = ET.SubElement(root, "plot")
             plot_elem.text = data.plot
+        if self._field_enabled(fields, "outline") and data.plot:
             outline_elem = ET.SubElement(root, "outline")
             outline_elem.text = data.plot
 
@@ -107,42 +130,46 @@ class NFOService:
         self._add_element(root, "dateadded", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         # title
-        self._add_element(root, "title", data.title)
+        if self._field_enabled(fields, "title"):
+            self._add_element(root, "title", data.title)
 
         # originaltitle
-        self._add_element(root, "originaltitle", data.original_title)
+        if self._field_enabled(fields, "originaltitle"):
+            self._add_element(root, "originaltitle", data.original_title)
 
         # rating
-        if data.rating is not None:
+        if self._field_enabled(fields, "rating") and data.rating is not None:
             self._add_element(root, "rating", f"{data.rating:.1f}")
 
         # year
-        if data.year is not None:
+        if self._field_enabled(fields, "year") and data.year is not None:
             self._add_element(root, "year", str(data.year))
 
         # sorttitle
-        self._add_element(root, "sorttitle", data.sort_title or data.title)
+        if self._field_enabled(fields, "sorttitle"):
+            self._add_element(root, "sorttitle", data.sort_title or data.title)
 
         # tmdbid
-        if data.tmdb_id is not None:
+        if self._field_enabled(fields, "tmdbid") and data.tmdb_id is not None:
             self._add_element(root, "tmdbid", str(data.tmdb_id))
 
         # premiered 和 releasedate
-        if data.premiered is not None:
+        if self._field_enabled(fields, "premiered") and data.premiered is not None:
             self._add_element(root, "premiered", data.premiered.isoformat())
             self._add_element(root, "releasedate", data.premiered.isoformat())
 
         # genres
-        for genre in data.genres:
-            self._add_element(root, "genre", genre)
+        if self._field_enabled(fields, "genre"):
+            for genre in data.genres:
+                self._add_element(root, "genre", genre)
 
         # uniqueid
-        if data.tmdb_id is not None:
+        if self._field_enabled(fields, "tmdbid") and data.tmdb_id is not None:
             uniqueid = ET.SubElement(root, "uniqueid", type="tmdb")
             uniqueid.text = str(data.tmdb_id)
 
         # episodeguide
-        if data.tmdb_id is not None:
+        if self._field_enabled(fields, "tmdbid") and data.tmdb_id is not None:
             self._add_element(root, "episodeguide", json.dumps({"tmdb": str(data.tmdb_id)}))
 
         # season 和 episode 固定为 -1
@@ -153,11 +180,16 @@ class NFOService:
         self._add_element(root, "displayorder", "aired")
 
         # status
-        self._add_element(root, "status", data.status)
+        if self._field_enabled(fields, "status"):
+            self._add_element(root, "status", data.status)
 
         return self._prettify_with_cdata(root)
 
-    def generate_season_nfo(self, data: SeasonNFO) -> str:
+    def generate_season_nfo(
+        self,
+        data: SeasonNFO,
+        fields: Mapping[str, bool] | None = None,
+    ) -> str:
         """
         Generate season.nfo XML content.
 
@@ -170,10 +202,11 @@ class NFOService:
         root = ET.Element("season")
 
         # plot 和 outline（可为空）
-        plot_elem = ET.SubElement(root, "plot")
-        plot_elem.text = data.plot or ""
-        outline_elem = ET.SubElement(root, "outline")
-        outline_elem.text = data.plot or ""
+        if self._field_enabled(fields, "plot"):
+            plot_elem = ET.SubElement(root, "plot")
+            plot_elem.text = data.plot or ""
+            outline_elem = ET.SubElement(root, "outline")
+            outline_elem.text = data.plot or ""
 
         # lockdata
         self._add_element(root, "lockdata", "false")
@@ -182,26 +215,33 @@ class NFOService:
         self._add_element(root, "dateadded", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         # title
-        self._add_element(root, "title", data.title or f"Season {data.season_number}")
+        if self._field_enabled(fields, "title"):
+            self._add_element(root, "title", data.title or f"Season {data.season_number}")
 
         # year
-        if data.premiered:
+        if self._field_enabled(fields, "year") and data.premiered:
             self._add_element(root, "year", str(data.premiered.year))
 
         # sorttitle
-        self._add_element(root, "sorttitle", data.title or f"Season {data.season_number}")
+        if self._field_enabled(fields, "title"):
+            self._add_element(root, "sorttitle", data.title or f"Season {data.season_number}")
 
         # premiered 和 releasedate
-        if data.premiered is not None:
+        if self._field_enabled(fields, "premiered") and data.premiered is not None:
             self._add_element(root, "premiered", data.premiered.isoformat())
             self._add_element(root, "releasedate", data.premiered.isoformat())
 
         # seasonnumber
-        self._add_element(root, "seasonnumber", str(data.season_number))
+        if self._field_enabled(fields, "seasonnumber"):
+            self._add_element(root, "seasonnumber", str(data.season_number))
 
         return self._prettify(root)
 
-    def generate_episode_nfo(self, data: EpisodeNFO) -> str:
+    def generate_episode_nfo(
+        self,
+        data: EpisodeNFO,
+        fields: Mapping[str, bool] | None = None,
+    ) -> str:
         """
         Generate episode.nfo XML content.
 
@@ -213,15 +253,19 @@ class NFOService:
         """
         root = ET.Element("episodedetails")
 
-        self._add_element(root, "title", data.title)
-        self._add_element(root, "season", str(data.season))
-        self._add_element(root, "episode", str(data.episode))
-        self._add_element(root, "plot", data.plot)
+        if self._field_enabled(fields, "title"):
+            self._add_element(root, "title", data.title)
+        if self._field_enabled(fields, "season"):
+            self._add_element(root, "season", str(data.season))
+        if self._field_enabled(fields, "episode"):
+            self._add_element(root, "episode", str(data.episode))
+        if self._field_enabled(fields, "plot"):
+            self._add_element(root, "plot", data.plot)
 
-        if data.aired is not None:
+        if self._field_enabled(fields, "aired") and data.aired is not None:
             self._add_element(root, "aired", data.aired.isoformat())
 
-        if data.rating is not None:
+        if self._field_enabled(fields, "rating") and data.rating is not None:
             self._add_element(root, "rating", f"{data.rating:.1f}")
 
         return self._prettify(root)
