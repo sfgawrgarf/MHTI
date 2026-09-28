@@ -82,39 +82,6 @@ def test_manual_job_rejects_local_to_p115_and_cloud_metadata() -> None:
         )
 
 
-def test_p115_to_p115_rejects_cloud_metadata_locator() -> None:
-    file_locator = _p115_locator(
-        "/115网盘/待整理/S01E01.mkv", is_dir=False
-    )
-
-    with pytest.raises(ValueError, match="元数据目录仅支持本地"):
-        ManualJobCreate(
-            scan_path="/115网盘/待整理",
-            target_folder="/115网盘/媒体库",
-            metadata_dir="/115网盘/元数据",
-            scan_locator=_p115_locator("/115网盘/待整理"),
-            target_locator=_p115_locator("/115网盘/媒体库"),
-            metadata_locator=_p115_locator("/115网盘/元数据"),
-            allow_local_output=True,
-            link_mode=LinkMode.COPY,
-        )
-
-    with pytest.raises(ValueError, match="元数据目录仅支持本地"):
-        ScrapeByIdRequest(
-            file_path=file_locator.path,
-            tmdb_id=1,
-            season=1,
-            episode=1,
-            output_dir="/115网盘/媒体库",
-            metadata_dir="/115网盘/元数据",
-            file_locator=file_locator,
-            output_locator=_p115_locator("/115网盘/媒体库"),
-            metadata_locator=_p115_locator("/115网盘/元数据"),
-            allow_local_output=True,
-            link_mode=OrganizeMode.COPY,
-        )
-
-
 def test_direct_scrape_request_enforces_the_same_permission() -> None:
     file_locator = _p115_locator("/115网盘/待整理/S01E01.mkv", is_dir=False)
     with pytest.raises(ValueError, match="允许下载到本地"):

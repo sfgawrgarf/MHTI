@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from server.common.path_security import validate_media_path
+from server.common.path_security import PathSecurityError, validate_media_path
 from server.models.history import ScrapeLogEntry, ScrapeLogLevel, ScrapeLogStep
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
@@ -349,9 +349,22 @@ class OutputWriter:
     ) -> tuple[str, str | None, str | None]:
         """统一解析视频/元数据输出目录。"""
         effective_output_dir = output_locator.path if output_locator else output_dir
-        effective_metadata_dir = metadata_locator.path if metadata_locator else metadata_dir
+        effective_metadata_dir = self._validate_metadata_directory(
+            metadata_dir, metadata_locator
+        )
         effective_source = file_locator.path if file_locator else file_path
         return effective_source, effective_output_dir, effective_metadata_dir
+
+    @staticmethod
+    def _validate_metadata_directory(
+        metadata_dir: str | None,
+        metadata_locator: StorageLocator | None,
+    ) -> str | None:
+        """Validate local metadata output before any media mutation."""
+        if metadata_locator and metadata_locator.provider != StorageProvider.LOCAL:
+            raise PathSecurityError("元数据目录必须是允许的本地媒体目录")
+        directory = metadata_locator.path if metadata_locator else metadata_dir
+        return str(validate_media_path(directory)) if directory else None
 
     async def organize_local_output(
         self,

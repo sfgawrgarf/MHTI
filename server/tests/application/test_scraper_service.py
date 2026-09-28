@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from server.application.scraping.service import ScraperService
+from server.common.path_security import PathSecurityError
 from server.domain.artifacts.nfo_service import NFOService
 from server.domain.artifacts.rename_service import RenameService
 from server.domain.parsing.parser_service import ParserService
@@ -459,3 +460,41 @@ async def test_scrape_by_id_115_to_115_writes_local_metadata(temp_db: Path, tmp_
     nfo_files = sorted(p.name for p in season_folder.glob("*.nfo"))
     assert nfo_files == ["Test Show - S01E01 -.nfo", "season.nfo"]
     assert (series_folder / "tvshow.nfo").exists()
+
+
+def test_resolve_move_input_rejects_cloud_metadata_before_output(
+    temp_db: Path,
+) -> None:
+    """Legacy cloud metadata locators fail before a provider move starts."""
+    service = _build_service(temp_db, FakeTMDB())
+    file_locator = StorageLocator(
+        provider=StorageProvider.P115,
+        path="/115网盘/待整理/episode.mp4",
+        file_id="file-001",
+        parent_id="scan-root",
+        is_dir=False,
+    )
+    output_locator = StorageLocator(
+        provider=StorageProvider.P115,
+        path="/115网盘/已整理",
+        file_id="target-root",
+        parent_id="0",
+        is_dir=True,
+    )
+    metadata_locator = StorageLocator(
+        provider=StorageProvider.P115,
+        path="/115网盘/元数据",
+        file_id="meta-root",
+        parent_id="0",
+        is_dir=True,
+    )
+
+    with pytest.raises(PathSecurityError, match="元数据目录必须是允许的本地媒体目录"):
+        service._resolve_move_input(
+            file_path=file_locator.path,
+            file_locator=file_locator,
+            output_dir=output_locator.path,
+            output_locator=output_locator,
+            metadata_dir=metadata_locator.path,
+            metadata_locator=metadata_locator,
+        )
