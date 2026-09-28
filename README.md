@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-2.1.6-blue.svg)
+![Version](https://img.shields.io/badge/version-2.1.7-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.12+-green.svg)
 ![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen.svg)
 ![Node](https://img.shields.io/badge/Node-24-339933.svg)
@@ -299,7 +299,7 @@ cd MHTI
 mkdir -p data media output
 
 # 默认使用已发布的固定版本；升级时显式指定目标版本
-export MHTI_VERSION=2.1.6
+export MHTI_VERSION=2.1.7
 
 # 拉取固定版本镜像并启动服务（Docker Compose v2）
 docker compose pull
@@ -320,7 +320,7 @@ docker compose logs -f mhti
 ```yaml
 services:
   mhti:
-    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.1.6}
+    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.1.7}
     container_name: mhti
     restart: unless-stopped
     ports:
