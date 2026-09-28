@@ -278,7 +278,19 @@ class P115StorageProvider:
                 # snapshot and create duplicate files on a later retry.
                 raise ValueError(f"115 目录读取失败: {parent_pid}") from exc
 
-            page = response.get("data", []) if isinstance(response, dict) else []
+            if not isinstance(response, dict) or not response.get("state", True):
+                if isinstance(response, dict):
+                    message = (
+                        response.get("message")
+                        or response.get("error")
+                        or response.get("msg")
+                        or "未知原因"
+                    )
+                else:
+                    message = "返回格式无效"
+                raise ValueError(f"115 目录读取失败: {parent_pid} ({message})")
+
+            page = response.get("data", [])
             if not isinstance(page, list) or not page:
                 break
             rows.extend(row for row in page if isinstance(row, dict))

@@ -1039,6 +1039,41 @@ class TestP115Service:
         ]
 
     @pytest.mark.asyncio
+    async def test_browse_rejects_failed_fs_files_response(
+        self,
+        config_service: ConfigService,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A provider business failure must not be exposed as an empty directory."""
+        fake_module, fake_const = build_fake_p115_module()
+        fake_module.P115Client.fs_files_response = {
+            "state": False,
+            "code": 99,
+            "message": "请重新登录",
+        }
+
+        async def fake_load():
+            return fake_module, fake_const
+
+        monkeypatch.setattr(
+            "server.domain.integration.p115_service._load_p115client",
+            fake_load,
+        )
+        await config_service.save_115_config(
+            Cloud115Config(
+                enabled=True,
+                app="alipaymini",
+                cookies="UID=1; CID=2; SEID=3; KID=4",
+                is_logged_in=True,
+            )
+        )
+
+        service = P115Service(config_service=config_service)
+
+        with pytest.raises(ConfigurationError, match="重新扫码登录"):
+            await service.browse(path="/115网盘", file_id="0", page=1, page_size=20)
+
+    @pytest.mark.asyncio
     async def test_browse_resolves_directory_id_from_virtual_path_when_file_id_missing(
         self,
         config_service: ConfigService,

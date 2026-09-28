@@ -190,6 +190,52 @@ async def test_directory_read_failure_is_not_treated_as_empty(storage_provider) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"state": False, "code": 99, "message": "请重新登录"},
+        ["invalid response"],
+    ],
+)
+async def test_directory_failed_response_is_not_treated_as_empty(
+    storage_provider,
+    response,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailedResponseClient:
+        copy_calls = 0
+
+        async def fs_files(self, payload: dict, async_: bool = False):
+            return response
+
+        async def fs_copy(self, file_id: str, pid: str, async_: bool = False) -> dict:
+            self.copy_calls += 1
+            return {"state": True}
+
+    client = FailedResponseClient()
+
+    async def fake_get_client() -> tuple[FailedResponseClient, str]:
+        return client, "harmony"
+
+    monkeypatch.setattr(storage_provider, "_get_client", fake_get_client)
+
+    with pytest.raises(ValueError, match="115 目录读取失败"):
+        await storage_provider.copy(
+            StorageLocator(
+                provider=StorageProvider.P115,
+                path="/115网盘/待整理/episode.mkv",
+                file_id="source-1",
+                parent_id="source-parent",
+                is_dir=False,
+            ),
+            "episode.mkv",
+            "target-parent",
+        )
+
+    assert client.copy_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_copy_does_not_copy_when_initial_snapshot_fails(
     storage_provider, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -117,6 +117,21 @@ _P115_IMPORT_SYNC_LOCK = threading.Lock()
 _P115_MODULE_CACHE: tuple[Any, Any] | None = None
 
 
+class P115BrowseResponseError(RuntimeError):
+    """Raised when a 115 browse endpoint returns a failed response payload."""
+
+    def __init__(self, response: Any) -> None:
+        self.response = response
+        if isinstance(response, dict):
+            code = response.get("code") or response.get("errno") or response.get("errcode")
+            message = response.get("message") or response.get("error") or response.get("msg")
+            detail = f" code={code}" if code not in (None, "") else ""
+            detail += f" message={message}" if message else ""
+        else:
+            detail = f" type={type(response).__name__}"
+        super().__init__(f"115 目录接口返回失败响应{detail}")
+
+
 @contextmanager
 def _temporary_p115_home():
     """Temporarily point HOME/USERPROFILE to a writable project path."""
@@ -600,6 +615,7 @@ class P115Service:
                 directory_id=directory_id,
                 requested_path=current_path,
                 error_path=current_path,
+                validate_response=False,
             )
 
             for row in rows:
@@ -684,6 +700,41 @@ class P115Service:
         if isinstance(exc, (ConfigurationError, FolderNotFoundError, InvalidFolderError)):
             return exc
 
+        if isinstance(exc, P115BrowseResponseError):
+            response = exc.response if isinstance(exc.response, dict) else {}
+            if self._is_session_invalid(response):
+                return self._build_login_expired_error()
+
+            code = self._coerce_int(response.get("code"))
+            if code is None:
+                code = self._coerce_int(response.get("errno"))
+            if code in {
+                10014,
+                20013,
+                20018,
+                31003,
+                50015,
+                70005,
+                70008,
+                90008,
+                430004,
+            }:
+                return FolderNotFoundError(path)
+            if code in {1001, 10004, 20002, 20003, 20020, 20021}:
+                return InvalidFolderError(path, reason="115 网盘目录路径无效")
+
+            message = str(
+                response.get("message")
+                or response.get("error")
+                or response.get("msg")
+                or ""
+            ).lower()
+            if "不存在" in message or "已删除" in message:
+                return FolderNotFoundError(path)
+            if "参数" in message or "路径" in message or "invalid" in message:
+                return InvalidFolderError(path, reason="115 网盘目录路径无效")
+            return self._build_generic_browse_error()
+
         exc_name = type(exc).__name__
         message = str(exc)
         normalized_message = message.lower()
@@ -716,10 +767,27 @@ class P115Service:
 
         return self._build_generic_browse_error()
 
-    async def _call_browse_api(self, func, *args, error_path: str, **kwargs):
+    @staticmethod
+    def _ensure_browse_response(response: Any) -> dict[str, Any]:
+        """Reject provider failures before callers can interpret them as empty data."""
+        if not isinstance(response, dict) or not response.get("state", True):
+            raise P115BrowseResponseError(response)
+        return response
+
+    async def _call_browse_api(
+        self,
+        func,
+        *args,
+        error_path: str,
+        validate_response: bool = True,
+        **kwargs,
+    ):
         """Wrap p115client browse calls and translate third-party failures."""
         try:
-            return await func(*args, **kwargs)
+            response = await func(*args, **kwargs)
+            if validate_response:
+                return self._ensure_browse_response(response)
+            return response
         except Exception as exc:
             raise self._map_browse_error(exc, error_path) from exc
 
@@ -844,6 +912,7 @@ class P115Service:
             directory_id=directory_id,
             requested_path=normalized_path,
             error_path=normalized_path,
+            validate_response=False,
         )
         entries = [
             self._normalize_browse_entry(item, current_path)
@@ -983,7 +1052,12 @@ class P115Service:
         """
         breadcrumbs = self._extract_fs_files_breadcrumbs(response)
         if not breadcrumbs and directory_id != "0":
-            info = await client.fs_info({"file_id": directory_id}, async_=True)
+            info = await self._call_browse_api(
+                client.fs_info,
+                {"file_id": directory_id},
+                async_=True,
+                error_path=requested_path,
+            )
             breadcrumbs = self._extract_fs_info_breadcrumbs(info)
 
         current_path = self._breadcrumbs_to_virtual_path(breadcrumbs)
