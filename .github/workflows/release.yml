@@ -371,6 +371,9 @@ jobs:
           # 使用不可变的版本标签
           docker pull {docker_image}:{version}
 
+          # 首次部署或从 root 镜像升级时，为可写目录准备权限
+          sudo chown -R 10001:10001 ./data /path/to/output
+
           # 运行容器
           docker run -d \\
             --name mhti \\

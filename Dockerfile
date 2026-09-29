@@ -45,7 +45,10 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    DATA_DIR=/app/data
+    DATA_DIR=/app/data \
+    HOME=/app/data \
+    XDG_DATA_HOME=/app/data/caddy-data \
+    XDG_CONFIG_HOME=/app/data/caddy-config
 
 WORKDIR /app
 
@@ -68,8 +71,15 @@ COPY Caddyfile /etc/caddy/Caddyfile
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
-# Create data directory
-RUN mkdir -p /app/data && chmod 755 /app/data
+# Create writable runtime directories and assign them to the fixed non-root
+# runtime identity. Bind mounts must be prepared on the host with the same
+# UID/GID before an existing deployment is upgraded.
+RUN mkdir -p /app/data/logs /app/data/caddy-data /app/data/caddy-config \
+    && chmod 755 /app/data \
+    && chown -R 10001:10001 /app/data
+
+# Keep both the API and Caddy outside the root account at runtime.
+USER 10001:10001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

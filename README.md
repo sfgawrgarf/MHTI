@@ -298,6 +298,9 @@ cd MHTI
 # 创建持久化、源媒体和整理输出目录
 mkdir -p data media output
 
+# 容器默认以非 root 的 UID/GID 10001 运行；为可写卷准备权限
+sudo chown -R 10001:10001 data output
+
 # 默认使用已发布的固定版本；升级时显式指定目标版本
 export MHTI_VERSION=2.1.7
 
@@ -339,6 +342,16 @@ services:
 默认 Compose 文件使用 GHCR 固定版本镜像；源码开发或验证容器构建时，使用
 `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`。
 容器内 Caddy 监听 8000，uvicorn 只监听 `127.0.0.1:8001`，前端静态文件由 Caddy 直接提供。
+
+镜像内的 API 和 Caddy 均以 UID/GID `10001:10001` 非 root 运行。已有 root 用户运行的部署升级前，先停止容器并迁移可写挂载目录的所有权；这只改变宿主机文件所有者，不会修改文件内容：
+
+```bash
+docker compose down
+sudo chown -R 10001:10001 data output
+docker compose up -d
+```
+
+不要对只读的 `media` 目录执行写权限迁移。若 `/output` 由宿主机上的其他服务共享，请改用 ACL 或共享用户组，使 UID/GID `10001:10001` 具备所需写权限。
 
 ### 开发模式
 
