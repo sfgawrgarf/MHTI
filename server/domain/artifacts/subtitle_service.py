@@ -3,6 +3,7 @@
 import re
 import shutil
 from pathlib import Path
+from server.common.file_cancellation import check_file_cancelled
 
 from server.common.exceptions import InvalidFolderError
 from server.common.limits import MAX_DISCOVERED_FILES, MAX_SUBTITLE_ASSOCIATE_VIDEOS
@@ -89,6 +90,7 @@ class SubtitleService:
 
         subtitles = []
         for file_path in folder.rglob("*"):
+            check_file_cancelled()
             if file_path.is_file() and file_path.suffix.lower() in SUBTITLE_EXTENSIONS:
                 if len(subtitles) >= MAX_DISCOVERED_FILES:
                     raise InvalidFolderError(

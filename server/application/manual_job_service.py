@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from server.application.file_io import run_file_io
 from datetime import datetime
 from pathlib import Path
 from weakref import WeakKeyDictionary
@@ -484,7 +485,7 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
                 )
             ]
         else:
-            scan_result = file_service.scan_folder(job.scan_path)
+            scan_result = await run_file_io(file_service.scan_folder, job.scan_path)
 
         discovered_count = len(scan_result)
         if organize_filter is not None:

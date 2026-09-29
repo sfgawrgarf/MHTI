@@ -41,6 +41,50 @@ def test_conflict_never_removes_source_or_target(tmp_path, mode):
     assert target.read_bytes() == b"old"
 
 
+@pytest.mark.parametrize("mode", list(OrganizeMode))
+def test_failed_commit_preserves_source_and_destination(tmp_path, monkeypatch, mode):
+    from server.infrastructure import file_operations
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+
+    def fail(*args, **kwargs):
+        raise PermissionError("injected replacement failure")
+
+    monkeypatch.setattr(file_operations.os, "replace", fail)
+    with pytest.raises(PermissionError):
+        publish_file(source, target, mode, overwrite=True)
+    assert source.read_bytes() == b"new"
+    assert target.read_bytes() == b"old"
+
+
+def test_cancel_after_copy_does_not_publish(tmp_path, monkeypatch):
+    from threading import Event
+    from server.common.file_cancellation import cancel_event, FileIOCancelled
+    from server.infrastructure import file_operations
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_bytes(b"new")
+    target.write_bytes(b"old")
+    cancelled = Event()
+    token = cancel_event.set(cancelled)
+    copy = file_operations.shutil.copy2
+
+    def copy_then_cancel(*args, **kwargs):
+        copy(*args, **kwargs)
+        cancelled.set()
+
+    monkeypatch.setattr(file_operations.shutil, "copy2", copy_then_cancel)
+    try:
+        with pytest.raises(FileIOCancelled):
+            publish_file(source, target, OrganizeMode.COPY, overwrite=True)
+    finally:
+        cancel_event.reset(token)
+    assert source.read_bytes() == b"new"
+    assert target.read_bytes() == b"old"
+
+
 def test_nested_association_keeps_paths_and_directory_scope(tmp_path):
     for name in ("one", "two"):
         folder = tmp_path / name

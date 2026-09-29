@@ -2,24 +2,15 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar, copy_context
+from contextvars import copy_context
 from functools import partial
 from threading import Event
 from weakref import WeakKeyDictionary
-
-
-class FileIOCancelled(Exception):
-    """A synchronous operation stopped at a safe cancellation checkpoint."""
-
-
-_cancel_event: ContextVar[Event | None] = ContextVar("file_io_cancel", default=None)
-
-
-def check_file_cancelled() -> None:
-    """Raise when the caller requested cancellation before a write starts."""
-    event = _cancel_event.get()
-    if event is not None and event.is_set():
-        raise FileIOCancelled("文件操作已取消")
+from server.common.file_cancellation import (
+    FileIOCancelled as FileIOCancelled,
+    check_file_cancelled as check_file_cancelled,
+    cancel_event as _cancel_event,
+)
 
 
 class FileIOExecutor:

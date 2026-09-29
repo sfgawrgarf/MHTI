@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from server.models.organize import OrganizeMode
+from server.common.file_cancellation import check_file_cancelled
 
 
 def _publish_no_replace(staged: Path, destination: Path) -> None:
@@ -34,6 +35,7 @@ def _publish_no_replace(staged: Path, destination: Path) -> None:
 
 def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
                  *, overwrite: bool = False) -> None:
+    check_file_cancelled()
     if source == destination:
         return
     mode = mode or OrganizeMode.MOVE
@@ -41,7 +43,8 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
     # Stage on the destination filesystem. Even MOVE retains its source until
     # publication succeeds, including cross-device moves and failed replaces.
     with TemporaryDirectory(prefix=".mhti-publish-", dir=destination.parent) as staging:
-        staged = Path(staging) / destination.name
+        # Do not expose a video/subtitle suffix to concurrent media scanners.
+        staged = Path(staging) / "payload.tmp"
         if mode == OrganizeMode.HARDLINK:
             os.link(source, staged)
         elif mode == OrganizeMode.SYMLINK:
@@ -56,6 +59,7 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
                 shutil.copy2(source, staged)
         else:
             shutil.copy2(source, staged)
+        check_file_cancelled()
         if overwrite:
             os.replace(staged, destination)
         else:

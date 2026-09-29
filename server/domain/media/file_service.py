@@ -209,10 +209,12 @@ class FileService:
             List of ScannedFile objects.
         """
         from datetime import datetime
+        from server.common.file_cancellation import check_file_cancelled
 
         video_files: list[ScannedFile] = []
 
         for item in folder.rglob("*"):
+            check_file_cancelled()
             if item.is_file() and item.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS:
                 if len(video_files) >= MAX_DISCOVERED_FILES:
                     raise InvalidFolderError(
