@@ -172,6 +172,8 @@ jobs:
         env:
           MHTI_VERSION: ci-smoke
         run: |
+          mkdir -p data media output
+          sudo chown -R 10001:10001 data output
           docker tag mhti:test ghcr.io/sfgawrgarf/mhti:ci-smoke
           docker compose -p mhti-smoke up -d --pull never
           for attempt in $(seq 1 45); do
