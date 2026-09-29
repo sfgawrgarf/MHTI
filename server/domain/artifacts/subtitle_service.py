@@ -4,6 +4,8 @@ import re
 import shutil
 from pathlib import Path
 
+from server.common.exceptions import InvalidFolderError
+from server.common.limits import MAX_DISCOVERED_FILES, MAX_SUBTITLE_ASSOCIATE_VIDEOS
 from server.common.path_security import (
     PathSecurityError,
     validate_media_directory,
@@ -88,6 +90,11 @@ class SubtitleService:
         subtitles = []
         for file_path in folder.rglob("*"):
             if file_path.is_file() and file_path.suffix.lower() in SUBTITLE_EXTENSIONS:
+                if len(subtitles) >= MAX_DISCOVERED_FILES:
+                    raise InvalidFolderError(
+                        str(folder),
+                        reason=f"字幕扫描结果超过上限（{MAX_DISCOVERED_FILES} 个文件）",
+                    )
                 subtitle = self._parse_subtitle_file(file_path)
                 subtitles.append(subtitle)
 
@@ -121,7 +128,20 @@ class SubtitleService:
             video_files = []
             for file_path in folder.rglob("*"):
                 if file_path.is_file() and file_path.suffix.lower() in VIDEO_EXTENSIONS:
+                    if len(video_files) >= MAX_DISCOVERED_FILES:
+                        raise InvalidFolderError(
+                            str(folder),
+                            reason=f"视频扫描结果超过上限（{MAX_DISCOVERED_FILES} 个文件）",
+                        )
                     video_files.append(file_path.name)
+        elif len(video_files) > MAX_SUBTITLE_ASSOCIATE_VIDEOS:
+            raise InvalidFolderError(
+                str(folder),
+                reason=(
+                    "视频列表超过上限"
+                    f"（{MAX_SUBTITLE_ASSOCIATE_VIDEOS} 个文件）"
+                ),
+            )
 
         # Associate
         associations = []

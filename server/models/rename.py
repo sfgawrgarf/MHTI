@@ -2,8 +2,9 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from server.common.limits import MAX_BATCH_RENAME_ITEMS
 from server.models.organize import OrganizeMode
 from server.models.template import NamingTemplate
 
@@ -46,7 +47,7 @@ class RenamePreview(BaseModel):
 class BatchRenameRequest(BaseModel):
     """Batch rename request."""
 
-    items: list[RenameRequest]
+    items: list[RenameRequest] = Field(max_length=MAX_BATCH_RENAME_ITEMS)
     create_backup: bool = False
     dry_run: bool = False
 

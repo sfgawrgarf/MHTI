@@ -19,11 +19,13 @@ from server.common.path_security import (
     validate_media_path,
 )
 from server.models.auth import ChangePasswordRequest, LoginRequest, RefreshRequest
+from server.models.emby import EmbyConfigRequest
 from server.models.image import ImageDownloadRequest
 from server.models.manual_job import ManualJobDeleteRequest
 from server.models.parser import BatchParseRequest, ParseRequest
+from server.models.rename import BatchRenameRequest, RenameRequest
 from server.models.scraper import BatchScrapeRequest
-from server.models.subtitle import SubtitleRenameRequest
+from server.models.subtitle import SubtitleAssociateRequest, SubtitleRenameRequest
 from server.infrastructure import security as security_module
 
 
@@ -168,6 +170,14 @@ def test_log_export_limit_is_bounded(auth_client: TestClient) -> None:
     assert auth_client.get("/api/logs/export?limit=10001").status_code == 422
 
 
+def test_scrape_job_delete_ids_are_bounded(auth_client: TestClient) -> None:
+    response = auth_client.delete(
+        "/api/scrape-jobs",
+        params=[("ids", str(index)) for index in range(501)],
+    )
+    assert response.status_code == 422
+
+
 def test_batch_request_models_reject_unbounded_work() -> None:
     with pytest.raises(ValidationError):
         BatchParseRequest(files=[ParseRequest(filename="episode.mkv")] * 501)
@@ -177,6 +187,30 @@ def test_batch_request_models_reject_unbounded_work() -> None:
         ManualJobDeleteRequest(ids=list(range(501)))
     with pytest.raises(ValidationError):
         AIRetryRequest(record_ids=[str(index) for index in range(501)])
+    with pytest.raises(ValidationError):
+        BatchRenameRequest(
+            items=[
+                RenameRequest(
+                    source_path="/media/episode.mkv",
+                    title="Episode",
+                    season=1,
+                    episode=1,
+                )
+            ]
+            * 101
+        )
+    with pytest.raises(ValidationError):
+        SubtitleAssociateRequest(
+            folder_path="/media",
+            video_files=["episode.mkv"] * 501,
+        )
+    with pytest.raises(ValidationError):
+        EmbyConfigRequest(
+            enabled=True,
+            server_url="https://emby.example.test",
+            api_key="key",
+            library_ids=["library"] * 101,
+        )
 
 
 def test_file_paths_stay_inside_configured_roots(

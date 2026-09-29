@@ -9,6 +9,7 @@ from server.common.exceptions import (
     InvalidFolderError,
     PermissionDeniedError,
 )
+from server.common.limits import MAX_DISCOVERED_FILES
 from server.common.path_security import (
     PathSecurityError,
     allowed_media_roots,
@@ -213,6 +214,11 @@ class FileService:
 
         for item in folder.rglob("*"):
             if item.is_file() and item.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS:
+                if len(video_files) >= MAX_DISCOVERED_FILES:
+                    raise InvalidFolderError(
+                        str(folder),
+                        reason=f"扫描结果超过上限（{MAX_DISCOVERED_FILES} 个视频文件）",
+                    )
                 stat = item.stat()
                 mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
                 video_files.append(

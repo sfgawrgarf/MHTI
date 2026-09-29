@@ -5,6 +5,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
+from server.common.limits import MAX_SUBTITLE_ASSOCIATE_VIDEOS
+
 
 class SubtitleLanguage(str, Enum):
     """Subtitle language identifiers."""
@@ -44,7 +46,10 @@ class SubtitleAssociateRequest(BaseModel):
     """Request to associate subtitles with videos."""
 
     folder_path: str
-    video_files: list[str] | None = None  # If None, auto-detect
+    video_files: list[str] | None = Field(
+        default=None,
+        max_length=MAX_SUBTITLE_ASSOCIATE_VIDEOS,
+    )  # If None, auto-detect
 
 
 class VideoSubtitleAssociation(BaseModel):

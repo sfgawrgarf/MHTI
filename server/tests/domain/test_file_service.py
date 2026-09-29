@@ -43,6 +43,20 @@ class TestFileService:
         filenames = {f.filename for f in result}
         assert filenames == {"root.mp4", "sub.mkv", "deep.avi"}
 
+    def test_scan_folder_rejects_excess_files(
+        self,
+        tmp_path,
+        file_service,
+        monkeypatch,
+    ):
+        """Scanning stops with an explicit error instead of retaining unbounded results."""
+        monkeypatch.setattr("server.domain.media.file_service.MAX_DISCOVERED_FILES", 1)
+        (tmp_path / "first.mp4").touch()
+        (tmp_path / "second.mkv").touch()
+
+        with pytest.raises(InvalidFolderError, match="超过上限"):
+            file_service.scan_folder(str(tmp_path))
+
     def test_scan_folder_empty_directory(self, tmp_path, file_service):
         """Test scanning an empty directory returns empty list."""
         result = file_service.scan_folder(str(tmp_path))

@@ -12,6 +12,7 @@ from typing import Any
 from urllib.error import HTTPError
 
 from server.common.exceptions import ConfigurationError, FolderNotFoundError, InvalidFolderError
+from server.common.limits import MAX_DISCOVERED_FILES
 from server.infrastructure.config import DATA_DIR
 from server.models.cloud_115 import (
     Cloud115Account,
@@ -632,6 +633,11 @@ class P115Service:
                     )
                 else:
                     if self._is_video_filename(entry.get("name") or ""):
+                        if len(collected) >= MAX_DISCOVERED_FILES:
+                            raise InvalidFolderError(
+                                current_path,
+                                reason=f"扫描结果超过上限（{MAX_DISCOVERED_FILES} 个视频文件）",
+                            )
                         collected.append(entry)
 
             # Stop when the page is not full (last page) or total is exhausted.

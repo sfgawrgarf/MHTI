@@ -3,7 +3,9 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from server.common.limits import MAX_EMBY_LIBRARY_IDS
 
 
 class ConflictType(str, Enum):
@@ -22,7 +24,10 @@ class EmbyConfig(BaseModel):
     server_url: str = ""  # 服务器地址
     api_key: str = ""  # API 密钥 (加密存储)
     user_id: str = ""  # 用户 ID (可选)
-    library_ids: list[str] = []  # 要检查的媒体库 ID 列表
+    library_ids: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_EMBY_LIBRARY_IDS,
+    )  # 要检查的媒体库 ID 列表
     check_before_scrape: bool = True  # 刮削前检查
     timeout: int = 10  # 请求超时 (秒)
 
@@ -34,7 +39,10 @@ class EmbyConfigRequest(BaseModel):
     server_url: str
     api_key: str
     user_id: str = ""
-    library_ids: list[str] = []
+    library_ids: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_EMBY_LIBRARY_IDS,
+    )
     check_before_scrape: bool = True
     timeout: int = 10
 

@@ -4,6 +4,7 @@ import pytest
 import tempfile
 from pathlib import Path
 
+from server.common.exceptions import InvalidFolderError
 from server.domain.artifacts.subtitle_service import SubtitleService, SUBTITLE_EXTENSIONS
 from server.models.subtitle import SubtitleLanguage
 
@@ -71,6 +72,18 @@ class TestSubtitleServiceScan:
         result = subtitle_service.scan_subtitles(temp_dir)
 
         assert result.total == 2
+
+    def test_scan_rejects_excess_files(self, subtitle_service, temp_dir, monkeypatch):
+        """Subtitle discovery must not retain an unbounded result list."""
+        monkeypatch.setattr(
+            "server.domain.artifacts.subtitle_service.MAX_DISCOVERED_FILES",
+            1,
+        )
+        (Path(temp_dir) / "first.srt").write_text("content")
+        (Path(temp_dir) / "second.ass").write_text("content")
+
+        with pytest.raises(InvalidFolderError, match="超过上限"):
+            subtitle_service.scan_subtitles(temp_dir)
 
 
 class TestSubtitleServiceLanguage:

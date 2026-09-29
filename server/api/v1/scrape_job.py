@@ -4,6 +4,7 @@ from server.api.deps import require_auth
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from server.api.deps import get_scrape_job_service
+from server.common.limits import MAX_SCRAPE_JOB_DELETE_IDS
 from server.models.scrape_job import (
     ScrapeJob,
     ScrapeJobCreate,
@@ -85,7 +86,7 @@ async def cancel_job(
 
 @router.delete("")
 async def delete_jobs(
-    ids: list[str] = Query(...),
+    ids: list[str] = Query(..., max_length=MAX_SCRAPE_JOB_DELETE_IDS),
     service: ScrapeJobService = Depends(get_scrape_job_service),
 ) -> dict:
     """删除文件刮削任务"""
