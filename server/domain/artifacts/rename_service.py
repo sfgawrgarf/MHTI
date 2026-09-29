@@ -1,7 +1,6 @@
 """Rename service for organizing video files."""
 
 import logging
-import os
 import shutil
 from pathlib import Path
 
@@ -11,6 +10,7 @@ from server.common.path_security import (
     validate_media_path,
 )
 from server.infrastructure.log_security import safe_log_value
+from server.infrastructure.file_operations import publish_file
 from server.models.organize import OrganizeMode
 from server.models.rename import (
     BatchRenameRequest,
@@ -246,7 +246,6 @@ class RenameService:
                             error=f"Destination path is a directory: {dest_path}",
                             backup_path=backup_path,
                         )
-                    dest_path.unlink()
                     logger.warning("用户确认覆盖目标文件: %s", safe_log_value(dest_path))
                 else:
                     logger.warning("目标文件已存在: %s", safe_log_value(dest_path))
@@ -263,7 +262,10 @@ class RenameService:
                 "execute_rename: 正在处理文件，模式: %s...",
                 safe_log_value(request.link_mode or "move(默认)"),
             )
-            self._execute_file_operation(source_path, dest_path, request.link_mode)
+            if request.conflict_action == "overwrite":
+                publish_file(source_path, dest_path, request.link_mode, overwrite=True)
+            else:
+                self._execute_file_operation(source_path, dest_path, request.link_mode)
             logger.info("execute_rename: 文件处理成功!")
 
             return RenameResult(
@@ -392,20 +394,7 @@ class RenameService:
             dest_path: 目标文件路径
             link_mode: 整理模式（copy/move/hardlink/symlink）
         """
-        mode = link_mode or OrganizeMode.MOVE  # 默认移动
-
-        if mode == OrganizeMode.COPY:
-            shutil.copy2(str(source_path), str(dest_path))
-            logger.info("文件已复制")
-        elif mode == OrganizeMode.HARDLINK:
-            os.link(str(source_path), str(dest_path))
-            logger.info("硬链接已创建")
-        elif mode == OrganizeMode.SYMLINK:
-            os.symlink(str(source_path), str(dest_path))
-            logger.info("软链接已创建")
-        else:  # MOVE
-            shutil.move(str(source_path), str(dest_path))
-            logger.info("文件已移动")
+        publish_file(source_path, dest_path, link_mode)
 
     def create_series_structure(
         self,

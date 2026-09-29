@@ -102,12 +102,14 @@ async function refreshAccessToken(): Promise<AccessTokenRefreshResult | null> {
     // 使用原始 axios 避免拦截器循环
     const response = await axios.post(`${getApiBaseUrl()}/auth/refresh`, {
       refresh_token: refreshToken,
-    })
+    }, { timeout: 15000 })
 
     const { access_token, refresh_token, expires_in } = response.data
     if (!access_token || !refresh_token || !expires_in) {
       throw new Error('刷新响应缺少令牌')
     }
+    // Do not resurrect a session after logout or overwrite a newer login.
+    if (getRefreshToken() !== refreshToken) return null
     updateTokens(access_token, refresh_token, expires_in)
     console.log('[API] Token 刷新成功，有效期', expires_in, '秒')
     return { accessToken: access_token, expiresIn: expires_in }
@@ -119,11 +121,36 @@ async function refreshAccessToken(): Promise<AccessTokenRefreshResult | null> {
 
 export function refreshStoredAccessToken(): Promise<AccessTokenRefreshResult | null> {
   if (!refreshPromise) {
-    refreshPromise = refreshAccessToken().finally(() => {
+    refreshPromise = refreshAcrossTabs().finally(() => {
       refreshPromise = null
     })
   }
   return refreshPromise
+}
+
+async function refreshAcrossTabs(): Promise<AccessTokenRefreshResult | null> {
+  const previousToken = getRefreshToken()
+  if (!previousToken) return null
+  // Without an origin-wide lock (e.g. plain HTTP), rotating a shared token is
+  // unsafe. Require a fresh login instead of risking revocation in other tabs.
+  if (typeof navigator === 'undefined' || !navigator.locks) return null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 20000)
+  try {
+    return await navigator.locks.request('mhti-auth-refresh', { signal: controller.signal }, async () => {
+      clearTimeout(timer)
+      if (getRefreshToken() !== previousToken) {
+        const accessToken = getToken()
+        const expiresIn = Math.floor(((getExpiresAt() || 0) - Date.now()) / 1000)
+        return accessToken && expiresIn > 0 ? { accessToken, expiresIn } : null
+      }
+      return refreshAccessToken()
+    })
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // 请求拦截器

@@ -6,6 +6,7 @@ _get_effective_nfo_config / _get_effective_download_config 等）与薄委托面
 """
 
 from pathlib import Path
+from server.application.file_io import run_file_io
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -160,7 +161,7 @@ class OutputWriter:
                     year=year,
                     naming_template=naming_template,
                 )
-                rename_result = facade.rename_service.execute_rename(
+                rename_result = await run_file_io(facade.rename_service.execute_rename,
                     local_request,
                     allow_staged_source=True,
                 )
@@ -383,7 +384,7 @@ class OutputWriter:
         move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
         await notify_log_update()
 
-        rename_result = self._facade.rename_service.execute_rename(rename_request)
+        rename_result = await run_file_io(self._facade.rename_service.execute_rename, rename_request)
         if not rename_result.success:
             if rename_result.error and "already exists" in rename_result.error:
                 move_step.logs.append(ScrapeLogEntry(message=f"目标文件已存在: {rename_result.dest_path}", level=ScrapeLogLevel.WARNING))

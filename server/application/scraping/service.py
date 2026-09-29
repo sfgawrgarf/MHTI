@@ -325,8 +325,11 @@ class ScraperService:
             image_config,
         )
 
-    def _process_subtitles(self, source_video_path: str, dest_video_path: str) -> list[str]:
-        return self._media_pipeline.process_subtitles(source_video_path, dest_video_path)
+    def _process_subtitles(self, source_video_path: str, dest_video_path: str,
+                           link_mode=None, conflict_action=None) -> list[str]:
+        return self._media_pipeline.process_subtitles(
+            source_video_path, dest_video_path, link_mode, conflict_action
+        )
 
     async def _check_emby_conflict(
         self,
@@ -1009,7 +1012,8 @@ class ScraperService:
 
             # 处理关联字幕文件
             if should_process_subtitles:
-                self._process_subtitles(local_source_path, str(dest_file))
+                await run_file_io(self._process_subtitles, local_source_path, str(dest_file),
+                                  request.link_mode, file_action)
             await self._cleanup_source_parent_if_enabled(
                 request=request,
                 source_path=source_display_path,

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from server.common.path_security import validate_media_path
+from server.infrastructure.file_operations import publish_file
+from server.models.organize import OrganizeMode
+from server.application.file_io import check_file_cancelled
 from server.models.emby import ConflictCheckRequest, ConflictCheckResult, ConflictType
 from server.models.image import ImageSize
 from server.models.tmdb import TMDBSeason, TMDBSeries
@@ -205,6 +207,8 @@ class ScraperMediaPipeline:
         self,
         source_video_path: str,
         dest_video_path: str,
+        link_mode: OrganizeMode | None = None,
+        conflict_action: str | None = None,
     ) -> list[str]:
         """查找并移动与视频关联的字幕文件。
 
@@ -232,32 +236,20 @@ class ScraperMediaPipeline:
 
         # 查找匹配的字幕
         for sub in scan_result.subtitles:
+            check_file_cancelled()
+            if Path(sub.path).parent.resolve() != source_folder:
+                continue
             sub_base = self.subtitle_service._get_base_name(sub.filename)
             if self.subtitle_service._names_match(source_stem, sub_base):
-                # 重命名并移动字幕
-                result = self.subtitle_service.rename_subtitle(
-                    subtitle_path=sub.path,
-                    new_video_name=dest_stem,
-                    preserve_language=True,
-                )
-                if result.success:
-                    # 如果目标文件夹不同，移动到目标文件夹
-                    renamed_path = Path(result.dest_path)
-                    if renamed_path.parent != dest_folder:
-                        final_path = validate_media_path(
-                            str(dest_folder / renamed_path.name)
-                        )
-                        try:
-                            shutil.move(str(renamed_path), str(final_path))
-                            moved_subtitles.append(str(final_path))
-                            logger.info(f"字幕已移动: {renamed_path.name} -> {final_path}")
-                        except OSError as e:
-                            logger.warning(f"字幕移动失败: {e}")
-                    else:
-                        moved_subtitles.append(result.dest_path)
-                        logger.info(f"字幕已重命名: {sub.filename} -> {renamed_path.name}")
-                else:
-                    logger.warning(f"字幕处理失败: {result.error}")
+                language = f".{sub.language.value}" if sub.language else ""
+                final_path = validate_media_path(str(dest_folder / f"{dest_stem}{language}{sub.extension}"))
+                source_subtitle = validate_media_path(sub.path, must_exist=True, require_file=True)
+                try:
+                    publish_file(source_subtitle, final_path, link_mode,
+                                 overwrite=conflict_action == "overwrite")
+                    moved_subtitles.append(str(final_path))
+                except OSError as exc:
+                    logger.warning("字幕处理失败: %s", exc)
 
         return moved_subtitles
 

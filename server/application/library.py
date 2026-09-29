@@ -58,7 +58,7 @@ class FolderScanUseCase:
             # 115 文件没有本地指纹，直接返回
             return locator.path or folder_path, files, 0
 
-        files = self._file_service.scan_folder(folder_path)
+        files = await run_file_io(self._file_service.scan_folder, folder_path)
 
         if not exclude_scraped:
             return folder_path, files, 0

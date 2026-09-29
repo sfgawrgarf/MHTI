@@ -111,7 +111,7 @@ def _patch_tail(
         AsyncMock(return_value={"download_poster": False, "download_fanart": False, "download_thumb": False}),
     )
 
-    def _fake_process_subtitles(source: str, dest: str) -> list[str]:
+    def _fake_process_subtitles(source: str, dest: str, *args) -> list[str]:
         if subtitle_calls is not None:
             subtitle_calls.append((source, dest))
         return []

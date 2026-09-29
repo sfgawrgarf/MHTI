@@ -7,6 +7,7 @@ PermissionDeniedError）由全局异常处理器统一处理，无需在 API 层
 from fastapi import APIRouter, Depends, Query
 
 from server.application.library import FolderScanUseCase
+from server.application.file_io import run_file_io
 from server.api.deps import require_auth
 from server.api.deps import get_file_service, get_history_service, get_p115_service
 from server.models.file import BrowseResponse, ScanRequest, ScanResponse
@@ -117,7 +118,7 @@ async def browse_directory(
             total,
             current_file_id,
             parent_file_id,
-        ) = file_service.browse_directory(
+        ) = await run_file_io(file_service.browse_directory,
             path=path,
             provider=provider,
             file_id=file_id,

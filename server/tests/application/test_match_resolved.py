@@ -90,7 +90,7 @@ def _patch_tail(monkeypatch: pytest.MonkeyPatch, service: ScraperService) -> Non
         "_get_effective_download_config",
         AsyncMock(return_value={"download_poster": False, "download_fanart": False, "download_thumb": False}),
     )
-    monkeypatch.setattr(service, "_process_subtitles", lambda source, dest: [])
+    monkeypatch.setattr(service, "_process_subtitles", lambda *args: [])
 
 
 @pytest.mark.asyncio
