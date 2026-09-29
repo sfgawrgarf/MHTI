@@ -8,8 +8,10 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
+import jwt
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -128,6 +130,24 @@ class TestJWTToken:
         tampered_token = token[:-5] + "xxxxx"
 
         username, session_id = auth_service.verify_token(tampered_token)
+
+        assert username is None
+        assert session_id is None
+
+    def test_verify_token_rejects_refresh_token_type(self, auth_service):
+        """刷新令牌不能被当作访问令牌使用。"""
+        token = jwt.encode(
+            {
+                "sub": "test_user",
+                "sid": "session_789",
+                "type": "refresh",
+                "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+            },
+            auth_service._get_config_sync().jwt_secret,
+            algorithm=auth_service.ALGORITHM,
+        )
+
+        username, session_id = auth_service.verify_token(token)
 
         assert username is None
         assert session_id is None
@@ -286,6 +306,41 @@ class TestAuthServiceAsync:
             result = await auth_service.verify_credentials("nonexistent", "password")
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_account_lockout_cannot_be_bypassed_by_changing_ip(
+        self, auth_service, temp_db, monkeypatch
+    ):
+        """账号和 IP 两个维度都必须参与失败次数限制。"""
+        from server.infrastructure.repositories.auth_repository import AuthRepository
+
+        async with aiosqlite.connect(temp_db) as db:
+            await configure_connection(db)
+            await create_all_tables(db)
+            await db.commit()
+
+        class IsolatedManager:
+            @asynccontextmanager
+            async def get_connection(self):
+                async with aiosqlite.connect(temp_db) as db:
+                    await configure_connection(db)
+                    yield db
+
+        async def get_manager():
+            return IsolatedManager()
+
+        auth_service._repo = AuthRepository(manager_getter=get_manager)
+        monkeypatch.setattr(
+            "server.domain.identity.auth_service.get_db_manager", get_manager
+        )
+
+        for _ in range(auth_service._get_config_sync().max_login_attempts):
+            await auth_service.record_failed_attempt("admin", "192.0.2.1")
+
+        locked, remaining = await auth_service.is_locked("admin", "192.0.2.2")
+
+        assert locked is True
+        assert remaining > 0
 
     @pytest.mark.asyncio
     async def test_concurrent_registration_creates_only_one_admin(

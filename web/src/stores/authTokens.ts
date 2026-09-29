@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import { authApi } from '@/modules/auth'
+import { refreshStoredAccessToken } from '@/shared/api/client'
 
 /**
  * Token 生命周期管理（auth store）
@@ -110,9 +110,12 @@ export function createTokenManager(deps: {
 
     try {
       console.log('[Auth] 调用刷新 API')
-      const response = await authApi.refresh({ refresh_token: refreshToken })
-      updateAccessToken(response.data.access_token, response.data.expires_in)
-      console.log('[Auth] 刷新成功，新 Token 有效期', response.data.expires_in, '秒')
+      const refreshed = await refreshStoredAccessToken()
+      if (!refreshed) {
+        throw new Error('刷新响应无效')
+      }
+      updateAccessToken(refreshed.accessToken, refreshed.expiresIn)
+      console.log('[Auth] 刷新成功，新 Token 有效期', refreshed.expiresIn, '秒')
       return true
     } catch (error) {
       console.log('[Auth] 刷新 API 失败', error)

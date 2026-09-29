@@ -215,6 +215,35 @@ async def _create_auth_tables(db: aiosqlite.Connection) -> None:
         )
     """)
 
+    # 账户级失败计数与 IP 级计数分开保存：旧版 login_attempts 数据继续
+    # 作为 IP 计数使用，新增表只承担用户名维度的限制，避免迁移时改写旧记录。
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS login_account_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            attempts INTEGER DEFAULT 0,
+            last_attempt TIMESTAMP
+        )
+    """)
+
+    # Refresh token rotation history. 只保存哈希，不保存令牌明文；旧令牌
+    # 被再次提交时可识别为重放并撤销对应会话。
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS refresh_token_history (
+            token_hash TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_refresh_token_history_session "
+        "ON refresh_token_history(session_id)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_refresh_token_hash "
+        "ON sessions(refresh_token_hash)"
+    )
+
 
 async def _create_job_tables(db: aiosqlite.Connection) -> None:
     """Create job and task related tables."""

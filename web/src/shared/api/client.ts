@@ -74,8 +74,9 @@ function isTokenExpiringSoon(): boolean {
 }
 
 // 更新 token
-function updateTokens(accessToken: string, expiresIn: number) {
+function updateTokens(accessToken: string, refreshToken: string, expiresIn: number) {
   localStorage.setItem(ACCESS_TOKEN_KEY, accessToken)
+  localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
   const expireTime = Date.now() + expiresIn * 1000
   localStorage.setItem(EXPIRES_AT_KEY, expireTime.toString())
 }
@@ -103,8 +104,11 @@ async function refreshAccessToken(): Promise<AccessTokenRefreshResult | null> {
       refresh_token: refreshToken,
     })
 
-    const { access_token, expires_in } = response.data
-    updateTokens(access_token, expires_in)
+    const { access_token, refresh_token, expires_in } = response.data
+    if (!access_token || !refresh_token || !expires_in) {
+      throw new Error('刷新响应缺少令牌')
+    }
+    updateTokens(access_token, refresh_token, expires_in)
     console.log('[API] Token 刷新成功，有效期', expires_in, '秒')
     return { accessToken: access_token, expiresIn: expires_in }
   } catch (error) {

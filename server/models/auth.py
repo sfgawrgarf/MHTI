@@ -15,7 +15,9 @@ EXPIRE_HOURS_MAP: dict[ExpireOption, int] = {
     "1d": 24,
     "7d": 24 * 7,
     "30d": 24 * 30,
-    "never": 24 * 365,  # 1年
+    # 保留旧客户端的 "never" 值以兼容已有请求，但实际硬上限为 365 天；
+    # 不提供真正永不过期的 refresh token。
+    "never": 24 * 365,
 }
 
 
@@ -56,6 +58,7 @@ class RefreshResponse(BaseModel):
     """Token refresh response."""
 
     access_token: str
+    refresh_token: str
     expires_in: int
 
 

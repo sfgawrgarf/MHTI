@@ -167,6 +167,10 @@ class SessionService:
             if evicted_ids:
                 placeholders = ",".join("?" * len(evicted_ids))
                 await db.execute(
+                    f"DELETE FROM refresh_token_history WHERE session_id IN ({placeholders})",
+                    evicted_ids,
+                )
+                await db.execute(
                     f"DELETE FROM sessions WHERE id IN ({placeholders})",
                     evicted_ids,
                 )
@@ -205,35 +209,44 @@ class SessionService:
             await self._repo.delete_oldest_sessions(user_id, count - max_sessions + 1)
             logger.info(f"Cleaned up {count - max_sessions + 1} old sessions for user {user_id}")
 
-    async def verify_refresh_token(self, refresh_token: str) -> tuple[str | None, int | None]:
+    async def verify_refresh_token(
+        self, refresh_token: str
+    ) -> tuple[str | None, int | None, str | None]:
         """
-        Verify refresh token and return session_id and user_id if valid.
+        Verify and rotate a refresh token.
 
         Returns:
-            Tuple of (session_id, user_id) or (None, None) if invalid
+            Tuple of (session_id, user_id, new_refresh_token), or all None.
+
+        A previously rotated token is treated as replay.  The corresponding
+        session is revoked so a stolen token cannot be used to keep the
+        session alive after the legitimate client has rotated it.
         """
         token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
         now = datetime.now(timezone.utc).isoformat()
+        new_refresh_token = secrets.token_urlsafe(32)
+        new_token_hash = hashlib.sha256(new_refresh_token.encode()).hexdigest()
 
-        # Debug query
-        debug_row = await self._repo.find_by_token(token_hash)
-        if debug_row:
-            logger.debug(f"Found session: id={debug_row[0]}, expires_at={debug_row[2]}")
-            if debug_row[2] <= now:
-                logger.warning(f"Session expired: expires_at={debug_row[2]} <= now={now}")
-        else:
-            logger.debug("No matching session found (token hash mismatch)")
+        session_id, user_id, reused = await self._repo.rotate_refresh_token(
+            token_hash, new_token_hash, now
+        )
+        if reused:
+            logger.warning(
+                "Refresh token replay revoked session: %s...",
+                safe_log_value((session_id or "unknown")[:8]),
+            )
+            if session_id:
+                await self.close_session_connections([session_id])
+            return None, None, None
+        if not session_id or user_id is None:
+            logger.debug("Refresh token rejected")
+            return None, None, None
 
-        # Actual verification
-        row = await self._repo.find_valid_by_token(token_hash, now)
-        if not row:
-            return None, None
-
-        # Update last used time
-        await self._repo.touch_session(row[0], now)
-
-        logger.debug(f"Refresh token verified: session_id={row[0]}, user_id={row[1]}")
-        return row[0], row[1]
+        logger.debug(
+            "Refresh token rotated for session: %s...",
+            safe_log_value(session_id[:8]),
+        )
+        return session_id, user_id, new_refresh_token
 
     async def close_session_connections(self, session_ids: list[str]) -> None:
         """Close live WebSockets after their backing sessions were deleted."""
@@ -259,10 +272,19 @@ class SessionService:
         manager = await get_db_manager()
         async with manager.get_connection() as db:
             if user_id is None:
+                await db.execute(
+                    "DELETE FROM refresh_token_history WHERE session_id = ?",
+                    (session_id,),
+                )
                 cursor = await db.execute(
                     "DELETE FROM sessions WHERE id = ?", (session_id,)
                 )
             else:
+                await db.execute(
+                    "DELETE FROM refresh_token_history WHERE session_id IN "
+                    "(SELECT id FROM sessions WHERE id = ? AND user_id = ?)",
+                    (session_id, user_id),
+                )
                 cursor = await db.execute(
                     "DELETE FROM sessions WHERE id = ? AND user_id = ?",
                     (session_id, user_id),
@@ -289,6 +311,12 @@ class SessionService:
                     "SELECT id FROM sessions WHERE user_id = ?", (user_id,)
                 )
             revoked_ids = [str(row[0]) for row in await cursor.fetchall()]
+            if revoked_ids:
+                placeholders = ",".join("?" * len(revoked_ids))
+                await db.execute(
+                    f"DELETE FROM refresh_token_history WHERE session_id IN ({placeholders})",
+                    revoked_ids,
+                )
             if except_session_id:
                 cursor = await db.execute(
                     "DELETE FROM sessions WHERE user_id = ? AND id != ?",

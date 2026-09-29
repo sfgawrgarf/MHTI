@@ -30,6 +30,7 @@ export interface RefreshRequest {
 
 export interface RefreshResponse {
   access_token: string
+  refresh_token: string
   expires_in: number
 }
 
@@ -150,5 +151,5 @@ export const expireOptions: { value: ExpireOption; label: string; description: s
   { value: '1d', label: '1 天', description: '日常使用' },
   { value: '7d', label: '7 天', description: '个人设备（推荐）' },
   { value: '30d', label: '30 天', description: '长期信任设备' },
-  { value: 'never', label: '永不过期', description: '私人服务器' },
+  { value: 'never', label: '1 年', description: '最长有效期（兼容旧版值）' },
 ]

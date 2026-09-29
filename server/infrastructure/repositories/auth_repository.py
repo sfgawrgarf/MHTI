@@ -71,24 +71,55 @@ class AuthRepository:
             row = await cursor.fetchone()
             return row[0] if row else None
 
-    async def get_login_attempts(self, client_ip: str) -> aiosqlite.Row | None:
+    async def get_login_attempts(
+        self, client_ip: str, username: str
+    ) -> list[aiosqlite.Row]:
+        """Return the IP and username failure counters for one login."""
         async with self._connect() as db:
             cursor = await db.execute(
-                "SELECT attempts, last_attempt FROM login_attempts WHERE client_ip = ?",
-                (client_ip,),
+                """
+                SELECT 'ip' AS scope, attempts, last_attempt
+                FROM login_attempts
+                WHERE client_ip = ?
+                UNION ALL
+                SELECT 'account' AS scope, attempts, last_attempt
+                FROM login_account_attempts
+                WHERE username = ?
+                """,
+                (client_ip, username),
             )
-            return await cursor.fetchone()
+            return list(await cursor.fetchall())
 
-    async def delete_login_attempts(self, client_ip: str) -> None:
+    async def delete_login_attempts(self, client_ip: str, username: str) -> None:
+        """Clear both rate-limit dimensions after a successful login."""
         async with self._connect() as db:
             await db.execute(
                 "DELETE FROM login_attempts WHERE client_ip = ?", (client_ip,)
             )
+            await db.execute(
+                "DELETE FROM login_account_attempts WHERE username = ?", (username,)
+            )
             await db.commit()
 
-    async def record_failed_attempt(self, client_ip: str, now: str) -> int:
-        """记录一次失败登录并返回当前累计次数。"""
+    async def delete_login_attempt_scope(self, scope: str, key: str) -> None:
+        """Delete one expired rate-limit counter without touching the other."""
         async with self._connect() as db:
+            if scope == "account":
+                await db.execute(
+                    "DELETE FROM login_account_attempts WHERE username = ?", (key,)
+                )
+            else:
+                await db.execute(
+                    "DELETE FROM login_attempts WHERE client_ip = ?", (key,)
+                )
+            await db.commit()
+
+    async def record_failed_attempt(
+        self, client_ip: str, username: str, now: str
+    ) -> tuple[int, int]:
+        """Record one failure in both the IP and username counters."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
             await db.execute("""
                 INSERT INTO login_attempts (client_ip, attempts, last_attempt)
                 VALUES (?, 1, ?)
@@ -96,14 +127,29 @@ class AuthRepository:
                     attempts = attempts + 1,
                     last_attempt = excluded.last_attempt
             """, (client_ip, now))
-            await db.commit()
+            await db.execute("""
+                INSERT INTO login_account_attempts (username, attempts, last_attempt)
+                VALUES (?, 1, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    attempts = attempts + 1,
+                    last_attempt = excluded.last_attempt
+            """, (username, now))
 
             cursor = await db.execute(
                 "SELECT attempts FROM login_attempts WHERE client_ip = ?",
                 (client_ip,),
             )
-            row = await cursor.fetchone()
-            return row[0] if row else 1
+            ip_row = await cursor.fetchone()
+            cursor = await db.execute(
+                "SELECT attempts FROM login_account_attempts WHERE username = ?",
+                (username,),
+            )
+            account_row = await cursor.fetchone()
+            await db.commit()
+            return (
+                ip_row[0] if ip_row else 1,
+                account_row[0] if account_row else 1,
+            )
 
     async def update_password(self, username: str, password_hash: str) -> None:
         async with self._connect() as db:

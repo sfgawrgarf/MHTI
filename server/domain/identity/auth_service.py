@@ -139,48 +139,60 @@ class AuthService:
             row = await cursor.fetchone()
             return str(row[0]) if row else None
 
-    async def is_locked(self, client_ip: str) -> tuple[bool, int]:
-        """Check if client is locked out. Returns (is_locked, remaining_minutes)."""
+    async def is_locked(self, username: str, client_ip: str) -> tuple[bool, int]:
+        """Check both account and IP lockouts.
+
+        Keeping both dimensions prevents an attacker from bypassing the limit
+        by changing only the source IP or only the submitted username.
+        """
         config = await self._get_config()
 
-        row = await self._repo.get_login_attempts(client_ip)
-        if not row:
-            return False, 0
-
-        attempts = row[0]
-        last_attempt_str = row[1]
-
-        if attempts < config.max_login_attempts:
-            return False, 0
-
-        try:
-            last_attempt = datetime.fromisoformat(last_attempt_str)
-            if last_attempt.tzinfo is None:
-                last_attempt = last_attempt.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            return False, 0
-
-        lockout_end = last_attempt + timedelta(minutes=config.lockout_minutes)
         now = datetime.now(timezone.utc)
+        remaining_minutes: list[int] = []
+        for row in await self._repo.get_login_attempts(client_ip, username):
+            scope = str(row[0])
+            attempts = int(row[1] or 0)
+            last_attempt_str = row[2]
+            if attempts < config.max_login_attempts:
+                continue
 
-        if now >= lockout_end:
-            await self._repo.delete_login_attempts(client_ip)
+            try:
+                last_attempt = datetime.fromisoformat(last_attempt_str)
+                if last_attempt.tzinfo is None:
+                    last_attempt = last_attempt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                key = username if scope == "account" else client_ip
+                await self._repo.delete_login_attempt_scope(scope, key)
+                continue
+
+            lockout_end = last_attempt + timedelta(minutes=config.lockout_minutes)
+            if now >= lockout_end:
+                key = username if scope == "account" else client_ip
+                await self._repo.delete_login_attempt_scope(scope, key)
+                continue
+
+            remaining_minutes.append(
+                int((lockout_end - now).total_seconds() / 60) + 1
+            )
+
+        if not remaining_minutes:
             return False, 0
+        return True, min(remaining_minutes)
 
-        remaining = int((lockout_end - now).total_seconds() / 60) + 1
-        return True, remaining
-
-    async def record_failed_attempt(self, client_ip: str) -> int:
-        """Record a failed login attempt. Returns remaining attempts."""
+    async def record_failed_attempt(self, username: str, client_ip: str) -> int:
+        """Record a failed login in both dimensions and return remaining tries."""
         config = await self._get_config()
         now = datetime.now(timezone.utc).isoformat()
 
-        attempts = await self._repo.record_failed_attempt(client_ip, now)
+        ip_attempts, account_attempts = await self._repo.record_failed_attempt(
+            client_ip, username, now
+        )
+        attempts = max(ip_attempts, account_attempts)
         return max(0, config.max_login_attempts - attempts)
 
-    async def clear_failed_attempts(self, client_ip: str) -> None:
-        """Clear failed attempts for a client."""
-        await self._repo.delete_login_attempts(client_ip)
+    async def clear_failed_attempts(self, username: str, client_ip: str) -> None:
+        """Clear both failed-login counters after a successful login."""
+        await self._repo.delete_login_attempts(client_ip, username)
 
     def create_access_token(self, username: str, session_id: str) -> tuple[str, int]:
         """
@@ -212,11 +224,17 @@ class AuthService:
         config = self._get_config_sync()
         try:
             payload = jwt.decode(token, config.jwt_secret, algorithms=[self.ALGORITHM])
+            if payload.get("type") != "access":
+                return None, None
             username = payload.get("sub")
             session_id = payload.get("sid")
+            if not isinstance(username, str) or not username:
+                return None, None
+            if not isinstance(session_id, str) or not session_id:
+                return None, None
             return username, session_id
         except JWTError as e:
-            logger.debug(f"Token verification failed: {e}")
+            logger.debug("Token verification failed: %s", safe_log_value(e))
             return None, None
 
     def get_refresh_expire_seconds(self, expire_option: ExpireOption) -> int:
@@ -258,6 +276,11 @@ class AuthService:
                 await db.execute(
                     "UPDATE admin SET password_hash = ? WHERE id = ?",
                     (password_hash, user_id),
+                )
+                await db.execute(
+                    "DELETE FROM refresh_token_history WHERE session_id IN "
+                    "(SELECT id FROM sessions WHERE user_id = ? AND id != ?)",
+                    (user_id, except_session_id),
                 )
                 await db.execute(
                     "DELETE FROM sessions WHERE user_id = ? AND id != ?",

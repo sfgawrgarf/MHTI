@@ -89,7 +89,7 @@ async def login(request: Request, data: LoginRequest) -> TokenResponse:
         raise HTTPException(status_code=400, detail="请先注册管理员账号")
 
     # Check if locked
-    is_locked, remaining = await auth_service.is_locked(client_ip)
+    is_locked, remaining = await auth_service.is_locked(data.username, client_ip)
     if is_locked:
         raise HTTPException(
             status_code=429,
@@ -98,7 +98,9 @@ async def login(request: Request, data: LoginRequest) -> TokenResponse:
 
     # Verify credentials
     if not await auth_service.verify_credentials(data.username, data.password):
-        remaining_attempts = await auth_service.record_failed_attempt(client_ip)
+        remaining_attempts = await auth_service.record_failed_attempt(
+            data.username, client_ip
+        )
 
         # 记录失败的登录
         await session_service.record_login(
@@ -120,7 +122,7 @@ async def login(request: Request, data: LoginRequest) -> TokenResponse:
         )
 
     # Clear failed attempts
-    await auth_service.clear_failed_attempts(client_ip)
+    await auth_service.clear_failed_attempts(data.username, client_ip)
 
     # Get user ID and create session
     user_id = await auth_service.get_user_id(data.username)
@@ -160,7 +162,9 @@ async def login(request: Request, data: LoginRequest) -> TokenResponse:
 @router.post("/refresh", response_model=RefreshResponse)
 async def refresh_token(data: RefreshRequest) -> RefreshResponse:
     """Refresh access token using refresh token."""
-    session_id, user_id = await session_service.verify_refresh_token(data.refresh_token)
+    session_id, user_id, refresh_token = await session_service.verify_refresh_token(
+        data.refresh_token
+    )
 
     if not session_id or not user_id:
         raise HTTPException(status_code=401, detail="Refresh Token 无效或已过期")
@@ -171,7 +175,11 @@ async def refresh_token(data: RefreshRequest) -> RefreshResponse:
 
     access_token, expires_in = auth_service.create_access_token(username, session_id)
 
-    return RefreshResponse(access_token=access_token, expires_in=expires_in)
+    return RefreshResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=expires_in,
+    )
 
 
 @router.post("/logout")
