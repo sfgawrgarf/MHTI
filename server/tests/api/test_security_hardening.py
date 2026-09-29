@@ -1,7 +1,7 @@
 """Regression tests for authentication and file-operation boundaries."""
 
 import stat
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,11 +13,14 @@ from server import __version__
 from server.api import deps
 from server.api.deps import AuthContext, authenticate_access_token, get_client_ip
 from server.api.v1.history import AIRetryRequest
+from server.common.limits import MAX_WS_MESSAGE_BYTES
 from server.common.path_security import (
     PathSecurityError,
     validate_image_url,
     validate_media_path,
 )
+from server.infrastructure.realtime import ConnectionManager
+from server.infrastructure import security as security_module
 from server.models.auth import ChangePasswordRequest, LoginRequest, RefreshRequest
 from server.models.emby import EmbyConfigRequest
 from server.models.image import ImageDownloadRequest
@@ -26,7 +29,6 @@ from server.models.parser import BatchParseRequest, ParseRequest
 from server.models.rename import BatchRenameRequest, RenameRequest
 from server.models.scraper import BatchScrapeRequest
 from server.models.subtitle import SubtitleAssociateRequest, SubtitleRenameRequest
-from server.infrastructure import security as security_module
 
 
 def test_file_operation_routes_require_authentication(client: TestClient) -> None:
@@ -148,6 +150,54 @@ def test_websocket_rejects_oversized_auth_token_before_verification(
 
     assert exc_info.value.code == 4401
     auth_check.assert_not_awaited()
+
+
+def test_websocket_user_action_requires_subscription(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A socket cannot resolve an action for an unsubscribed task."""
+    monkeypatch.setattr(
+        "server.api.v1.websocket.authenticate_access_token",
+        AsyncMock(return_value=AuthContext("admin", "session-1")),
+    )
+    resolve_action = Mock()
+    monkeypatch.setattr(ConnectionManager, "resolve_action", resolve_action)
+
+    with client.websocket_connect("/ws?token=valid-token") as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        websocket.send_json(
+            {
+                "type": "user_action",
+                "job_id": "unsubscribed-job",
+                "action_type": "need_selection",
+                "selection": {"id": 1},
+            }
+        )
+        assert websocket.receive_json() == {
+            "type": "error",
+            "code": "action_not_authorized",
+        }
+
+    resolve_action.assert_not_called()
+
+
+def test_websocket_rejects_oversized_message(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "server.api.v1.websocket.authenticate_access_token",
+        AsyncMock(return_value=AuthContext("admin", "session-1")),
+    )
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws?token=valid-token") as websocket:
+            assert websocket.receive_json()["type"] == "connected"
+            websocket.send_text("x" * (MAX_WS_MESSAGE_BYTES + 1))
+            websocket.receive_json()
+
+    assert exc_info.value.code == 1009
 
 
 def test_auth_models_bound_untrusted_credential_fields() -> None:

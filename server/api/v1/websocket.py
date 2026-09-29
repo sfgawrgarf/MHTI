@@ -1,12 +1,21 @@
 """WebSocket API 路由"""
 
 import asyncio
+import json
 import logging
 import uuid
+from json import JSONDecodeError
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from server.api.deps import authenticate_access_token
+from server.common.limits import (
+    MAX_WS_ACTION_TYPE_LENGTH,
+    MAX_WS_JOB_ID_LENGTH,
+    MAX_WS_JOB_IDS_PER_MESSAGE,
+    MAX_WS_MESSAGE_BYTES,
+    MAX_WS_MESSAGE_TYPE_LENGTH,
+)
 from server.infrastructure.realtime import get_ws_manager
 
 logger = logging.getLogger(__name__)
@@ -37,7 +46,7 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     manager = get_ws_manager()
-    client_id = str(uuid.uuid4())[:8]
+    client_id = str(uuid.uuid4())
 
     await manager.connect(client_id, websocket, auth.session_id)
 
@@ -47,13 +56,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         # 发送连接成功消息
-        await websocket.send_json({
+        if not await manager.send_to_client(client_id, {
             "type": "connected",
             "client_id": client_id,
-        })
+        }):
+            return
 
         # 启动心跳任务（服务端定时发送 ping）
-        heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket, client_id))
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_loop(websocket, client_id, manager)
+        )
 
         # 启动超时检测任务
         last_pong_time = asyncio.get_event_loop().time()
@@ -69,8 +81,37 @@ async def websocket_endpoint(websocket: WebSocket):
         )
 
         while True:
-            data = await websocket.receive_json()
+            raw_message = await websocket.receive_text()
+            if len(raw_message.encode("utf-8")) > MAX_WS_MESSAGE_BYTES:
+                await manager.close_client(
+                    client_id,
+                    code=1009,
+                    reason="WebSocket message too large",
+                )
+                return
+            try:
+                data = json.loads(raw_message)
+            except (JSONDecodeError, TypeError):
+                await manager.close_client(
+                    client_id,
+                    code=1003,
+                    reason="Invalid WebSocket message",
+                )
+                return
+            if not isinstance(data, dict):
+                await manager.close_client(
+                    client_id,
+                    code=1003,
+                    reason="Invalid WebSocket message",
+                )
+                return
             msg_type = data.get("type")
+            if not isinstance(msg_type, str) or len(msg_type) > MAX_WS_MESSAGE_TYPE_LENGTH:
+                await manager.send_to_client(client_id, {
+                    "type": "error",
+                    "code": "invalid_message_type",
+                })
+                continue
 
             if msg_type == "ping":
                 # 客户端心跳响应
@@ -90,15 +131,24 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                 # 响应 pong
                 try:
-                    await websocket.send_json({"type": "pong"})
+                    await manager.send_to_client(client_id, {"type": "pong"})
                 except Exception as e:
                     logger.warning(f"[{client_id}] 发送 pong 失败: {e}")
 
             elif msg_type == "subscribe":
                 # 订阅任务进度
                 job_ids = data.get("job_ids", [])
+                if (
+                    not isinstance(job_ids, list)
+                    or len(job_ids) > MAX_WS_JOB_IDS_PER_MESSAGE
+                ):
+                    await manager.send_to_client(client_id, {
+                        "type": "error",
+                        "code": "too_many_job_ids",
+                    })
+                    continue
                 accepted_job_ids = manager.subscribe(
-                    client_id, job_ids if isinstance(job_ids, list) else []
+                    client_id, job_ids
                 )
                 try:
                     await manager.send_to_client(client_id, {
@@ -111,6 +161,15 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "unsubscribe":
                 # 取消订阅
                 job_ids = data.get("job_ids", [])
+                if (
+                    not isinstance(job_ids, list)
+                    or len(job_ids) > MAX_WS_JOB_IDS_PER_MESSAGE
+                ):
+                    await manager.send_to_client(client_id, {
+                        "type": "error",
+                        "code": "too_many_job_ids",
+                    })
+                    continue
                 manager.unsubscribe(client_id, job_ids)
 
             elif msg_type == "user_action":
@@ -118,11 +177,35 @@ async def websocket_endpoint(websocket: WebSocket):
                 job_id = data.get("job_id")
                 action_type = data.get("action_type")
                 selection = data.get("selection")
-                if job_id:
-                    manager.resolve_action(job_id, {
-                        "action_type": action_type,
-                        "selection": selection,
+                if (
+                    not isinstance(job_id, str)
+                    or not job_id.strip()
+                    or len(job_id.strip()) > MAX_WS_JOB_ID_LENGTH
+                    or not manager.is_subscribed(client_id, job_id)
+                ):
+                    await manager.send_to_client(client_id, {
+                        "type": "error",
+                        "code": "action_not_authorized",
                     })
+                    continue
+                if (
+                    not isinstance(action_type, str)
+                    or not action_type.strip()
+                    or len(action_type) > MAX_WS_ACTION_TYPE_LENGTH
+                ):
+                    await manager.send_to_client(client_id, {
+                        "type": "error",
+                        "code": "invalid_action_type",
+                    })
+                    continue
+                manager.resolve_action(
+                    job_id.strip(),
+                    {
+                        "action_type": action_type.strip(),
+                        "selection": selection,
+                    },
+                    client_id=client_id,
+                )
 
     except WebSocketDisconnect:
         logger.info(f"[{client_id}] WebSocket 断开连接")
@@ -147,7 +230,11 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(client_id)
 
 
-async def _heartbeat_loop(websocket: WebSocket, client_id: str):
+async def _heartbeat_loop(
+    websocket: WebSocket,
+    client_id: str,
+    manager=None,
+):
     """服务端心跳发送循环
 
     定期向客户端发送 ping，保持连接活跃
@@ -156,7 +243,14 @@ async def _heartbeat_loop(websocket: WebSocket, client_id: str):
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             try:
-                await websocket.send_json({"type": "ping", "timestamp": asyncio.get_event_loop().time()})
+                message = {
+                    "type": "ping",
+                    "timestamp": asyncio.get_event_loop().time(),
+                }
+                if manager is None:
+                    await websocket.send_json(message)
+                else:
+                    await manager.send_to_client(client_id, message)
             except Exception as e:
                 logger.warning(f"[{client_id}] 发送心跳失败: {e}")
                 break

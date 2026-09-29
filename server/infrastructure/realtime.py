@@ -7,6 +7,12 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from server.common.limits import (
+    MAX_WS_JOB_ID_LENGTH,
+    MAX_WS_JOB_IDS_PER_MESSAGE,
+    MAX_WS_SUBSCRIPTIONS_PER_CLIENT,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,7 +23,7 @@ class ConnectionManager:
         self,
         *,
         send_timeout: float = 5.0,
-        max_subscriptions_per_client: int = 500,
+        max_subscriptions_per_client: int = MAX_WS_SUBSCRIPTIONS_PER_CLIENT,
     ):
         # client_id -> WebSocket
         self.active_connections: dict[str, WebSocket] = {}
@@ -66,10 +72,7 @@ class ConnectionManager:
             client_id in subscribers for subscribers in self.subscriptions.values()
         )
         accepted: list[str] = []
-        for raw_job_id in dict.fromkeys(job_ids):
-            job_id = str(raw_job_id).strip()
-            if not job_id or len(job_id) > 128:
-                continue
+        for job_id in self._normalize_job_ids(job_ids):
             subscribers = self.subscriptions.get(job_id)
             if subscribers is not None and client_id in subscribers:
                 accepted.append(job_id)
@@ -81,14 +84,42 @@ class ConnectionManager:
             self.subscriptions[job_id].add(client_id)
             subscribed_count += 1
             accepted.append(job_id)
-        logger.debug(f"客户端 {client_id} 订阅任务: {accepted}")
+        logger.debug("客户端 %s 订阅任务数量: %d", client_id, len(accepted))
         return accepted
+
+    @staticmethod
+    def _normalize_job_ids(job_ids: list[str]) -> list[str]:
+        """过滤并限制客户端提供的任务 ID。"""
+        if not isinstance(job_ids, list):
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_job_id in job_ids[:MAX_WS_JOB_IDS_PER_MESSAGE]:
+            if not isinstance(raw_job_id, str):
+                continue
+            job_id = raw_job_id.strip()
+            if not job_id or len(job_id) > MAX_WS_JOB_ID_LENGTH or job_id in seen:
+                continue
+            seen.add(job_id)
+            normalized.append(job_id)
+        return normalized
 
     def unsubscribe(self, client_id: str, job_ids: list[str]) -> None:
         """取消订阅"""
-        for job_id in job_ids:
+        for job_id in self._normalize_job_ids(job_ids):
             if job_id in self.subscriptions:
                 self.subscriptions[job_id].discard(client_id)
+                if not self.subscriptions[job_id]:
+                    del self.subscriptions[job_id]
+
+    def is_subscribed(self, client_id: str, job_id: str) -> bool:
+        """判断连接是否订阅了指定任务。"""
+        if not isinstance(job_id, str):
+            return False
+        normalized_job_id = job_id.strip()
+        if not normalized_job_id or len(normalized_job_id) > MAX_WS_JOB_ID_LENGTH:
+            return False
+        return client_id in self.subscriptions.get(normalized_job_id, set())
 
     async def send_to_client(self, client_id: str, message: dict) -> bool:
         """发送消息给指定客户端"""
@@ -192,8 +223,16 @@ class ConnectionManager:
         self.pending_actions[job_id] = future
         return future
 
-    def resolve_action(self, job_id: str, result: Any) -> bool:
+    def resolve_action(
+        self,
+        job_id: str,
+        result: Any,
+        *,
+        client_id: str | None = None,
+    ) -> bool:
         """解析用户响应"""
+        if client_id is not None and not self.is_subscribed(client_id, job_id):
+            return False
         if job_id not in self.pending_actions:
             return False
         future = self.pending_actions.pop(job_id)
