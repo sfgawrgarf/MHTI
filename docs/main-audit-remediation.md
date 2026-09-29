@@ -14,8 +14,10 @@ Scope: five independently reviewed source defects; no release or user-data chang
 - Refresh uses an origin-wide Web Lock and re-reads shared credentials inside
   the lock; network and lock waits are bounded. A late response cannot restore
   logged-out credentials. Environments without Web Locks currently require
-  re-authentication instead of unsafe concurrent rotation. HTTP compatibility
-  needs user confirmation before merge.
+  re-authentication instead of unsafe concurrent rotation. The user confirmed
+  HTTPS-domain access on 2026-09-29; plain-HTTP automatic refresh is outside
+  this deployment's compatibility scope. HTTPS alone does not guarantee browser
+  Web Locks support; unsupported browsers retain the re-authentication fallback.
 - Recursive subtitle association preserves relative paths and matches by parent
   directory as well as name.
 
