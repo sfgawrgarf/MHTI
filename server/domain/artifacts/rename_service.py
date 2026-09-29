@@ -10,6 +10,7 @@ from server.common.path_security import (
     validate_internal_staging_path,
     validate_media_path,
 )
+from server.infrastructure.log_security import safe_log_value
 from server.models.organize import OrganizeMode
 from server.models.rename import (
     BatchRenameRequest,
@@ -176,11 +177,11 @@ class RenameService:
                 error=str(exc),
             )
 
-        logger.info(f"execute_rename: 源文件 = {source_path}")
+        logger.info("execute_rename: 源文件 = %s", safe_log_value(source_path))
 
         # Check source exists
         if not source_path.exists():
-            logger.error(f"源文件不存在: {source_path}")
+            logger.error("源文件不存在: %s", safe_log_value(source_path))
             return RenameResult(
                 source_path=str(source_path),
                 dest_path="",
@@ -216,8 +217,8 @@ class RenameService:
                     error=str(exc),
                 )
 
-        logger.info(f"execute_rename: 目标文件夹 = {dest_folder}")
-        logger.info(f"execute_rename: 目标路径 = {dest_path}")
+        logger.info("execute_rename: 目标文件夹 = %s", safe_log_value(dest_folder))
+        logger.info("execute_rename: 目标路径 = %s", safe_log_value(dest_path))
 
         try:
             # Create destination directory
@@ -235,7 +236,7 @@ class RenameService:
             if target_exists and dest_path != source_path:
                 if request.conflict_action == "rename":
                     dest_path = self._next_available_path(dest_path)
-                    logger.info(f"目标文件已存在，使用重命名目标: {dest_path}")
+                    logger.info("目标文件已存在，使用重命名目标: %s", safe_log_value(dest_path))
                 elif request.conflict_action == "overwrite":
                     if dest_path.is_dir() and not dest_path.is_symlink():
                         return RenameResult(
@@ -246,9 +247,9 @@ class RenameService:
                             backup_path=backup_path,
                         )
                     dest_path.unlink()
-                    logger.warning(f"用户确认覆盖目标文件: {dest_path}")
+                    logger.warning("用户确认覆盖目标文件: %s", safe_log_value(dest_path))
                 else:
-                    logger.warning(f"目标文件已存在: {dest_path}")
+                    logger.warning("目标文件已存在: %s", safe_log_value(dest_path))
                     return RenameResult(
                         source_path=str(source_path),
                         dest_path=str(dest_path),
@@ -258,7 +259,10 @@ class RenameService:
                     )
 
             # Move/rename the file based on link_mode
-            logger.info(f"execute_rename: 正在处理文件，模式: {request.link_mode or 'move(默认)'}...")
+            logger.info(
+                "execute_rename: 正在处理文件，模式: %s...",
+                safe_log_value(request.link_mode or "move(默认)"),
+            )
             self._execute_file_operation(source_path, dest_path, request.link_mode)
             logger.info("execute_rename: 文件处理成功!")
 
@@ -270,7 +274,7 @@ class RenameService:
             )
 
         except PermissionError as e:
-            logger.error(f"权限错误: {e}")
+            logger.error("权限错误: %s", safe_log_value(e))
             return RenameResult(
                 source_path=str(source_path),
                 dest_path=str(dest_path),
@@ -278,7 +282,7 @@ class RenameService:
                 error=f"Permission denied: {e}",
             )
         except OSError as e:
-            logger.error(f"OS 错误: {e}")
+            logger.error("OS 错误: %s", safe_log_value(e))
             return RenameResult(
                 source_path=str(source_path),
                 dest_path=str(dest_path),

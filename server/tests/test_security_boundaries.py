@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from server.infrastructure.log_security import safe_log_value
+from server.infrastructure.log_security import SafeLogFilter, safe_log_value
 from server.common.path_security import (
     PathSecurityError,
     validate_image_url,
@@ -29,6 +29,24 @@ def test_log_values_are_bounded() -> None:
     value = safe_log_value("x" * 600, max_length=32)
 
     assert value == f"{'x' * 32}...[truncated]"
+
+
+def test_log_filter_sanitizes_formatted_message_and_arguments() -> None:
+    import logging
+
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="path=%s count=%d",
+        args=("first\nforged", 3),
+        exc_info=None,
+    )
+
+    assert SafeLogFilter().filter(record)
+    assert record.args == ("first\\nforged", 3)
+    assert record.getMessage() == "path=first\\nforged count=3"
 
 
 @pytest.mark.parametrize(

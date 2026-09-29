@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from server import __version__
+from server.infrastructure.log_security import install_safe_log_filter, safe_log_value
 
 # 日志目录
 LOG_DIR = Path(__file__).parent.parent / "data" / "logs"
@@ -25,6 +26,8 @@ logging.basicConfig(
     level=logging.INFO,
     format=LOG_FORMAT,
 )
+for _handler in logging.getLogger().handlers:
+    install_safe_log_filter(_handler)
 logger = logging.getLogger(__name__)
 
 
@@ -103,11 +106,12 @@ def setup_file_logging() -> RotatingFileHandler | None:
         )
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        install_safe_log_filter(file_handler)
         logging.getLogger().addHandler(file_handler)
-        logger.info(f"File logging enabled: {LOG_DIR / 'app.log'}")
+        logger.info("File logging enabled: %s", safe_log_value(LOG_DIR / "app.log"))
         return file_handler
     except Exception as e:
-        logger.warning(f"Failed to setup file logging: {e}")
+        logger.warning("Failed to setup file logging: %s", safe_log_value(e))
         return None
 
 # CORS allowed origins (Docker environment)
@@ -228,6 +232,7 @@ async def lifespan(app: FastAPI):
         db_log_handler = DatabaseLogHandler(log_service, batch_size=50, flush_interval=10.0)
         db_log_handler.setLevel(logging.WARNING)
         db_log_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        install_safe_log_filter(db_log_handler)
         logging.getLogger().addHandler(db_log_handler)
         db_log_handler.start()
 

@@ -334,13 +334,13 @@ class AuthService:
             return False, "头像文件过大，请选择小于 500KB 的图片"
 
         await self._repo.update_avatar(username, avatar_data)
-        logger.info(f"Avatar updated for user: {username}")
+        logger.info("Avatar updated for user: %s", safe_log_value(username))
         return True, "头像更新成功"
 
     async def delete_avatar(self, username: str) -> bool:
         """Delete user avatar."""
         await self._repo.delete_avatar(username)
-        logger.info(f"Avatar deleted for user: {username}")
+        logger.info("Avatar deleted for user: %s", safe_log_value(username))
         return True
 
 

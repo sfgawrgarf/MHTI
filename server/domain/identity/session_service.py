@@ -359,9 +359,12 @@ class SessionService:
             session_id=session_id,
         )
 
-        log_msg = f"Login {'success' if success else 'failed'}: {username} from {ip_address}"
+        log_msg = (
+            f"Login {'success' if success else 'failed'}: "
+            f"{safe_log_value(username)} from {safe_log_value(ip_address or 'unknown')}"
+        )
         if failure_reason:
-            log_msg += f" ({failure_reason})"
+            log_msg += f" ({safe_log_value(failure_reason)})"
         logger.info(log_msg)
 
     async def get_login_history(

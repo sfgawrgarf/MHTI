@@ -11,6 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from server.common.http import get_client_ip
 from server.common.exceptions import AppException, ErrorCode
 from server.common.path_security import PathSecurityError
+from server.infrastructure.log_security import safe_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +28,13 @@ def setup_exception_handlers(app: FastAPI) -> None:
     async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
         """Handle application exceptions."""
         logger.warning(
-            f"AppException: {exc.code.value} - {exc.message}",
+            "AppException: %s - %s",
+            safe_log_value(exc.code.value),
+            safe_log_value(exc.message),
             extra={
-                "error_code": exc.code.value,
-                "path": request.url.path,
-                "method": request.method,
+                "error_code": safe_log_value(exc.code.value),
+                "path": safe_log_value(request.url.path),
+                "method": safe_log_value(request.method),
             },
         )
         return JSONResponse(
@@ -46,8 +49,11 @@ def setup_exception_handlers(app: FastAPI) -> None:
         """Return a client error for rejected filesystem or URL input."""
         logger.warning(
             "Path security rejection: %s",
-            exc,
-            extra={"path": request.url.path, "method": request.method},
+            safe_log_value(exc),
+            extra={
+                "path": safe_log_value(request.url.path),
+                "method": safe_log_value(request.method),
+            },
         )
         return JSONResponse(
             status_code=400,
@@ -64,10 +70,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
     async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         """Handle unexpected exceptions."""
         logger.exception(
-            f"Unhandled exception: {type(exc).__name__}: {exc}",
+            "Unhandled exception: %s: %s",
+            safe_log_value(type(exc).__name__),
+            safe_log_value(exc),
             extra={
-                "path": request.url.path,
-                "method": request.method,
+                "path": safe_log_value(request.url.path),
+                "method": safe_log_value(request.method),
             },
         )
         return JSONResponse(
@@ -106,13 +114,17 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         # Log request details
         logger.info(
-            f"{request.method} {path} - {response.status_code} ({process_time:.1f}ms)",
+            "%s %s - %s (%.1fms)",
+            safe_log_value(request.method),
+            safe_log_value(path),
+            response.status_code,
+            process_time,
             extra={
-                "method": request.method,
-                "path": path,
+                "method": safe_log_value(request.method),
+                "path": safe_log_value(path),
                 "status_code": response.status_code,
                 "response_time_ms": round(process_time, 1),
-                "client_ip": get_client_ip(request),
+                "client_ip": safe_log_value(get_client_ip(request)),
             },
         )
 
@@ -134,11 +146,13 @@ class CORSDebugMiddleware(BaseHTTPMiddleware):
         origin = request.headers.get("Origin")
         if origin and request.method == "OPTIONS":
             logger.debug(
-                f"CORS preflight: {origin} -> {request.url.path}",
+                "CORS preflight: %s -> %s",
+                safe_log_value(origin),
+                safe_log_value(request.url.path),
                 extra={
-                    "origin": origin,
-                    "method": request.method,
-                    "path": request.url.path,
+                    "origin": safe_log_value(origin),
+                    "method": safe_log_value(request.method),
+                    "path": safe_log_value(request.url.path),
                 },
             )
 
