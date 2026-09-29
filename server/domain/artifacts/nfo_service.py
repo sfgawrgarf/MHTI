@@ -1,6 +1,7 @@
 """NFO generation service for Jellyfin/Emby compatibility."""
 
 import json
+import secrets
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from datetime import datetime
@@ -53,13 +54,26 @@ class NFOService:
             Pretty-printed XML string with CDATA sections.
         """
         # ElementTree/minidom do not provide native CDATA nodes. Replace the
-        # selected text with safe placeholders before pretty-printing so that
-        # already-escaped ``&``/``<`` sequences are never wrapped in CDATA.
+        # selected text with a collision-resistant placeholder before
+        # pretty-printing so that already-escaped ``&``/``<`` sequences are
+        # never wrapped in CDATA. The placeholder must not occur in any user
+        # text, otherwise the final string replacement could alter another
+        # field with the same value.
+        original_texts = [
+            child.text
+            for child in elem.iter()
+            if child.text is not None
+        ]
+        while True:
+            token = f"__MHTI_CDATA_{secrets.token_hex(16)}__"
+            if not any(token in text for text in original_texts):
+                break
+
         placeholders: list[tuple[str, ET.Element, str]] = []
         for index, child in enumerate(elem.iter()):
             if child.tag not in {"plot", "outline"} or child.text is None:
                 continue
-            placeholder = f"__MHTI_CDATA_{index}__"
+            placeholder = f"{token}{index}__"
             placeholders.append((placeholder, child, child.text))
             child.text = placeholder
 

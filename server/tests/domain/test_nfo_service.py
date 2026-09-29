@@ -242,6 +242,16 @@ class TestNFOServiceSpecialCharacters:
         assert root.findtext("plot") == plot
         assert root.findtext("outline") == plot
 
+    def test_cdata_placeholder_cannot_rewrite_other_fields(self, nfo_service):
+        """CDATA replacement must not collide with user-provided field text."""
+        marker_like_title = "__MHTI_CDATA_1__"
+        nfo = nfo_service.generate_tvshow_nfo(
+            TVShowNFO(title=marker_like_title, plot="Plot")
+        )
+
+        root = ET.fromstring(nfo)
+        assert root.findtext("title") == marker_like_title
+
     def test_field_switches_control_generated_elements(self, nfo_service):
         """Per-file NFO field switches must be honored by all generators."""
         tvshow = nfo_service.generate_tvshow_nfo(

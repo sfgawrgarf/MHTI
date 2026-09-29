@@ -1,6 +1,7 @@
 """Application configuration - static paths + injected auth config cache."""
 
 import logging
+import os
 import secrets
 from pathlib import Path
 
@@ -11,8 +12,15 @@ logger = logging.getLogger(__name__)
 # Project root directory
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
-# Data directory (fixed under project root)
-DATA_DIR = _PROJECT_ROOT / "data"
+# Data directory. Keep the historical project-relative default, but honor the
+# documented override so the database, encryption key, logs, and integrations
+# all use the same deployment-owned data root.
+_configured_data_dir = os.getenv("DATA_DIR", "").strip()
+if _configured_data_dir:
+    _data_dir = Path(_configured_data_dir).expanduser()
+    DATA_DIR = (_data_dir if _data_dir.is_absolute() else _PROJECT_ROOT / _data_dir).resolve()
+else:
+    DATA_DIR = _PROJECT_ROOT / "data"
 
 
 class AppConfig:
@@ -22,7 +30,7 @@ class AppConfig:
 
     @property
     def data_dir(self) -> Path:
-        """Data directory path (fixed)."""
+        """Configured application data directory."""
         return DATA_DIR
 
     @property

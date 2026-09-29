@@ -9,11 +9,12 @@ from typing import AsyncGenerator
 
 import aiosqlite
 
+from server.infrastructure.config import DATA_DIR
+
 logger = logging.getLogger(__name__)
 
-# Project root and database path
-_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.resolve()
-DATABASE_PATH = _PROJECT_ROOT / "data" / "scraper.db"
+# Keep the database under the same configured data root as secrets and logs.
+DATABASE_PATH = DATA_DIR / "scraper.db"
 
 # SQLite allows only one connection to change journal mode at a time. Keep the
 # lock scoped to the active event loop so it is safe across pytest/application

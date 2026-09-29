@@ -1,13 +1,13 @@
 """Security utilities for encryption and decryption."""
 
 import os
-from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
-# 使用与数据库相同的数据目录存储密钥文件
-_PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
-_KEY_FILE = _PROJECT_ROOT / "data" / ".secret_key"
+from server.infrastructure.config import DATA_DIR
+
+# 使用与数据库相同的配置数据目录存储密钥文件
+_KEY_FILE = DATA_DIR / ".secret_key"
 
 
 def get_encryption_key() -> bytes:

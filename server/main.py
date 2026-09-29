@@ -5,17 +5,17 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from typing import Any, Awaitable
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from server import __version__
+from server.infrastructure.config import DATA_DIR
 from server.infrastructure.log_security import install_safe_log_filter, safe_log_value
 
 # 日志目录
-LOG_DIR = Path(__file__).parent.parent / "data" / "logs"
+LOG_DIR = DATA_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # 日志格式
