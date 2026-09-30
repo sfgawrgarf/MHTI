@@ -75,7 +75,7 @@ class DatabaseLogHandler(logging.Handler):
         if self._batch and self._loop:
             try:
                 if self._loop.is_running():
-                    asyncio.create_task(self._flush())
+                    self._loop.call_soon_threadsafe(self._schedule_flush)
                 else:
                     self._loop.run_until_complete(self._flush())
             except Exception:
@@ -92,13 +92,23 @@ class DatabaseLogHandler(logging.Handler):
             except Exception:
                 pass
 
+    def _schedule_flush(self) -> None:
+        """Create flush tasks on the handler's owning event loop."""
+        if self._loop and self._loop.is_running():
+            self._loop.create_task(self._flush())
+
     async def _flush(self) -> None:
         """将缓冲的日志批量写入数据库。"""
-        if not self._batch:
-            return
-
-        batch = self._batch.copy()
-        self._batch.clear()
+        # emit() can run in file-I/O workers. Share the logging handler's
+        # reentrant lock so an append cannot be lost between copy and clear.
+        self.acquire()
+        try:
+            if not self._batch:
+                return
+            batch = self._batch.copy()
+            self._batch.clear()
+        finally:
+            self.release()
 
         try:
             await self._log_service.batch_insert(batch)
@@ -125,12 +135,17 @@ class DatabaseLogHandler(logging.Handler):
                 "user_id": getattr(record, "user_id", None),
             }
 
-            self._batch.append(entry)
+            self.acquire()
+            try:
+                self._batch.append(entry)
+                should_flush = len(self._batch) >= self._batch_size
+            finally:
+                self.release()
 
             # 达到批量大小时异步刷新
-            if len(self._batch) >= self._batch_size:
+            if should_flush:
                 if self._loop and self._loop.is_running():
-                    asyncio.create_task(self._flush())
+                    self._loop.call_soon_threadsafe(self._schedule_flush)
 
             # 如果还没启动，尝试启动
             if not self._started:
