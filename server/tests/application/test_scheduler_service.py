@@ -48,20 +48,14 @@ async def test_create_task_computes_next_run(temp_db: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_task_with_invalid_cron_keeps_none(temp_db: Path) -> None:
-    """非法 cron 表达式不抛异常，next_run 保持 None。"""
+async def test_create_task_with_invalid_cron_is_rejected(temp_db: Path) -> None:
     await _initialize_test_db(temp_db)
     service = SchedulerService(db_path=temp_db)
-
-    task = await service.create_task(
-        ScheduledTaskCreate(
-            name="坏表达式",
-            folder_path="/media/tv",
-            cron_expression="not a cron",
-            enabled=True,
-        )
-    )
-    assert task.next_run is None
+    with pytest.raises(ValueError, match="Cron"):
+        await service.create_task(ScheduledTaskCreate(
+            name="坏表达式", folder_path="/media/tv", cron_expression="not a cron",
+        ))
+    assert await service.list_tasks() == []
 
 
 @pytest.mark.asyncio

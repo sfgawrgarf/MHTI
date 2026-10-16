@@ -91,18 +91,18 @@ const openRescapeModal = (record: HistoryRecord) => {
   showRescapeModal.value = true
 }
 
-/** 重刮：把弹窗里的 TMDB ID 提交给 retry 接口（后端已放宽为任意非运行中记录） */
+/** 重刮：成功记录创建纠正任务，失败记录排队重试 */
 const handleRescape = async (payload: { tmdbId: number; season: number; episode: number }) => {
   const record = rescapeRecord.value
   if (!record) return
   busyId.value = record.id
   try {
-    await historyApi.retryRecord(record.id, {
+    const result = await historyApi.rescrapeRecord(record, {
       tmdb_id: payload.tmdbId,
       season: payload.season,
       episode: payload.episode,
     })
-    message.success('重刮完成')
+    message.success(result.message || '已加入重刮队列')
   } catch (error) {
     message.error('重刮失败')
     console.error(error)

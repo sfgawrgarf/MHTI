@@ -4,6 +4,7 @@ import aiosqlite
 
 
 MANUAL_JOB_COLUMNS = (
+    ("schedule_key", "TEXT"),
     ("metadata_dir", "TEXT DEFAULT ''"),
     ("source", "TEXT DEFAULT 'manual'"),
     ("advanced_settings", "TEXT"),
@@ -14,6 +15,7 @@ MANUAL_JOB_COLUMNS = (
 )
 
 SCRAPE_JOB_COLUMNS = (
+    ("operation", "TEXT NOT NULL DEFAULT 'scrape'"),
     ("link_mode", "TEXT"),
     ("advanced_settings", "TEXT"),
     ("file_locator", "TEXT"),
@@ -61,6 +63,7 @@ HISTORY_COLUMNS = (
 )
 
 SCHEDULED_TASK_COLUMNS = (
+    ("running_for", "TEXT"),
     ("last_attempt", "TEXT"),
     ("last_status", "TEXT"),
     ("last_error", "TEXT"),
@@ -275,6 +278,10 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
         )
     """)
     await migrate_manual_jobs_table(db)
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_jobs_schedule_key "
+        "ON manual_jobs(schedule_key)"
+    )
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_manual_jobs_status_created "
         "ON manual_jobs(status, created_at)"
@@ -535,3 +542,4 @@ async def _create_media_identity_tables(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_media_aliases_tmdb ON media_aliases(tmdb_id)"
     )
+

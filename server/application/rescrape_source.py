@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -129,16 +130,14 @@ class RescrapeSource:
         except PathSecurityError:
             return input_
 
-        staged = original.with_name(f"{original.stem}{_STAGE_SUFFIX}{original.suffix}")
+        staged = original.with_name(
+            f"{original.stem}{_STAGE_SUFFIX}-{uuid.uuid4().hex}{original.suffix}"
+        )
         try:
-            if staged.exists():  # 上次异常退出留下的同名临时文件
-                safe_staged = validate_media_path(
-                    str(staged),
-                    must_exist=True,
-                    require_file=True,
-                )
-                safe_staged.unlink()
-            original.rename(staged)
+            from server.infrastructure.file_operations import publish_file
+            from server.models.organize import OrganizeMode
+
+            publish_file(original, staged, OrganizeMode.MOVE)
         except (OSError, PathSecurityError) as exc:
             # 让位失败不阻断重刮：最坏情况是整理步骤报「目标文件已存在」，
             # 用户能在错误信息里看到原因，文件本身没被改动

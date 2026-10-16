@@ -283,11 +283,12 @@ class HistoryRepository(BaseRepository):
                   AND (
                       history_record_id = ?
                       OR continuation_history_id = ?
+                      OR correction_history_id = ?
                       OR id = ?
                   )
                 LIMIT 1
                 """,
-                (record_id, record_id, row[1]),
+                (record_id, record_id, record_id, row[1]),
             )
             if row[0] == TaskStatus.RUNNING.value or await cursor.fetchone():
                 await db.rollback()
@@ -474,12 +475,16 @@ class HistoryRepository(BaseRepository):
                            finished_at = CASE WHEN ? IN ('pending', 'running')
                                               THEN finished_at
                                               ELSE COALESCE(finished_at, CURRENT_TIMESTAMP) END
-                       WHERE history_record_id = ?""",
+                       WHERE history_record_id = ?
+                         AND (id = (SELECT scrape_job_id FROM history_records WHERE id = ?)
+                              OR (SELECT scrape_job_id FROM history_records WHERE id = ?) IS NULL)""",
                     (
                         status.value,
                         error_message,
                         error_message,
                         status.value,
+                        record_id,
+                        record_id,
                         record_id,
                     ),
                 )
@@ -498,6 +503,7 @@ class HistoryRepository(BaseRepository):
                       ON j.id = h.scrape_job_id
                       OR j.history_record_id = h.id
                       OR j.continuation_history_id = h.id
+                      OR j.correction_history_id = h.id
                     WHERE h.executed_at < ?
                       AND (h.status = 'running' OR j.status IN ('pending', 'running'))
                     """,
@@ -530,6 +536,7 @@ class HistoryRepository(BaseRepository):
                       ON j.id = h.scrape_job_id
                       OR j.history_record_id = h.id
                       OR j.continuation_history_id = h.id
+                      OR j.correction_history_id = h.id
                     WHERE h.status = 'running' OR j.status IN ('pending', 'running')
                     """
                 )

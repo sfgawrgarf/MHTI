@@ -377,6 +377,7 @@ class OutputWriter:
         move_step: ScrapeLogStep,
         notify_log_update: Callable[[], Awaitable[None]],
         result: ScrapeResult,
+        allow_staged_source: bool = False,
     ) -> tuple[Path, Path, Path]:
         """沿用原本地整理链路。"""
         move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
@@ -384,7 +385,10 @@ class OutputWriter:
         move_step.logs.append(ScrapeLogEntry(message=f"整理模式: {mode_name}"))
         await notify_log_update()
 
-        rename_result = await run_file_io(self._facade.rename_service.execute_rename, rename_request)
+        options = {"allow_staged_source": True} if allow_staged_source else {}
+        rename_result = await run_file_io(
+            self._facade.rename_service.execute_rename, rename_request, **options,
+        )
         if not rename_result.success:
             if rename_result.error and "already exists" in rename_result.error:
                 move_step.logs.append(ScrapeLogEntry(message=f"目标文件已存在: {rename_result.dest_path}", level=ScrapeLogLevel.WARNING))
@@ -398,7 +402,7 @@ class OutputWriter:
 
         result.dest_path = rename_result.dest_path
         move_step.logs.append(ScrapeLogEntry(message=f"文件{mode_name}成功: {rename_result.dest_path}"))
-        await notify_log_update()
+        await self._facade._safe_notify_log_update(notify_log_update, "媒体发布日志")
 
         dest_file = Path(rename_result.dest_path)
         season_folder = dest_file.parent

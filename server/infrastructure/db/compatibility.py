@@ -13,6 +13,7 @@ import aiosqlite
 
 _MISSING_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
     "manual_jobs": (
+        ("schedule_key", "TEXT"),
         ("metadata_dir", "TEXT DEFAULT ''"),
         ("source", "TEXT DEFAULT 'manual'"),
         ("advanced_settings", "TEXT"),
@@ -22,6 +23,7 @@ _MISSING_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("allow_local_output", "INTEGER DEFAULT 0"),
     ),
     "scheduled_tasks": (
+        ("running_for", "TEXT"),
         ("last_attempt", "TEXT"),
         ("last_status", "TEXT"),
         ("last_error", "TEXT"),
@@ -59,6 +61,7 @@ _MISSING_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         ("timeout_seconds", "INTEGER"),
     ),
     "scrape_jobs": (
+        ("operation", "TEXT NOT NULL DEFAULT 'scrape'"),
         ("link_mode", "TEXT"),
         ("advanced_settings", "TEXT"),
         ("file_locator", "TEXT"),

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import os
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -35,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 # Video file extensions to watch — 与 file_service.SUPPORTED_VIDEO_EXTENSIONS 保持一致
 from server.domain.media.file_service import SUPPORTED_VIDEO_EXTENSIONS as VIDEO_EXTENSIONS
+
+
+def _local_scan_snapshot(path: str) -> list[tuple[str, int, float]]:
+    """Bounded scanning/stat work, executed outside the event-loop thread."""
+    from server.domain.media.file_service import FileService
+
+    return [
+        (item.path, item.size, datetime.fromisoformat(item.mtime).timestamp() if item.mtime else 0.0)
+        for item in FileService().scan_folder(path)
+    ]
 
 
 @dataclass
@@ -108,7 +117,7 @@ class RealtimeStrategy(WatchStrategy):
         self._observer: Observer | None = None
 
     async def start(self) -> None:
-        if self._running or not Path(self.folder.path).exists():
+        if self._running or not await run_file_io(Path(self.folder.path).exists):
             return
         self._observer = Observer()
         handler = VideoFileHandler(self.folder, self.on_file_detected)
@@ -138,7 +147,7 @@ class CompatStrategy(WatchStrategy):
         self._known_files: set[str] = set()
 
     async def start(self) -> None:
-        if self._running or not Path(self.folder.path).exists():
+        if self._running or not await run_file_io(Path(self.folder.path).exists):
             return
         self._running = True
         await self._init_known_files()
@@ -158,10 +167,9 @@ class CompatStrategy(WatchStrategy):
         self._known_files.clear()
 
     async def _init_known_files(self) -> None:
-        for root, _, files in os.walk(self.folder.path):
-            for f in files:
-                if Path(f).suffix.lower() in VIDEO_EXTENSIONS:
-                    self._known_files.add(str(Path(root) / f))
+        self._known_files = {
+            path for path, _, _ in await run_file_io(_local_scan_snapshot, self.folder.path)
+        }
 
     async def _scan_loop(self) -> None:
         while self._running:
@@ -169,11 +177,9 @@ class CompatStrategy(WatchStrategy):
                 await asyncio.sleep(self.folder.scan_interval_seconds)
                 if not self._running:
                     break
-                current: set[str] = set()
-                for root, _, files in os.walk(self.folder.path):
-                    for f in files:
-                        if Path(f).suffix.lower() in VIDEO_EXTENSIONS:
-                            current.add(str(Path(root) / f))
+                current = {
+                    path for path, _, _ in await run_file_io(_local_scan_snapshot, self.folder.path)
+                }
                 for fp in current - self._known_files:
                     self.on_file_detected(fp, self.folder)
                 self._known_files = current
@@ -268,6 +274,7 @@ class P115ScanStrategy(WatchStrategy):
                             self.detected_meta[file_path] = {
                                 "file_id": fid_str,
                                 "parent_id": entry.get("parent_id"),
+                                "size": entry.get("size"),
                             }
                             self.on_file_detected(file_path, self.folder)
                         logger.info(f"[115监控] 检测到新文件: {file_path or fid_str}")
@@ -300,6 +307,7 @@ class P115EventStrategy(WatchStrategy):
         self.detected_meta: dict[str, dict] = {}
         # 监控目录及其所有子目录的 id 集合（用于 parent_id 匹配）
         self._watched_dir_ids: set[str] = set()
+        self._directory_paths: dict[str, str] = {}
         # 已处理过的 file_id 集合（防止刮削产生的整理事件导致循环）
         self._processed_file_ids: set[str] = set()
 
@@ -354,8 +362,10 @@ class P115EventStrategy(WatchStrategy):
 
         svc = P115Service(ConfigService())
         self._watched_dir_ids.clear()
+        self._directory_paths = {}
         if self.folder.file_id:
             self._watched_dir_ids.add(str(self.folder.file_id))
+            self._directory_paths[str(self.folder.file_id)] = self.folder.path
         await self._collect_subdir_ids(svc, self.folder.path, self.folder.file_id)
 
     async def _collect_subdir_ids(
@@ -396,7 +406,9 @@ class P115EventStrategy(WatchStrategy):
                     if entry.get("is_dir") and entry.get("file_id"):
                         child_id = str(entry["file_id"])
                         self._watched_dir_ids.add(child_id)
-                        queue.append((entry.get("path", ""), child_id))
+                        child_path = entry.get("path") or f"{current_path}/{entry.get('name', '')}"
+                        self._directory_paths[child_id] = child_path
+                        queue.append((child_path, child_id))
 
                 total = result.get("total")
                 if len(entries) < page_size or (
@@ -424,6 +436,12 @@ class P115EventStrategy(WatchStrategy):
                 events = self._extract_events(resp)
                 if not events:
                     continue
+
+                if any(
+                    str(item.get("parent_id", "")) not in getattr(self, "_directory_paths", {})
+                    for event in events for item in event.get("items", [])
+                ):
+                    await self._collect_dir_ids()
 
                 new_max_time = self._last_update_time
                 for event in events:
@@ -475,19 +493,12 @@ class P115EventStrategy(WatchStrategy):
         if self._watched_dir_ids and parent_id not in self._watched_dir_ids:
             return
 
-        # 记录已处理
-        if file_id:
-            self._processed_file_ids.add(str(file_id))
-
-        # 构造虚拟路径（115 路径）
-        # parent_name 是文件所在目录名。如果等于监控目录名（直接子级），
-        # 不重复拼接；只有更深的子目录才拼。
-        parent_name = item.get("parent_name", "")
-        folder_base_name = self.folder.path.rstrip("/").rsplit("/", 1)[-1] if self.folder.path else ""
-        if parent_name and parent_name != folder_base_name:
-            virtual_path = f"{self.folder.path}/{parent_name}/{file_name}"
-        else:
-            virtual_path = f"{self.folder.path}/{file_name}"
+        parent_path = getattr(self, "_directory_paths", {}).get(parent_id)
+        if parent_path is None and parent_id == str(self.folder.file_id):
+            parent_path = self.folder.path
+        if not parent_path:
+            return  # Never fabricate a shortened path which can collide.
+        virtual_path = f"{parent_path.rstrip('/')}/{file_name}"
 
         self.detected_meta[virtual_path] = {
             "file_id": str(file_id) if file_id else None,
@@ -495,6 +506,8 @@ class P115EventStrategy(WatchStrategy):
             "size": item.get("file_size", 0),
         }
         self.on_file_detected(virtual_path, self.folder)
+        if file_id:
+            self._processed_file_ids.add(str(file_id))
         logger.info(f"[115事件] 检测到新文件: {file_name}")
 
 
@@ -757,7 +770,7 @@ class WatcherService:
 
         for folder in folders:
             try:
-                safe_folder_path = self._validate_folder_path(
+                safe_folder_path = await run_file_io(self._validate_folder_path,
                     folder.path,
                     folder.provider,
                 )
@@ -772,46 +785,26 @@ class WatcherService:
                 await self._initial_scan_p115(folder, pending_paths)
                 continue
 
-            folder_path = Path(safe_folder_path)
-            if not folder_path.exists():
+            try:
+                snapshot = await run_file_io(_local_scan_snapshot, safe_folder_path)
+            except Exception:
+                logger.exception("初始监控扫描失败: %s", folder.path)
                 continue
-
-            logger.info(f"扫描文件夹: {folder.path}")
             stable_files: list[DetectedFile] = []
             current_time = time.time()
-
-            for root, _, files in os.walk(folder_path):
-                for filename in files:
-                    ext = Path(filename).suffix.lower()
-                    if ext not in VIDEO_EXTENSIONS:
-                        continue
-
-                    filepath = Path(root) / filename
-                    try:
-                        stat = filepath.stat()
-                        age = current_time - stat.st_mtime
-
-                        if age >= folder.file_stable_seconds:
-                            # 跳过已有待处理任务的文件
-                            if str(filepath) in pending_paths:
-                                continue
-                            stable_files.append(
-                                DetectedFile(
-                                    path=str(filepath),
-                                    detected_at=datetime.now(),
-                                    file_size=stat.st_size,
-                                    stable=True,
-                                )
-                            )
-                        else:
-                            self._pending_files[str(filepath)] = PendingFile(
-                                path=str(filepath),
-                                detected_at=current_time,
-                                folder=folder,
-                                file_size=stat.st_size,
-                            )
-                    except OSError:
-                        continue
+            for filepath, size, modified_at in snapshot:
+                if filepath in pending_paths:
+                    continue
+                if current_time - modified_at >= folder.file_stable_seconds:
+                    stable_files.append(DetectedFile(
+                        path=filepath, detected_at=datetime.now(),
+                        file_size=size, stable=True,
+                    ))
+                else:
+                    self._pending_files[filepath] = PendingFile(
+                        path=filepath, detected_at=current_time,
+                        folder=folder, file_size=size,
+                    )
 
             await self._repo.update_last_scan(folder.id, datetime.now().isoformat())
 
@@ -952,7 +945,7 @@ class WatcherService:
                 continue
 
             try:
-                stat = Path(pending.path).stat()
+                stat = await run_file_io(Path(pending.path).stat)
                 if current_time - stat.st_mtime < folder.file_stable_seconds:
                     continue
                 key = folder.id

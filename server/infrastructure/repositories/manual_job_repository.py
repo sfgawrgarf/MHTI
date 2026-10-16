@@ -12,6 +12,7 @@ from server.models.manual_job import ManualJobCreate, ManualJobStatus
 _MANUAL_JOBS_DDL = """
     CREATE TABLE IF NOT EXISTS manual_jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_key TEXT UNIQUE,
         scan_path TEXT NOT NULL,
         target_folder TEXT NOT NULL,
         metadata_dir TEXT DEFAULT '',
@@ -46,6 +47,14 @@ class ManualJobRepository(BaseRepository):
     async def ensure_schema(self) -> None:
         """兼容旧数据库：补齐缺失列（幂等）。"""
         async with self._connect() as db:
+            async with db.execute("PRAGMA table_info(manual_jobs)") as cursor:
+                columns = {row[1] for row in await cursor.fetchall()}
+            if "schedule_key" not in columns:
+                await db.execute("ALTER TABLE manual_jobs ADD COLUMN schedule_key TEXT")
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_jobs_schedule_key "
+                "ON manual_jobs(schedule_key)"
+            )
             try:
                 await db.execute("ALTER TABLE manual_jobs ADD COLUMN metadata_dir TEXT DEFAULT ''")
             except Exception:
@@ -93,8 +102,9 @@ class ManualJobRepository(BaseRepository):
                 INSERT INTO manual_jobs
                 (scan_path, target_folder, metadata_dir, link_mode, delete_empty_parent,
                  config_reuse_id, source, advanced_settings, scan_locator, target_locator,
-                 metadata_locator, allow_local_output, created_at, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 metadata_locator, allow_local_output, created_at, status, schedule_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(schedule_key) DO NOTHING
                 """,
                 (
                     data.scan_path,
@@ -111,10 +121,18 @@ class ManualJobRepository(BaseRepository):
                     1 if data.allow_local_output else 0,
                     created_at,
                     ManualJobStatus.PENDING.value,
+                    data.schedule_key,
                 ),
             )
+            if cursor.rowcount == 0 and data.schedule_key:
+                cursor = await db.execute(
+                    "SELECT id FROM manual_jobs WHERE schedule_key = ?", (data.schedule_key,),
+                )
+                job_id = int((await cursor.fetchone())[0])
+            else:
+                job_id = cursor.lastrowid
             await db.commit()
-            return cursor.lastrowid
+            return job_id
 
     async def list_jobs(
         self,

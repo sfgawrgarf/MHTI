@@ -98,6 +98,18 @@ def validate_media_directory(raw_path: str) -> Path:
         raise PathSecurityError(f"路径不是目录: {resolved}") from exc
 
 
+def validate_media_file_entry(raw_path: str) -> Path:
+    """Validate a file target while preserving its final directory entry.
+
+    A delete must remove a selected symlink, not the file it points at. Resolve
+    the parent to enforce the directory boundary, but retain the final name.
+    """
+    validate_media_path(raw_path, must_exist=True, require_file=True)
+    original = Path(raw_path)
+    parent = validate_media_directory(str(original.parent))
+    return parent / original.name
+
+
 def validate_internal_staging_path(raw_path: str) -> Path:
     """Return an existing application-created 115 staging path.
 

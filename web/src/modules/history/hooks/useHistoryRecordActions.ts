@@ -47,7 +47,7 @@ export function useHistoryRecordActions(
     run(async () => {
       const record = getRecord()
       if (!record) return
-      await historyApi.retryRecord(record.id, {
+      await historyApi.rescrapeRecord(record, {
         tmdb_id: payload.tmdbId,
         season: payload.season,
         episode: payload.episode,

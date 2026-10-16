@@ -498,3 +498,69 @@ def test_resolve_move_input_rejects_cloud_metadata_before_output(
             metadata_dir=metadata_locator.path,
             metadata_locator=metadata_locator,
         )
+
+
+@pytest.mark.asyncio
+async def test_move_does_not_remove_source_when_metadata_preparation_fails(temp_db, tmp_path, monkeypatch):
+    source = tmp_path / 'input.mp4'
+    source.write_bytes(b'keep me')
+    service = _build_service(temp_db, FakeTMDB())
+    _patch_tail(monkeypatch, service)
+    monkeypatch.setattr(service, '_write_local_metadata_only', AsyncMock(side_effect=OSError('metadata disk full')))
+    result = await service.scrape_by_id(ScrapeByIdRequest(
+        file_path=str(source), tmdb_id=123, season=1, episode=1,
+        output_dir=str(tmp_path / 'out'), link_mode=OrganizeMode.MOVE,
+    ))
+    assert result.status == ScrapeStatus.MOVE_FAILED
+    assert source.read_bytes() == b'keep me'
+    assert not list((tmp_path / 'out').rglob('*.mp4'))
+
+
+@pytest.mark.asyncio
+async def test_move_stays_success_when_postpublication_log_or_registration_fails(temp_db, tmp_path, monkeypatch):
+    source = tmp_path / 'input.mp4'
+    source.write_bytes(b'published')
+    output = tmp_path / 'out'
+    service = _build_service(temp_db, FakeTMDB())
+    _patch_tail(monkeypatch, service)
+    monkeypatch.setattr(service, '_record_media_version', AsyncMock(side_effect=OSError('database unavailable')))
+
+    async def log_update(logs):
+        if list(output.rglob('*.mp4')):
+            raise OSError('log unavailable after move')
+
+    result = await service.scrape_by_id(ScrapeByIdRequest(
+        file_path=str(source), tmdb_id=123, season=1, episode=1,
+        output_dir=str(output), link_mode=OrganizeMode.MOVE,
+    ), on_log_update=log_update)
+    assert result.status == ScrapeStatus.SUCCESS
+    assert not source.exists()
+    assert Path(result.dest_path).read_bytes() == b'published'
+
+
+@pytest.mark.asyncio
+async def test_p115_download_can_publish_from_internal_temp_outside_media_roots(temp_db, tmp_path, monkeypatch):
+    output = tmp_path / 'library'
+    output.mkdir()
+    monkeypatch.setenv('MHTI_ALLOWED_MEDIA_ROOTS', str(output))
+    service = _build_service(temp_db, FakeTMDB())
+    _patch_tail(monkeypatch, service)
+    staging_paths = []
+
+    class DownloadProvider:
+        async def download(self, locator, directory):
+            staged = directory / 'cloud.mp4'
+            staged.write_bytes(b'cloud media')
+            staging_paths.append(staged)
+            return staged
+
+    monkeypatch.setattr(service, '_get_storage_provider', lambda _: DownloadProvider())
+    locator = StorageLocator(provider=StorageProvider.P115, path='/115网盘/in/cloud.mp4', file_id='cloud', is_dir=False)
+    result = await service.scrape_by_id(ScrapeByIdRequest(
+        file_path=locator.path, file_locator=locator,
+        output_dir=str(output), allow_local_output=True,
+        tmdb_id=123, season=1, episode=1, link_mode=OrganizeMode.COPY,
+    ))
+    assert result.status == ScrapeStatus.SUCCESS, result.message
+    assert Path(result.dest_path).read_bytes() == b'cloud media'
+    assert staging_paths and not staging_paths[0].exists()

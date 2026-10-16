@@ -105,11 +105,11 @@ export function useHistoryBatchRetry(options: {
     options.clearSelection()
 
     if (stopped) {
-      message.info(`已停止，完成 ${done.value}/${total.value} 条`)
+      message.info(`已停止，已提交 ${done.value}/${total.value} 条`)
     } else if (failed.value > 0) {
-      message.warning(`批量重试完成：成功 ${done.value - failed.value} 条，失败 ${failed.value} 条`)
+      message.warning(`批量提交完成：已入队 ${done.value - failed.value} 条，失败 ${failed.value} 条`)
     } else {
-      message.success(`批量重试完成：${done.value} 条`)
+      message.success(`批量提交完成：已入队 ${done.value} 条`)
     }
     return !stopped
   }

@@ -121,6 +121,7 @@ class ManualJobCreate(BaseModel):
     """Request for creating a manual job."""
 
     scan_path: str
+    schedule_key: str | None = None  # Idempotent durable scheduler occurrence.
     target_folder: str
     metadata_dir: str = ""  # 元数据目录
     scan_locator: StorageLocator | None = None
