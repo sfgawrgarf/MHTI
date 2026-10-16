@@ -386,3 +386,53 @@ async def test_reorganize_uses_worker_and_stored_metadata_without_tmdb(audit_env
     tmdb.get_series_by_api.assert_not_awaited()
     tmdb.get_season_by_api.assert_not_awaited()
     assert list(env.output.rglob('*.mkv'))
+
+
+@pytest.mark.asyncio
+async def test_real_correction_worker_backs_up_before_copy_and_survives_notification_failure(audit_env, monkeypatch):
+    from server.application import correction_service as backup
+    from server.models.organize import OrganizeMode
+    from server.models.scraper import ScrapeResult, ScrapeStatus
+    from server.models.tmdb import TMDBSeries
+
+    env = audit_env
+    old = await env.jobs.create_job(ScrapeJobCreate(
+        file_path=str(env.source), output_dir=str(env.output), link_mode=OrganizeMode.MOVE,
+    ))
+    await env.jobs.update_job(old.id, status=ScrapeJobStatus.SUCCESS)
+    original = await record_for(env, str(env.source), job_id=old.id)
+    correction = await env.jobs.create_job(ScrapeJobCreate(
+        file_path=str(env.source), output_dir=str(env.output), link_mode=OrganizeMode.MOVE,
+        operation='rematch', replaces_job_id=old.id, correction_history_id=original.id,
+        correction_tmdb_id=456, correction_season=2, correction_episode=3,
+    ))
+    monkeypatch.setattr(backup, 'DATA_DIR', env.source.parent)
+    monkeypatch.setattr(backup, 'BACKUP_ROOT', env.source.parent / 'backups')
+    notifier = AsyncMock()
+    notifier.notify_completed.side_effect = RuntimeError('socket unavailable')
+    monkeypatch.setattr(jobs_module, 'get_notifier', lambda: notifier)
+    monkeypatch.setattr('server.application.history_service.HistoryService', lambda **_: env.history)
+    monkeypatch.setattr('server.application.scraped_file_service.ScrapedFileService', lambda **_: env.scraped)
+    monkeypatch.setattr('server.domain.system.config_service.ConfigService', lambda **_: env.config)
+
+    async def scrape(request, **kwargs):
+        assert request.link_mode == OrganizeMode.COPY
+        assert (request.tmdb_id, request.season, request.episode) == (456, 2, 3)
+        manifest = json.loads((backup.BACKUP_ROOT / correction.id / 'manifest.json').read_text())
+        assert manifest['complete']
+        assert (await env.history.get_record(original.id)).status == TaskStatus.SUCCESS
+        env.output.mkdir()
+        target = env.output / 'corrected.mkv'
+        target.write_bytes(env.source.read_bytes())
+        return ScrapeResult(
+            file_path=request.file_path, dest_path=str(target), status=ScrapeStatus.SUCCESS,
+            selected_id=456, parsed_season=2, parsed_episode=3,
+            series_info=TMDBSeries(id=456, name='Corrected'),
+        )
+
+    monkeypatch.setattr('server.bootstrap.get_scraper_service', lambda: SimpleNamespace(scrape_by_id=scrape))
+    await jobs_module._execute_scrape_job(env.jobs, correction.id)
+    assert (await env.jobs.get_job(correction.id)).status == ScrapeJobStatus.SUCCESS
+    assert (await env.jobs.get_job(old.id)).status == ScrapeJobStatus.REPLACED
+    assert (await env.history.get_record(original.id)).status == TaskStatus.REPLACED
+    assert env.source.read_bytes() == b'original video'

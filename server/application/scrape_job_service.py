@@ -995,12 +995,15 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 await service.update_job(
                     job_id, status=ScrapeJobStatus.SUCCESS, finished_at=datetime.now(),
                 )
-            # 发送完成通知
-            await notifier.notify_completed(job_id, {
-                "status": "success",
-                "file_path": job.file_path,
-                "dest_path": result.dest_path,
-            })
+            # A notification failure cannot undo an already published output.
+            try:
+                await notifier.notify_completed(job_id, {
+                    "status": "success",
+                    "file_path": job.file_path,
+                    "dest_path": result.dest_path,
+                })
+            except Exception:
+                logger.exception("媒体已发布，完成通知失败: %s", job_id)
         elif result.status == ScrapeStatus.NEED_SELECTION:
             # 需要用户选择
             conflict_data = {
