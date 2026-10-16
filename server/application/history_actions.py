@@ -392,6 +392,10 @@ class HistoryScrapeActions:
                 **locators,
             )
         await self.fill_organize_params(record, scrape_request)
+        correcting = getattr(old_job, "operation", None) == "rematch"
+        if correcting:
+            from server.models.organize import OrganizeMode
+            scrape_request.link_mode = OrganizeMode.COPY
         job = await self._scrape_job_service.create_job(
             ScrapeJobCreate(
                 file_path=input_.path,
@@ -405,12 +409,13 @@ class HistoryScrapeActions:
                 advanced_settings=scrape_request.advanced_settings or getattr(old_job, "advanced_settings", None),
                 source=ScrapeJobSource.MANUAL,
                 source_id=record.manual_job_id,
-                replaces_job_id=record.scrape_job_id,
+                replaces_job_id=old_job.replaces_job_id if correcting else record.scrape_job_id,
+                correction_history_id=old_job.correction_history_id if correcting else None,
                 continuation_history_id=record_id,
                 correction_tmdb_id=scrape_request.tmdb_id,
                 correction_season=scrape_request.season,
                 correction_episode=scrape_request.episode,
-                operation=operation,
+                operation="rematch" if correcting else operation,
                 selection_log=selection_log,
                 skip_emby_check=scrape_request.skip_emby_check,
                 file_action=scrape_request.file_action,

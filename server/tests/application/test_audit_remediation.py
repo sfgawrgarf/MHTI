@@ -54,11 +54,13 @@ async def audit_env(temp_db, tmp_path, monkeypatch):
 
 
 async def record_for(env, path, *, status=TaskStatus.SUCCESS, job_id=None):
-    return await env.history.create_record(HistoryRecordCreate(
+    record = await env.history.create_record(HistoryRecordCreate(
         task_name='audit regression', folder_path=path, status=status,
         total_files=1, success_count=1, failed_count=0, duration_seconds=0,
-        scrape_job_id=job_id, title='Show', tmdb_id=123, season_number=1, episode_number=10,
+        scrape_job_id=job_id,
     ))
+    await env.history.update_record(record.id, title='Show', tmdb_id=123, season_number=1, episode_number=10)
+    return await env.history.get_record(record.id)
 
 
 @pytest.mark.asyncio
@@ -320,3 +322,67 @@ async def test_correction_context_survives_conflict_resolution(audit_env):
     assert continuation.link_mode.value == 'copy'
     assert (await env.jobs.get_job(old.id)).status == ScrapeJobStatus.SUCCESS
     assert (await env.history.get_record(original.id)).status == TaskStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_failed_correction_retry_keeps_original_replacement_context(audit_env):
+    env = audit_env
+    old = await env.jobs.create_job(ScrapeJobCreate(file_path=str(env.source), output_dir=str(env.output)))
+    await env.jobs.update_job(old.id, status=ScrapeJobStatus.SUCCESS)
+    original = await record_for(env, str(env.source), job_id=old.id)
+    correction = await env.jobs.create_job(ScrapeJobCreate(
+        file_path=str(env.source), output_dir=str(env.output), operation='rematch',
+        replaces_job_id=old.id, correction_history_id=original.id,
+    ))
+    await env.jobs.update_job(correction.id, status=ScrapeJobStatus.FAILED)
+    failed = await record_for(env, str(env.source), status=TaskStatus.FAILED, job_id=correction.id)
+    actions = HistoryScrapeActions(env.history, env.jobs, env.scraped, env.files)
+    result = await actions.queue_record_operation(failed.id, ScrapeByIdRequest(
+        file_path=str(env.source), tmdb_id=456, season=2, episode=3,
+    ))
+    retry = await env.jobs.get_job(result['job_id'])
+    assert retry.operation == 'rematch'
+    assert retry.replaces_job_id == old.id and retry.correction_history_id == original.id
+    assert (await env.jobs.get_job(old.id)).status == ScrapeJobStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_record_worker_enforces_timeout(audit_env, monkeypatch):
+    env = audit_env
+    record = await record_for(env, str(env.source), status=TaskStatus.FAILED)
+    actions = HistoryScrapeActions(env.history, env.jobs, env.scraped, env.files)
+    queued = await actions.queue_record_operation(record.id, ScrapeByIdRequest(
+        file_path=str(env.source), tmdb_id=123, season=1, episode=10,
+    ))
+
+    async def hang(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(ConfigService, 'get_system_config', AsyncMock(return_value=SimpleNamespace(task_timeout=1)))
+    monkeypatch.setattr('server.bootstrap.get_scraper_service', lambda: SimpleNamespace(scrape_by_id=hang))
+    await jobs_module._execute_scrape_job(env.jobs, queued['job_id'])
+    assert (await env.jobs.get_job(queued['job_id'])).status == ScrapeJobStatus.TIMEOUT
+    assert (await env.history.get_record(record.id)).status == TaskStatus.TIMEOUT
+    assert env.source.exists()
+
+
+@pytest.mark.asyncio
+async def test_reorganize_uses_worker_and_stored_metadata_without_tmdb(audit_env, monkeypatch):
+    from server.tests.application.test_scraper_service import FakeTMDB, _build_service, _patch_tail
+
+    env = audit_env
+    old = await env.jobs.create_job(ScrapeJobCreate(file_path=str(env.source), output_dir=str(env.output)))
+    await env.jobs.update_job(old.id, status=ScrapeJobStatus.SUCCESS)
+    record = await record_for(env, str(env.source), job_id=old.id)
+    actions = HistoryScrapeActions(env.history, env.jobs, env.scraped, env.files)
+    queued = await actions.queue_record_operation(record.id, operation='reorganize')
+    tmdb = FakeTMDB()
+    scraper = _build_service(env.db, tmdb)
+    _patch_tail(monkeypatch, scraper)
+    monkeypatch.setattr('server.bootstrap.get_scraper_service', lambda: scraper)
+    await jobs_module._execute_scrape_job(env.jobs, queued['job_id'])
+    assert (await env.jobs.get_job(queued['job_id'])).status == ScrapeJobStatus.SUCCESS
+    assert (await env.history.get_record(record.id)).status == TaskStatus.SUCCESS
+    tmdb.get_series_by_api.assert_not_awaited()
+    tmdb.get_season_by_api.assert_not_awaited()
+    assert list(env.output.rglob('*.mkv'))
