@@ -190,7 +190,11 @@ def read_records(job_id: str | None = None) -> list[dict]:
     for path in root().glob('*.json'):
         if path.is_symlink():
             raise RecoveryConflict('恢复记录不能是软链接')
-        record = json.loads(path.read_text(encoding='utf-8'))
+        try:
+            contents = path.read_text(encoding='utf-8')
+        except FileNotFoundError:
+            continue  # Another worker completed cleanup after enumeration.
+        record = json.loads(contents)
         if path.stem != record.get('id'):
             raise RecoveryConflict('恢复记录身份不一致')
         if job_id is None or record.get('owner') == job_id:
@@ -331,10 +335,8 @@ class MetadataPlan:
             if target.is_symlink():
                 raise RecoveryConflict(f'元数据目标变为软链接: {target}')
             if item.get('published_signature') and signature(target) == item['published_signature']:
-                cleanup_staging(item)
                 continue
             if target.exists() and digest(target) == item['digest']:
-                cleanup_staging(item)
                 continue  # Identical shared metadata may belong to another writer.
             source = validate_media_file_entry(item['source'])
             cleanup_staging(item)
@@ -351,7 +353,7 @@ class MetadataPlan:
         self.record['phase'] = 'complete'
         save(self.record)
 
-    def rollback(self) -> None:
+    def rollback(self, *, cleanup: bool = True) -> None:
         from server.infrastructure.file_operations import publish_file
         from server.models.organize import OrganizeMode
         for item in reversed(self.record['files']):
@@ -373,7 +375,8 @@ class MetadataPlan:
                     publish_file(backup, target, OrganizeMode.COPY, overwrite=True)
             else:
                 target.unlink()
-        self.cleanup()
+        if cleanup:
+            self.cleanup()
 
     def cleanup(self) -> None:
         for item in self.record['files']:

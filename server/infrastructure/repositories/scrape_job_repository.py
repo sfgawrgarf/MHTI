@@ -39,7 +39,10 @@ _SCRAPE_JOBS_DDL = """
         continuation_history_id TEXT,
         file_action TEXT,
         selection_log TEXT,
-        skip_emby_check INTEGER DEFAULT 0
+        skip_emby_check INTEGER DEFAULT 0,
+        output_committed_at TEXT,
+        cleanup_completed_at TEXT,
+        cleanup_error TEXT
     )
 """
 
@@ -75,12 +78,37 @@ class ScrapeJobRepository(BaseRepository):
                 "file_action": "TEXT",
                 "selection_log": "TEXT",
                 "skip_emby_check": "INTEGER DEFAULT 0",
+                "output_committed_at": "TEXT",
+                "cleanup_completed_at": "TEXT",
+                "cleanup_error": "TEXT",
             }
             for name, column_type in missing.items():
                 if name not in columns:
                     await db.execute(
                         f"ALTER TABLE scrape_jobs ADD COLUMN {name} {column_type}"
                     )
+            if "output_committed_at" not in columns:
+                # Legacy correction completion atomically replaced the old row.
+                # That durable link also proves commitment if cleanup later
+                # changed the new job's display status to pending_action.
+                await db.execute("""
+                    UPDATE scrape_jobs SET output_committed_at = COALESCE(finished_at, created_at)
+                    WHERE output_committed_at IS NULL AND (
+                        status = 'success' OR (operation = 'rematch' AND EXISTS (
+                            SELECT 1 FROM scrape_jobs AS original
+                            WHERE original.id = scrape_jobs.replaces_job_id
+                              AND original.replaced_by_job_id = scrape_jobs.id
+                        ))
+                    )
+                """)
+            await db.commit()
+
+    async def record_cleanup_result(self, job_id: str, error: str | None) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE scrape_jobs SET cleanup_error = ?, cleanup_completed_at = ? WHERE id = ?",
+                (error, None if error else datetime.now().isoformat(), job_id),
+            )
             await db.commit()
 
     async def get_pending_by_path(self, file_path: str) -> aiosqlite.Row | None:
@@ -116,8 +144,9 @@ class ScrapeJobRepository(BaseRepository):
                 (f"已由纠正任务 {job_id} 替代；原文件备份保留七天", row[1]),
             )
             await db.execute(
-                "UPDATE scrape_jobs SET status = 'success', finished_at = ? WHERE id = ?",
-                (datetime.now().isoformat(), job_id),
+                "UPDATE scrape_jobs SET status = 'success', finished_at = ?, "
+                "output_committed_at = COALESCE(output_committed_at, ?) WHERE id = ?",
+                (datetime.now().isoformat(), datetime.now().isoformat(), job_id),
             )
             await db.commit()
 
@@ -417,6 +446,9 @@ class ScrapeJobRepository(BaseRepository):
         if status is not None:
             updates.append("status = ?")
             params.append(status.value)
+            if status == ScrapeJobStatus.SUCCESS:
+                updates.append("output_committed_at = COALESCE(output_committed_at, ?)")
+                params.append((finished_at or datetime.now()).isoformat())
         if started_at is not None:
             updates.append("started_at = ?")
             params.append(started_at.isoformat())

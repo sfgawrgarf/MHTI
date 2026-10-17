@@ -104,3 +104,39 @@ physical deletion across seasons with equal filenames. All tests run in GitHub
 Actions only. Older unrecorded partial directories cannot be attributed safely
 from their names and require operator inspection; the new accounting applies to
 operations begun after this fix.
+
+## Separate business commitment from cleanup (PR #87)
+
+`scrape_jobs.output_committed_at` records the successful business outcome. Ordinary
+success writes it with the status transition; correction completion writes it in
+the same SQLite transaction that replaces the original job/history. It is never
+cleared by later display-status changes. Metadata rollback decisions use this
+commit evidence as well as the uncommitted job outcome. A committed correction is
+therefore never rolled back because cleanup later needs attention.
+
+`cleanup_completed_at` and `cleanup_error` independently record receipt cleanup.
+Disposable cleanup I/O errors retain the business status and receipts for retry.
+Ownership conflicts still require inspection and may set `pending_action`, while
+retaining the successful commit marker. Once that conflict or a legacy cleanup
+failure is resolved, recovery can restore the successful status without changing
+a newer job's history row. Uncommitted cancelled/failed correction still restores
+its original metadata before deferred cleanup.
+
+Migration adds the three nullable fields. It backfills legacy successful jobs and
+legacy corrections whose original job points back through `replaced_by_job_id`;
+that link was written atomically with successful correction completion. This also
+recognizes old cleanup failures that changed the new job to `pending_action`.
+Timestamp backfill uses the legacy finished/created time. Cleanup fields apply to
+local receipt reconciliation; absence of a cleanup timestamp alone does not imply
+a failed business operation or require remote-only jobs to have local receipts.
+
+Receipt enumeration skips only `FileNotFoundError` when another worker removes a
+JSON file between enumeration and reading. Invalid JSON, permissions, symlinks,
+and identity mismatches still propagate and leave evidence intact.
+
+Cloud validation adds an isolated COPY trial with real SQLite, durable workers,
+NFO generation and file publication. It covers scrape, successful correction,
+cancellation before publication, fresh service recovery, and a child process exit
+after COPY publication but before metadata/final DB completion. TMDB and Emby use
+fixed responses; no production credentials or media are accessed. All execution
+remains in GitHub Actions. Production service updating is a separate operation.

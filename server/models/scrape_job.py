@@ -60,6 +60,9 @@ class ScrapeJob(BaseModel):
     finished_at: datetime | None = None
     error_message: str | None = None
     history_record_id: str | None = None  # 关联的历史记录ID
+    output_committed_at: datetime | None = None
+    cleanup_completed_at: datetime | None = None
+    cleanup_error: str | None = None
     replaces_job_id: str | None = None
     replaced_by_job_id: str | None = None
     correction_history_id: str | None = None

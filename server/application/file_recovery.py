@@ -71,7 +71,8 @@ async def _reconcile_job(service, job_id, records):
                 if not available:
                     raise journal.RecoveryConflict(f"发布未确认且源路径已变化，保留暂存内容: {item['source']}")
         correcting = job.operation == 'rematch'
-        rollback = correcting and job.status not in {ScrapeJobStatus.SUCCESS, ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}
+        committed = bool(job.output_committed_at)
+        rollback = correcting and not committed and job.status not in {ScrapeJobStatus.SUCCESS, ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}
         if outputs:
             output = outputs[-1]
             data = output.get('details') or {}
@@ -93,7 +94,7 @@ async def _reconcile_job(service, job_id, records):
             if any(item['destination'] == plan.record['destination'] for item in outputs) and not rollback:
                 await run_file_io(plan.commit)
             else:
-                await run_file_io(plan.rollback)
+                await run_file_io(plan.rollback, cleanup=False)
         if outputs:
             if job.status in {ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}:
                 await history.update_record(history_id, status=TaskStatus.SUCCESS, error_message='',
@@ -103,17 +104,34 @@ async def _reconcile_job(service, job_id, records):
                     await service._repo.complete_correction(job_id)
                 else:
                     await service.update_job(job_id, status=ScrapeJobStatus.SUCCESS, finished_at=datetime.now(), error_message='')
-            for item in outputs:
-                await run_file_io(_finish_move, item)
-            for stage in stages:
-                await run_file_io(_consume_stage, stage, outputs)
-        else:
-            for stage in stages:
-                await run_file_io(journal.restore_stage, stage)
-        for plan in plans:
-            await run_file_io(plan.cleanup)
-        for item in media:
-            await run_file_io(journal.finish_record, item)
+                committed = True
+        cleanup_error = None
+        try:
+            if outputs:
+                for item in outputs:
+                    await run_file_io(_finish_move, item)
+                for stage in stages:
+                    await run_file_io(_consume_stage, stage, outputs)
+            else:
+                for stage in stages:
+                    await run_file_io(journal.restore_stage, stage)
+            for plan in plans:
+                await run_file_io(plan.cleanup)
+            for item in media:
+                await run_file_io(journal.finish_record, item)
+        except journal.RecoveryConflict:
+            raise  # An ownership conflict still needs explicit inspection.
+        except OSError as exc:
+            cleanup_error = str(exc) or type(exc).__name__
+            logger.warning('文件清理未完成，保留业务状态与恢复记录 %s: %s', job_id, cleanup_error)
+        await service.record_cleanup_result(job_id, cleanup_error)
+        if committed and cleanup_error is None and job.status == ScrapeJobStatus.PENDING_ACTION:
+            # Repair legacy cleanup failures after ownership checks succeed.
+            changed = await service.update_job(job_id, status=ScrapeJobStatus.SUCCESS,
+                                               expected_status=ScrapeJobStatus.PENDING_ACTION, error_message='')
+            current = await history.get_record(history_id) if changed and history_id else None
+            if current and current.scrape_job_id == job_id and current.status == TaskStatus.PENDING_ACTION:
+                await history.update_record(history_id, status=TaskStatus.SUCCESS, error_message='')
     except Exception as exc:
         logger.exception('文件操作恢复需要人工处理: %s', job_id)
         message = f'文件操作恢复待处理，已保留文件与恢复记录: {exc}'

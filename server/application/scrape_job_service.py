@@ -420,6 +420,10 @@ class ScrapeJobService:
             return None
         return self._row_to_job(row)
 
+    async def record_cleanup_result(self, job_id: str, error: str | None) -> None:
+        await self._ensure_db()
+        await self._repo.record_cleanup_result(job_id, error)
+
     async def update_job(
         self,
         job_id: str,
@@ -593,6 +597,9 @@ class ScrapeJobService:
             finished_at=datetime.fromisoformat(row["finished_at"]) if row["finished_at"] else None,
             error_message=row["error_message"],
             history_record_id=row["history_record_id"],
+            output_committed_at=datetime.fromisoformat(row["output_committed_at"]) if "output_committed_at" in row.keys() and row["output_committed_at"] else None,
+            cleanup_completed_at=datetime.fromisoformat(row["cleanup_completed_at"]) if "cleanup_completed_at" in row.keys() and row["cleanup_completed_at"] else None,
+            cleanup_error=row["cleanup_error"] if "cleanup_error" in row.keys() else None,
             replaces_job_id=row["replaces_job_id"] if "replaces_job_id" in row.keys() else None,
             replaced_by_job_id=row["replaced_by_job_id"] if "replaced_by_job_id" in row.keys() else None,
             correction_history_id=row["correction_history_id"] if "correction_history_id" in row.keys() else None,
