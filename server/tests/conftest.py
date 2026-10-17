@@ -35,13 +35,14 @@ def mock_auth_context() -> AuthContext:
 
 
 @pytest.fixture(autouse=True)
-def test_media_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_media_roots(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Allow isolated pytest temporary directories for file-operation tests."""
     monkeypatch.setenv(
         "MHTI_ALLOWED_MEDIA_ROOTS",
         f"{tempfile.gettempdir()},/nonexistent",
     )
     monkeypatch.setenv("MHTI_ALLOWED_IMAGE_HOSTS", "image.tmdb.org,example.com")
+    monkeypatch.setenv("MHTI_FILE_JOURNAL_DIR", str(tmp_path / "file-journal"))
 
 
 @pytest.fixture

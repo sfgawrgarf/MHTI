@@ -218,7 +218,7 @@ class HistoryScrapeActions:
             await self._release_input(prepared, dest_path=None, success=False)
             raise
 
-        await self._release_input(prepared, dest_path=result.dest_path, success=True)
+        await self._release_input(prepared, dest_path=result.dest_path, success=result.status.value == "success")
         return response
 
     async def _release_input(
@@ -715,6 +715,33 @@ class HistoryScrapeActions:
                     )
 
             return {"success": True, "message": "处理成功", "dest_path": result.dest_path}
+
+        from server.models.history import HistoryConflictType
+        actionable = {item.value: item for item in HistoryConflictType}
+        if result.status.value in actionable:
+            record = await history_service.get_record(record_id)
+            job = await self._scrape_job_service.get_job(record.scrape_job_id) if record and record.scrape_job_id else None
+            conflict_data = {
+                "output_dir": getattr(job, "output_dir", None),
+                "metadata_dir": getattr(job, "metadata_dir", None),
+                "link_mode": job.link_mode.value if job and job.link_mode else None,
+                "tmdb_id": result.selected_id,
+                "season": result.parsed_season, "episode": result.parsed_episode,
+                "parsed_title": result.parsed_title,
+                "parsed_season": result.parsed_season, "parsed_episode": result.parsed_episode,
+                "dest_path": result.dest_path,
+                "series_info": result.series_info.model_dump(mode="json") if result.series_info else None,
+                "search_results": [item.model_dump(mode="json") for item in result.search_results or []],
+                "emby_message": result.message,
+                "emby_conflict": result.emby_conflict.model_dump(mode="json") if result.emby_conflict else None,
+            }
+            await history_service.update_record(
+                record_id, status=TaskStatus.PENDING_ACTION,
+                error_message=result.message, duration_seconds=duration_seconds,
+                conflict_type=actionable[result.status.value], conflict_data=conflict_data,
+            )
+            return {"success": False, "status": "pending_action", "conflict_type": result.status.value,
+                    "conflict_data": conflict_data, "message": result.message}
 
         await history_service.update_record(
             record_id,

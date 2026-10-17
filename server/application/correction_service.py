@@ -14,6 +14,7 @@ from server.common.path_security import validate_media_path
 from server.domain.system.config_service import ConfigService
 from server.infrastructure.config import DATA_DIR
 from server.infrastructure.file_operations import publish_file
+from server.infrastructure.file_journal import operation_kind
 from server.models.history import HistoryFileRole
 from server.models.organize import OrganizeMode
 
@@ -48,7 +49,8 @@ def _save_snapshot(job_id: str, history_id: str, paths: list[str]) -> Path:
         source = validate_media_path(raw, must_exist=True, require_file=True)
         backup = directory / f"{index:04d}-{source.name}"
         # Real copies also protect metadata subsequently written in place.
-        publish_file(source, backup, OrganizeMode.COPY, overwrite=True)
+        with operation_kind("backup"):
+            publish_file(source, backup, OrganizeMode.COPY, overwrite=True)
         manifest["files"].append({"source": raw, "backup": backup.name})
     manifest["complete"] = True
     temporary = directory / "manifest.tmp"
@@ -65,7 +67,7 @@ async def prepare_correction_backup(job, *, db_path=None) -> Path:
         history, ScrapedFileService(db_path=db_path), ConfigService(db_path=db_path),
         ScrapeJobService(db_path=db_path),
     )
-    listing = await files.list_files(job.correction_history_id)
+    listing = await files.list_files(job.correction_history_id, include_shared_metadata=True)
     paths = [job.file_path]
     paths.extend(
         item.path for item in listing.files
@@ -88,8 +90,11 @@ def _cleanup_expired(now: float) -> int:
         except (OSError, ValueError, KeyError, TypeError):
             continue  # Unknown content is never treated as owned disposable data.
         if expired:
-            shutil.rmtree(directory)
-            removed += 1
+            try:
+                shutil.rmtree(directory)
+                removed += 1
+            except OSError:
+                logger.exception("纠正备份清理失败: %s", directory)
     return removed
 
 

@@ -31,6 +31,7 @@ from fastapi import HTTPException
 
 from server.common.path_security import PathSecurityError, validate_media_path
 from server.models.storage import is_p115_virtual_path
+from server.infrastructure.file_journal import operation_kind
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,8 @@ class RescrapeSource:
             from server.infrastructure.file_operations import publish_file
             from server.models.organize import OrganizeMode
 
-            publish_file(original, staged, OrganizeMode.MOVE)
+            with operation_kind("stage"):
+                publish_file(original, staged, OrganizeMode.MOVE)
         except (OSError, PathSecurityError) as exc:
             # 让位失败不阻断重刮：最坏情况是整理步骤报「目标文件已存在」，
             # 用户能在错误信息里看到原因，文件本身没被改动

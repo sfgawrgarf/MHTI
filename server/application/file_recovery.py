@@ -1,0 +1,148 @@
+"""Reconcile durable file receipts before interrupted work can be queued again."""
+
+import asyncio
+import logging
+from datetime import datetime
+from pathlib import Path
+
+from server.application.file_io import run_file_io
+from server.common.path_security import validate_media_file_entry
+from server.infrastructure import file_journal as journal
+from server.models.history import HistoryConflictType, TaskStatus
+from server.models.scrape_job import ScrapeJobStatus
+
+logger = logging.getLogger(__name__)
+
+
+def _finish_move(record):
+    """Publication is committed; remove only the original entry we recorded."""
+    if record['mode'] != 'move' or record['source'] == record['destination']:
+        return
+    source = Path(record['source'])
+    if not source.exists() and not source.is_symlink():
+        return
+    if journal.signature(source) != record['source_signature']:
+        raise journal.RecoveryConflict(f'移动源文件已被其他任务修改: {source}')
+    validate_media_file_entry(str(source)).unlink()
+
+
+def _consume_stage(record, outputs):
+    staged = Path(record['destination'])
+    if staged.exists() or staged.is_symlink():
+        if not journal.owns_destination(record):
+            raise journal.RecoveryConflict(f'让位文件已被替换: {staged}')
+        # A symlink output may still depend on the staged entry. Restore its
+        # original name and retargeting is unsafe, so retain its journal too.
+        if any(Path(item['destination']).is_symlink() and Path(item['destination']).resolve() == staged.resolve() for item in outputs):
+            raise journal.RecoveryConflict(f'软链接产物仍依赖让位文件，请保留: {staged}')
+        staged.unlink()
+    journal.finish_record(record)
+
+
+async def _reconcile_job(service, job_id, records):
+    from server.application.history_service import HistoryService, build_record_folder_path
+    from server.application.scraped_file_service import ScrapedFileService
+
+    job = await service.get_job(job_id)
+    if job is None:
+        logger.warning('恢复记录对应的任务不存在，保留文件: %s', job_id)
+        return
+    history = HistoryService(db_path=service.db_path)
+    history_id = job.history_record_id or job.continuation_history_id
+    record = await history.get_record(history_id) if history_id else None
+    media = [item for item in records if item['kind'] == 'media']
+    stages = [item for item in records if item['kind'] == 'stage']
+    plans = [journal.MetadataPlan(item) for item in records if item['kind'] == 'metadata']
+    outputs = []
+    try:
+        for item in media:
+            if await run_file_io(journal.owns_destination, item):
+                outputs.append(item)
+            elif item['phase'] in {'published', 'complete'}:
+                raise journal.RecoveryConflict(f"已发布产物身份发生变化: {item['destination']}")
+        correcting = job.operation == 'rematch'
+        rollback = correcting and job.status not in {ScrapeJobStatus.SUCCESS, ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}
+        if outputs:
+            output = outputs[-1]
+            data = output.get('details') or {}
+            if record is None:
+                raise journal.RecoveryConflict('已发布产物缺少历史记录，保留恢复记录')
+            # Persist the actual path before deleting any staging information.
+            await history.update_record(
+                history_id, folder_path=build_record_folder_path(job.file_path, output['destination']),
+            )
+            await ScrapedFileService(db_path=service.db_path).register_output(
+                history_record_id=history_id,
+                source_path='' if job.continuation_history_id else job.file_path,
+                target_path=output['destination'], tmdb_id=data.get('tmdb_id') or job.correction_tmdb_id or record.tmdb_id,
+                title=data.get('title') or record.title,
+                season=data.get('season', record.season_number), episode=data.get('episode', record.episode_number),
+                replace_existing=True,
+            )
+        for plan in plans:
+            if any(item['destination'] == plan.record['destination'] for item in outputs) and not rollback:
+                await run_file_io(plan.commit)
+            else:
+                await run_file_io(plan.rollback)
+        if outputs:
+            if job.status in {ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}:
+                await history.update_record(history_id, status=TaskStatus.SUCCESS, error_message='',
+                                            tmdb_id=data.get('tmdb_id'), title=data.get('title'),
+                                            season_number=data.get('season'), episode_number=data.get('episode'))
+                if correcting:
+                    await service._repo.complete_correction(job_id)
+                else:
+                    await service.update_job(job_id, status=ScrapeJobStatus.SUCCESS, finished_at=datetime.now(), error_message='')
+            for item in outputs:
+                await run_file_io(_finish_move, item)
+            for stage in stages:
+                await run_file_io(_consume_stage, stage, outputs)
+        else:
+            for stage in stages:
+                await run_file_io(journal.restore_stage, stage)
+        for plan in plans:
+            if Path(plan.record['directory']).exists():
+                await run_file_io(plan.cleanup)
+        for item in media:
+            await run_file_io(journal.finish_record, item)
+    except Exception as exc:
+        logger.exception('文件操作恢复需要人工处理: %s', job_id)
+        message = f'文件操作恢复待处理，已保留文件与恢复记录: {exc}'
+        await service.update_job(job_id, status=ScrapeJobStatus.PENDING_ACTION,
+                                 finished_at=datetime.now(), error_message=message)
+        if record:
+            await history.update_record(history_id, status=TaskStatus.PENDING_ACTION,
+                                        error_message=message, conflict_type=HistoryConflictType.FILE_CONFLICT,
+                                        conflict_data={
+                                            'tmdb_id': job.correction_tmdb_id or record.tmdb_id,
+                                            'season': job.correction_season or record.season_number,
+                                            'episode': job.correction_episode or record.episode_number,
+                                            'output_dir': job.output_dir, 'metadata_dir': job.metadata_dir,
+                                            'link_mode': job.link_mode.value if job.link_mode else None,
+                                            'dest_path': outputs[-1]['destination'] if outputs else job.file_path,
+                                            'recovery_paths': [item.get('destination') for item in records],
+                                        })
+
+
+async def reconcile_file_operations(service, job_id=None):
+    records = await run_file_io(journal.read_records, job_id)
+    grouped = {}
+    for record in records:
+        if record.get('owner'):
+            grouped.setdefault(record['owner'], []).append(record)
+    for owner, items in grouped.items():
+        await _reconcile_job(service, owner, items)
+
+
+async def drain_recovery(service, job_id):
+    """Repeated cancellation must not abandon a committed file's DB receipt."""
+    task = asyncio.create_task(reconcile_file_operations(service, job_id))
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError

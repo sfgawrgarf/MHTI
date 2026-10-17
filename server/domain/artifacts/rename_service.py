@@ -133,6 +133,7 @@ class RenameService:
         request: RenameRequest,
         create_backup: bool = False,
         allow_staged_source: bool = False,
+        destination_override: Path | None = None,
     ) -> RenameResult:
         """Execute a rename operation.
 
@@ -204,8 +205,8 @@ class RenameService:
                 success=False,
                 error=str(exc),
             )
-        dest_path = Path(preview.dest_path)
-        dest_folder = Path(preview.dest_folder)
+        dest_path = Path(destination_override) if destination_override is not None else Path(preview.dest_path)
+        dest_folder = dest_path.parent
 
         if not is_p115_virtual_path(str(dest_path)):
             try:
@@ -236,7 +237,7 @@ class RenameService:
             # replace the target or select the next available filename.
             target_exists = dest_path.exists() or dest_path.is_symlink()
             if target_exists and dest_path != source_path:
-                if request.conflict_action == "rename":
+                if request.conflict_action == "rename" and destination_override is None:
                     dest_path = self._next_available_path(dest_path)
                     logger.info("目标文件已存在，使用重命名目标: %s", safe_log_value(dest_path))
                 elif request.conflict_action == "overwrite":
@@ -277,6 +278,9 @@ class RenameService:
                 backup_path=backup_path,
             )
 
+        except FileExistsError:
+            return RenameResult(source_path=str(source_path), dest_path=str(dest_path), success=False,
+                                error=f"Destination file already exists: {dest_path}")
         except PermissionError as e:
             logger.error("权限错误: %s", safe_log_value(e))
             return RenameResult(

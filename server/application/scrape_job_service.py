@@ -379,6 +379,8 @@ class ScrapeJobService:
     async def prepare_recovery(self) -> list[str]:
         """Reset interrupted work and return the durable pending queue."""
         await self._ensure_db()
+        from server.application.file_recovery import reconcile_file_operations
+        await reconcile_file_operations(self)
         return await self._repo.prepare_recovery()
 
     async def claim_job(self, job_id: str) -> bool:
@@ -752,8 +754,13 @@ async def _run_record_operation(service: ScrapeJobService, job: ScrapeJob) -> No
             finished_at=datetime.now(), error_message=message,
         )
         return
-    await service.update_job(job.id, status=ScrapeJobStatus.SUCCESS, finished_at=datetime.now())
-    await get_notifier().notify_completed(job.id, result)
+    if result.get("status") == "pending_action":
+        await service.update_job(job.id, status=ScrapeJobStatus.PENDING_ACTION,
+                                 finished_at=datetime.now(), error_message=result.get("message"))
+        await get_notifier().notify_need_action(job.id, result["conflict_type"], result["conflict_data"])
+    else:
+        await service.update_job(job.id, status=ScrapeJobStatus.SUCCESS, finished_at=datetime.now())
+        await get_notifier().notify_completed(job.id, result)
 
 
 async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
@@ -1222,6 +1229,20 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
 
 
 async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
+    from server.application.file_recovery import drain_recovery
+    from server.infrastructure.file_journal import owner
+
+    token = owner.set(job_id)
+    try:
+        await _execute_scrape_job_body(service, job_id)
+    finally:
+        try:
+            await drain_recovery(service, job_id)
+        finally:
+            owner.reset(token)
+
+
+async def _execute_scrape_job_body(service: ScrapeJobService, job_id: str) -> None:
     """Finalize cancellation and pre-finalization failures.
 
     The scraper body has its own result/timeout state machine.  This outer
