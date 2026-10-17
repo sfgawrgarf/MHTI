@@ -152,3 +152,73 @@ async def test_correction_backs_up_series_metadata_without_season_directory(reco
     directory = await correction_service.prepare_correction_backup(job, db_path=env.db)
     manifest = json.loads((directory / 'manifest.json').read_text())
     assert {str(path) for path in files} <= {item['source'] for item in manifest['files']}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('replacement', ['payload', 'directory', 'source'])
+async def test_partial_copy_recovery_preserves_unexpected_replacements(recovery_env, replacement):
+    env = recovery_env
+    job, _ = await running_job(env)
+    directory = env.output / '.mhti-publish-interrupted'
+    directory.mkdir(parents=True)
+    payload = directory / 'payload.tmp'
+    token = journal.owner.set(job.id)
+    try:
+        receipt = journal.begin_publish(env.source, env.output / 'published.mkv', OrganizeMode.COPY)
+        journal.stage_directory(receipt, directory)
+        journal.copy_started(receipt, payload)
+        payload.write_bytes(b'partial bytes')
+    finally:
+        journal.owner.reset(token)
+    if replacement == 'directory':
+        directory.rename(directory.with_name(directory.name + '-original'))
+        directory.mkdir()
+        payload.write_bytes(b'external file')
+    elif replacement == 'payload':
+        payload.rename(payload.with_name('original.tmp'))
+        # Keep the old inode alive but outside the owned staging directory.
+        (directory / 'original.tmp').rename(env.output / 'original.tmp')
+        payload.write_bytes(b'external file')
+    else:
+        env.source.unlink()
+    await env.jobs.prepare_recovery()
+    assert (await env.jobs.get_job(job.id)).status == ScrapeJobStatus.PENDING_ACTION
+    assert payload.read_bytes() == (b'partial bytes' if replacement == 'source' else b'external file')
+    assert journal.read_records(job.id)
+
+
+@pytest.mark.asyncio
+async def test_metadata_copy_process_loss_reclaims_partial_payload_and_resumes(recovery_env):
+    env = recovery_env
+    job, _ = await running_job(env)
+    target = env.output / 'Show' / 'Season 1' / '01.mkv'
+    token = journal.owner.set(job.id)
+    try:
+        plan = journal.MetadataPlan.create(target, None)
+        (plan.content / 'Show' / 'Season 1' / '01.nfo').write_text('complete metadata')
+        plan.prepare()
+        publish_file(env.source, target, OrganizeMode.MOVE)
+    finally:
+        journal.owner.reset(token)
+    script = '''
+import os, sys
+from pathlib import Path
+from server.infrastructure import file_journal, file_operations
+record = next(item for item in file_journal.read_records(sys.argv[1]) if item['kind'] == 'metadata')
+def partial_copy(source, destination, **kwargs):
+    Path(destination).write_bytes(b'partial metadata')
+    os._exit(32)
+file_operations.shutil.copy2 = partial_copy
+file_journal.MetadataPlan(record).commit()
+'''
+    child = await asyncio.to_thread(
+        subprocess.run, [sys.executable, '-c', script, job.id],
+        cwd=Path(__file__).resolve().parents[3], env=os.environ.copy(), capture_output=True, timeout=20,
+    )
+    assert child.returncode == 32, child.stderr.decode()
+    assert list(env.output.rglob('.mhti-publish-*'))
+    await env.jobs.prepare_recovery()
+    assert (await env.jobs.get_job(job.id)).status == ScrapeJobStatus.SUCCESS
+    assert target.with_suffix('.nfo').read_text() == 'complete metadata'
+    assert not list(env.output.rglob('.mhti-publish-*'))
+    assert journal.read_records(job.id) == []

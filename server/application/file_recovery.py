@@ -60,7 +60,7 @@ async def _reconcile_job(service, job_id, records):
                 outputs.append(item)
             elif item['phase'] in {'published', 'complete'}:
                 raise journal.RecoveryConflict(f"已发布产物身份发生变化: {item['destination']}")
-            elif item['phase'] == 'prepared':
+            elif item['phase'] in {'copying', 'prepared'}:
                 available = journal.signature(Path(item['source'])) == item['source_signature']
                 if not available:
                     # A failed retry may already have restored its staged input.
@@ -111,8 +111,7 @@ async def _reconcile_job(service, job_id, records):
             for stage in stages:
                 await run_file_io(journal.restore_stage, stage)
         for plan in plans:
-            if Path(plan.record['directory']).exists():
-                await run_file_io(plan.cleanup)
+            await run_file_io(plan.cleanup)
         for item in media:
             await run_file_io(journal.finish_record, item)
     except Exception as exc:

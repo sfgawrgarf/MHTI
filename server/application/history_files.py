@@ -179,80 +179,62 @@ class HistoryFileService:
 
         series_dir = metadata_root / series_name
         season_dir = series_dir / season_name
-        if not season_dir.is_dir():
-            return []
-
-        # 集专属：文件名以视频名打头（覆盖 <stem>.nfo / <stem>.jpg / <stem>-thumb.jpg 等）
-        episode_files = sorted(
-            path
-            for path in season_dir.iterdir()
-            if path.is_file()
-            and path.stem in {target.stem, f"{target.stem}-thumb"}
-            and path.suffix.lower() in _METADATA_SUFFIXES
-        )
-
+        episode_files = self._episode_metadata(target, season_dir)
         files = list(episode_files)
         if include_shared or self._is_single_episode_season(target, episode_files, season_dir):
-            files.extend(path for path in season_dir.iterdir() if path.is_file() and (
-                path.name == _SEASON_SHARED_NAME or (path.name.startswith('season') and path.name.endswith('-poster.jpg'))
-            ))
+            files.extend(self._season_metadata(season_dir))
         if include_shared or self._is_single_episode_series(target, series_dir):
-            files.extend(
-                series_dir / name
-                for name in sorted(_SERIES_SHARED_NAMES)
-                if (series_dir / name).is_file()
-            )
-            extras = series_dir / 'extrafanart'
-            if extras.is_dir() and not extras.is_symlink():
-                files.extend(path for path in extras.iterdir() if path.is_file() and path.suffix.lower() in _METADATA_SUFFIXES)
+            files.extend(self._series_metadata(series_dir))
+        return files
+
+    @staticmethod
+    def _episode_metadata(target: Path, season_dir: Path) -> list[Path]:
+        if not season_dir.is_dir():
+            return []
+        return sorted(path for path in season_dir.iterdir() if path.is_file()
+                      and path.stem in {target.stem, f"{target.stem}-thumb"}
+                      and path.suffix.lower() in _METADATA_SUFFIXES)
+
+    @staticmethod
+    def _season_metadata(season_dir: Path) -> list[Path]:
+        if not season_dir.is_dir():
+            return []
+        return sorted(path for path in season_dir.iterdir() if path.is_file() and (
+            path.name == _SEASON_SHARED_NAME or (path.name.startswith('season') and path.name.endswith('-poster.jpg'))
+        ))
+
+    @staticmethod
+    def _series_metadata(series_dir: Path) -> list[Path]:
+        files = [series_dir / name for name in sorted(_SERIES_SHARED_NAMES) if (series_dir / name).is_file()]
+        extras = series_dir / 'extrafanart'
+        if extras.is_dir() and not extras.is_symlink():
+            files.extend(path for path in sorted(extras.iterdir()) if path.is_file() and path.suffix.lower() in _METADATA_SUFFIXES)
         return files
 
     def _is_single_episode_season(
         self, target: Path, episode_files: list[Path], metadata_season_dir: Path
     ) -> bool:
-        """本季是否只剩这一集（决定 season.nfo 能否一起删）。
-
-        产物侧与元数据侧都要看：视频可能在别处，但元数据目录里还留着别的集的 nfo/图片。
-        """
-        metadata_own = {path.name for path in episode_files} | {_SEASON_SHARED_NAME}
-        metadata_own.update(path.name for path in metadata_season_dir.glob('season*-poster.jpg'))
-        product_ignore = {target.name} | (metadata_own if target.parent == metadata_season_dir else set())
-        if self._has_other_files(target.parent, product_ignore, recursive=False):
-            return False
-        if target.parent == metadata_season_dir:
-            metadata_own.add(target.name)
-        return not self._has_other_files(metadata_season_dir, metadata_own, recursive=False)
+        """Exclude only this episode's paths, plus known shared season files."""
+        ignored = {target, *episode_files, *self._season_metadata(metadata_season_dir)}
+        return not (self._has_other_files(target.parent, ignored, recursive=False)
+                    or self._has_other_files(metadata_season_dir, ignored, recursive=False))
 
     def _is_single_episode_series(self, target: Path, metadata_series_dir: Path) -> bool:
-        """本系列是否只剩这一集（决定 tvshow.nfo / poster / backdrop 能否一起删）。"""
-        metadata_season_names = {
-            path.name
-            for season in metadata_series_dir.iterdir()
-            if season.is_dir()
-            for path in season.iterdir()
-            if path.is_file() and (path.stem in {target.stem, f"{target.stem}-thumb"}
-                                   or (path.name.startswith('season') and path.name.endswith('-poster.jpg')))
-        }
-        extras = metadata_series_dir / 'extrafanart'
-        extra_names = {path.name for path in extras.iterdir() if path.is_file()} if extras.is_dir() else set()
-        skip = _SERIES_SHARED_NAMES | {_SEASON_SHARED_NAME} | metadata_season_names | extra_names
-        product_ignore = {target.name} | (skip if target.parent.parent == metadata_series_dir else set())
-        if self._has_other_files(target.parent.parent, product_ignore, recursive=True):
-            return False
-        if target.parent.parent == metadata_series_dir:
-            skip.add(target.name)
-        return not self._has_other_files(metadata_series_dir, skip, recursive=True)
+        """Same basenames in other seasons still count as other episodes."""
+        ignored = {target, *self._episode_metadata(target, metadata_series_dir / target.parent.name),
+                   *self._series_metadata(metadata_series_dir)}
+        if metadata_series_dir.is_dir():
+            for season in metadata_series_dir.iterdir():
+                if season.is_dir() and not season.is_symlink():
+                    ignored.update(self._season_metadata(season))
+        return not (self._has_other_files(target.parent.parent, ignored, recursive=True)
+                    or self._has_other_files(metadata_series_dir, ignored, recursive=True))
 
-    def _has_other_files(self, folder: Path, ignore_names: set[str], *, recursive: bool) -> bool:
-        """目录里除 ignore_names 与系统垃圾文件外，是否还有别的文件。"""
+    def _has_other_files(self, folder: Path, ignored: set[Path], *, recursive: bool) -> bool:
         if not folder.is_dir():
             return False
         walker = folder.rglob("*") if recursive else folder.iterdir()
-        for path in walker:
-            if not path.is_file() or path.name in _JUNK_NAMES or path.name in ignore_names:
-                continue
-            return True
-        return False
+        return any(path.is_file() and path.name not in _JUNK_NAMES and path not in ignored for path in walker)
 
     def _append(
         self,
