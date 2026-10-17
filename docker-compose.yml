@@ -15,7 +15,7 @@
 
 services:
   mhti:
-    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.1.7}
+    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.1.8}
     container_name: mhti
     restart: unless-stopped
 
