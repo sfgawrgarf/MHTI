@@ -28,7 +28,7 @@ async def test_delete_episode_keeps_other_season_with_identical_filename(recover
     env = recovery_env
     metadata = env.output if colocated else env.metadata
     await env.config.save_organize_config(OrganizeConfig(
-        organize_dir=str(env.output), metadata_dir=None if colocated else str(metadata),
+        organize_dir=str(env.output), metadata_dir='' if colocated else str(metadata),
     ))
     target = env.output / 'Show' / 'Season 1' / '01.mkv'
     other = env.output / 'Show' / 'Season 2' / '01.mkv'
