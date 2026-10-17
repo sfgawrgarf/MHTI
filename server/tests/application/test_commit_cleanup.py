@@ -17,7 +17,7 @@ from server.models.organize import OrganizeMode
 from server.models.scrape_job import ScrapeJobStatus
 
 
-async def committed_correction(env):
+async def committed_correction(env, *, complete=True):
     old, old_record = await running_job(env)
     await env.jobs.update_job(old.id, status=ScrapeJobStatus.SUCCESS)
     await env.history.update_record(old_record.id, status=TaskStatus.SUCCESS)
@@ -36,8 +36,9 @@ async def committed_correction(env):
         plan.commit()
     finally:
         journal.owner.reset(token)
-    await env.history.update_record(record.id, status=TaskStatus.SUCCESS)
-    await env.jobs._repo.complete_correction(job.id)
+    if complete:
+        await env.history.update_record(record.id, status=TaskStatus.SUCCESS)
+        await env.jobs._repo.complete_correction(job.id)
     return old, old_record, job, record, target, plan
 
 
@@ -124,4 +125,69 @@ async def test_other_worker_removing_receipt_does_not_lose_cancelled_move_path(r
     assert str(target) in updated.folder_path
     assert updated.status == TaskStatus.CANCELLED
     assert target.read_bytes() == b'original video'
+    assert journal.read_records(job.id) == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_database_recovers_committed_correction_after_cleanup_error(recovery_env):
+    import aiosqlite
+    from server.application.scrape_job_service import ScrapeJobService
+    env = recovery_env
+    _, old_record, job, record, target, _ = await committed_correction(env)
+    async with aiosqlite.connect(env.db) as db:
+        await db.execute("UPDATE scrape_jobs SET status = 'pending_action' WHERE id = ?", (job.id,))
+        await db.execute("UPDATE history_records SET status = 'pending_action' WHERE id = ?", (record.id,))
+        for column in ['output_committed_at', 'cleanup_completed_at', 'cleanup_error']:
+            await db.execute(f'ALTER TABLE scrape_jobs DROP COLUMN {column}')
+        await db.commit()
+    restarted = ScrapeJobService(db_path=env.db)
+    await restarted.prepare_recovery()
+    recovered = await restarted.get_job(job.id)
+    assert recovered.output_committed_at is not None
+    assert recovered.cleanup_completed_at is not None
+    assert recovered.status == ScrapeJobStatus.SUCCESS
+    assert target.with_suffix('.nfo').read_text() == 'correct metadata'
+    assert (await env.history.get_record(old_record.id)).status == TaskStatus.REPLACED
+
+
+@pytest.mark.parametrize('failure', ['invalid_json', 'permission'])
+def test_receipt_read_still_reports_corruption_and_permission_errors(tmp_path, monkeypatch, failure):
+    import json
+    record = journal.new_record('media', source='unused', destination='unused')
+    path = journal.root() / f"{record['id']}.json"
+    if failure == 'invalid_json':
+        path.write_text('{broken')
+        with pytest.raises(json.JSONDecodeError):
+            journal.read_records()
+    else:
+        original = Path.read_text
+        def denied(selected, *args, **kwargs):
+            if selected == path:
+                raise PermissionError('not readable')
+            return original(selected, *args, **kwargs)
+        monkeypatch.setattr(Path, 'read_text', denied)
+        with pytest.raises(PermissionError):
+            journal.read_records()
+    assert path.exists()
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_correction_still_rolls_back_with_independent_cleanup(recovery_env, monkeypatch):
+    env = recovery_env
+    # Publish metadata without completing the correction transaction.
+    _, old_record, job, record, target, _ = await committed_correction(env, complete=False)
+    await env.jobs.update_job(job.id, status=ScrapeJobStatus.CANCELLED)
+    await env.history.update_record(record.id, status=TaskStatus.CANCELLED)
+    cleanup = journal.MetadataPlan.cleanup
+    monkeypatch.setattr(journal.MetadataPlan, 'cleanup', lambda _: (_ for _ in ()).throw(PermissionError('cleanup denied')))
+    await reconcile_file_operations(env.jobs, job.id)
+    assert target.with_suffix('.nfo').read_text() == 'old metadata'
+    after = await env.jobs.get_job(job.id)
+    assert after.status == ScrapeJobStatus.CANCELLED and after.output_committed_at is None
+    assert after.cleanup_error
+    assert (await env.history.get_record(old_record.id)).status == TaskStatus.SUCCESS
+    monkeypatch.setattr(journal.MetadataPlan, 'cleanup', cleanup)
+    await env.jobs.prepare_recovery()
+    assert target.with_suffix('.nfo').read_text() == 'old metadata'
+    assert (await env.jobs.get_job(job.id)).status == ScrapeJobStatus.CANCELLED
     assert journal.read_records(job.id) == []
