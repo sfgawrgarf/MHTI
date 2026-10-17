@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
@@ -69,6 +70,7 @@ class ScrapeJob(BaseModel):
     file_action: str | None = None
     selection_log: str | None = None
     skip_emby_check: bool = False
+    operation: Literal["scrape", "retry", "reorganize", "rematch"] = "scrape"
 
 
 class ScrapeJobCreate(BaseModel):
@@ -94,6 +96,7 @@ class ScrapeJobCreate(BaseModel):
     file_action: str | None = None
     selection_log: str | None = None
     skip_emby_check: bool = False
+    operation: Literal["scrape", "retry", "reorganize", "rematch"] = "scrape"
 
     @model_validator(mode="after")
     def validate_storage_selection(self) -> "ScrapeJobCreate":

@@ -318,6 +318,7 @@ class ScrapeJobService:
             file_action=job.file_action,
             selection_log=job.selection_log,
             skip_emby_check=job.skip_emby_check,
+            operation=job.operation,
             status=ScrapeJobStatus.PENDING,
             created_at=now,
         )
@@ -362,6 +363,7 @@ class ScrapeJobService:
                 file_action=job.file_action,
                 selection_log=job.selection_log,
                 skip_emby_check=job.skip_emby_check,
+                operation=job.operation,
             ),
             skip_duplicate_check=True,
         )
@@ -522,25 +524,15 @@ class ScrapeJobService:
 
     async def cancel_jobs_by_source(self, source_id: int) -> int:
         """Cancel all unfinished scrape children dispatched by a manual job."""
-        jobs, _ = await self.list_jobs(
-            limit=500,
-            offset=0,
-            source=ScrapeJobSource.MANUAL,
-            source_id=source_id,
-        )
-        active = [
-            job for job in jobs
-            if job.status in {
-                ScrapeJobStatus.PENDING,
-                ScrapeJobStatus.RUNNING,
-                ScrapeJobStatus.PENDING_ACTION,
-            }
-        ]
-        _discard_queued_job_ids({job.id for job in active})
-        results = await asyncio.gather(
-            *(self.cancel_job(job.id) for job in active),
-            return_exceptions=True,
-        )
+        await self._ensure_db()
+        active_ids = await self._repo.get_active_ids_by_source(source_id)
+        _discard_queued_job_ids(set(active_ids))
+        results = []
+        for start in range(0, len(active_ids), 20):
+            results.extend(await asyncio.gather(
+                *(self.cancel_job(job_id) for job_id in active_ids[start:start + 20]),
+                return_exceptions=True,
+            ))
         count = 0
         for result in results:
             if isinstance(result, tuple):
@@ -609,6 +601,7 @@ class ScrapeJobService:
             file_action=row["file_action"] if "file_action" in row.keys() else None,
             selection_log=row["selection_log"] if "selection_log" in row.keys() else None,
             skip_emby_check=bool(row["skip_emby_check"]) if "skip_emby_check" in row.keys() else False,
+            operation=row["operation"] if "operation" in row.keys() else "scrape",
         )
 
 
@@ -700,6 +693,69 @@ async def _scrape_worker() -> None:
                 _scrape_queue.task_done()
 
 
+async def _run_record_operation(service: ScrapeJobService, job: ScrapeJob) -> None:
+    """Run history work inside the same cancellable, bounded durable worker."""
+    from server.application.history_actions import HistoryScrapeActions
+    from server.application.history_files import HistoryFileService
+    from server.application.history_service import HistoryService
+    from server.application.scraped_file_service import ScrapedFileService
+    from server.domain.system.config_service import ConfigService
+    from server.models.history import TaskStatus
+    from server.models.scraper import ScrapeByIdRequest
+
+    record_id = job.continuation_history_id
+    if not record_id:
+        raise ValueError("记录级任务缺少历史记录 ID")
+    history = HistoryService(db_path=service.db_path)
+    files = ScrapedFileService(db_path=service.db_path)
+    config = ConfigService(db_path=service.db_path)
+    actions = HistoryScrapeActions(
+        history, service, files,
+        HistoryFileService(history, files, config, service),
+    )
+    await service.update_job(job.id, history_record_id=record_id)
+    timeout = (await config.get_system_config()).task_timeout
+    started = datetime.now()
+    if job.operation == "reorganize":
+        call = actions.reorganize_from_metadata(record_id, claimed=True)
+    else:
+        request = ScrapeByIdRequest(
+            file_path=job.file_path,
+            tmdb_id=job.correction_tmdb_id,
+            season=job.correction_season or 0,
+            episode=job.correction_episode or 0,
+            output_dir=job.output_dir,
+            metadata_dir=job.metadata_dir,
+            file_locator=job.file_locator,
+            output_locator=job.output_locator,
+            metadata_locator=job.metadata_locator,
+            allow_local_output=job.allow_local_output,
+            link_mode=job.link_mode,
+            advanced_settings=job.advanced_settings,
+            file_action=job.file_action,
+            skip_emby_check=job.skip_emby_check,
+        )
+        call = actions.execute_scrape_and_update(
+            record_id, request, job.selection_log, resolve_input=True,
+        )
+    try:
+        result = await asyncio.wait_for(call, timeout=timeout)
+    except asyncio.TimeoutError:
+        message = f"记录处理超时（超过 {timeout} 秒）"
+        await history.update_record(
+            record_id, status=TaskStatus.TIMEOUT, error_message=message,
+            timeout_seconds=timeout,
+            duration_seconds=(datetime.now() - started).total_seconds(),
+        )
+        await service.update_job(
+            job.id, status=ScrapeJobStatus.TIMEOUT,
+            finished_at=datetime.now(), error_message=message,
+        )
+        return
+    await service.update_job(job.id, status=ScrapeJobStatus.SUCCESS, finished_at=datetime.now())
+    await get_notifier().notify_completed(job.id, result)
+
+
 async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     """执行一个已经被原子领取的刮削任务。"""
     from server.bootstrap import get_scraper_service
@@ -723,6 +779,10 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     job = await service.get_job(job_id)
     if job is None:
         logger.error(f"ScrapeJob {job_id} not found")
+        return
+
+    if getattr(job, "operation", "scrape") in {"retry", "reorganize"}:
+        await _run_record_operation(service, job)
         return
 
     logger.info(f"Starting scrape job {job_id}: {job.file_path}")
@@ -840,7 +900,7 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 output_locator=job.output_locator,
                 metadata_locator=job.metadata_locator,
                 allow_local_output=job.allow_local_output,
-                link_mode=job.link_mode,
+                link_mode=OrganizeMode.COPY if getattr(job, "operation", "scrape") == "rematch" else job.link_mode,
                 skip_emby_check=job.skip_emby_check,
                 file_action=job.file_action,
                 advanced_settings=job.advanced_settings,
@@ -869,6 +929,19 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 on_log_update=on_log_update,
                 on_match_resolved=on_match_resolved,
             )
+        if getattr(job, "operation", "scrape") == "rematch":
+            original_call = scrape_call
+
+            async def backed_up_call():
+                from server.application.correction_service import prepare_correction_backup
+                try:
+                    await prepare_correction_backup(job, db_path=service.db_path)
+                except BaseException:
+                    original_call.close()
+                    raise
+                return await original_call
+
+            scrape_call = backed_up_call()
         # 使用超时控制
         result = await asyncio.wait_for(
             scrape_call,
@@ -916,17 +989,21 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
             except Exception as exc:  # noqa: BLE001 - 登记是附带动作，不能拖垮刮削结果
                 logger.warning(f"登记刮削产物失败 {record_id}: {exc}")
 
-            await service.update_job(
-                job_id,
-                status=ScrapeJobStatus.SUCCESS,
-                finished_at=datetime.now(),
-            )
-            # 发送完成通知
-            await notifier.notify_completed(job_id, {
-                "status": "success",
-                "file_path": job.file_path,
-                "dest_path": result.dest_path,
-            })
+            if getattr(job, "operation", "scrape") == "rematch":
+                await service._repo.complete_correction(job_id)
+            else:
+                await service.update_job(
+                    job_id, status=ScrapeJobStatus.SUCCESS, finished_at=datetime.now(),
+                )
+            # A notification failure cannot undo an already published output.
+            try:
+                await notifier.notify_completed(job_id, {
+                    "status": "success",
+                    "file_path": job.file_path,
+                    "dest_path": result.dest_path,
+                })
+            except Exception:
+                logger.exception("媒体已发布，完成通知失败: %s", job_id)
         elif result.status == ScrapeStatus.NEED_SELECTION:
             # 需要用户选择
             conflict_data = {

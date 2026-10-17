@@ -111,9 +111,11 @@ class RenameService:
             will_create_dirs=will_create_dirs,
         )
 
-    def resolve_destination_path(self, request: RenameRequest) -> Path:
+    def resolve_destination_path(
+        self, request: RenameRequest, *, allow_staged_source: bool = False,
+    ) -> Path:
         """Resolve the final local destination without publishing the media."""
-        preview = self.preview_rename(request)
+        preview = self.preview_rename(request, allow_staged_source=allow_staged_source)
         source_path = Path(request.source_path)
         dest_path = Path(preview.dest_path)
         if (

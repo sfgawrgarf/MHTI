@@ -146,6 +146,7 @@ class MediaIdentityService:
                 "(source_fingerprint, identity_key, source_path, target_path, "
                 "quality_score, quality_labels) VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(source_fingerprint) DO UPDATE SET "
+                "identity_key=excluded.identity_key, source_path=excluded.source_path, "
                 "target_path=excluded.target_path, quality_score=excluded.quality_score, "
                 "quality_labels=excluded.quality_labels",
                 (

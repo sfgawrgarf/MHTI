@@ -690,3 +690,17 @@ async def test_execute_scrape_and_update_restores_product_when_scrape_fails(env,
     failed = await env["history"].get_record(record.id)
     assert failed.status == TaskStatus.FAILED
     assert failed.error_message == "TMDB 连接失败"
+
+
+@pytest.mark.asyncio
+async def test_stage_never_overwrites_previous_interrupted_staging_file(env):
+    record = await _make_record(env, f"{env['source_file']} => {env['target_file']}")
+    env['source_file'].unlink()
+    stale = env['target_file'].with_name(f"{env['target_file'].stem}.mhti-rescrape{env['target_file'].suffix}")
+    stale.write_bytes(b'previous recovery copy')
+    resolver = _resolver(env)
+    staged = await resolver.stage(await resolver.resolve(record))
+    assert Path(staged.path) != stale
+    assert stale.read_bytes() == b'previous recovery copy'
+    await resolver.release(staged, dest_path=None, success=False)
+    assert env['target_file'].read_bytes() == b'organized-bytes'

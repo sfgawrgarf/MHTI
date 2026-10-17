@@ -16,6 +16,7 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
     SKIPPED = "skipped"
     DELETED = "deleted"  # 已删除（保留历史记录，允许后续追溯）
+    REPLACED = "replaced"  # 成功纠正后由新记录替代
     PENDING_ACTION = "pending_action"  # 待处理（需要用户手动处理）
     RUNNING = "running"  # 正在处理中
 

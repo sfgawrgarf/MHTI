@@ -4,6 +4,7 @@
 """
 
 from datetime import date, datetime
+import asyncio
 import logging
 from pathlib import Path
 
@@ -271,6 +272,13 @@ class HistoryScrapeActions:
         if record.status == TaskStatus.RUNNING:
             raise HTTPException(status_code=409, detail="该记录正在处理中，请稍后再试")
 
+        old_job = (await self._scrape_job_service.get_job(record.scrape_job_id)
+                   if record.scrape_job_id else None)
+        correcting = getattr(old_job, "operation", None) == "rematch"
+        if correcting:
+            scrape_request.file_path = old_job.file_path
+            from server.models.organize import OrganizeMode
+            scrape_request.link_mode = OrganizeMode.COPY
         locators = await self.restore_locators(record)
         output_dir = scrape_request.output_dir or str(Path(scrape_request.file_path).parent)
         job = await self._scrape_job_service.create_job(
@@ -290,7 +298,9 @@ class HistoryScrapeActions:
                 source=ScrapeJobSource.MANUAL,
                 source_id=record.manual_job_id,
                 advanced_settings=getattr(scrape_request, "advanced_settings", None),
-                replaces_job_id=record.scrape_job_id,
+                replaces_job_id=old_job.replaces_job_id if correcting else record.scrape_job_id,
+                operation="rematch" if correcting else "scrape",
+                correction_history_id=old_job.correction_history_id if correcting else None,
                 continuation_history_id=record.id,
                 correction_tmdb_id=scrape_request.tmdb_id,
                 correction_season=scrape_request.season,
@@ -347,6 +357,75 @@ class HistoryScrapeActions:
                 )
         return {"success": True, "message": "已跳过"}
 
+    async def queue_record_operation(
+        self, record_id: str, scrape_request=None, *, operation: str = "retry",
+        selection_log: str | None = None,
+    ) -> dict:
+        """Reserve the history row and persist work before any file mutation."""
+        from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
+
+        record = await self._history_service.get_record(record_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        if record.status == TaskStatus.RUNNING:
+            raise HTTPException(status_code=409, detail="该记录已在处理或排队中")
+        locators = await self.restore_locators(record)
+        input_ = await self._resolver().resolve(record, remote=bool(locators.get("file_locator")))
+        old_job = (
+            await self._scrape_job_service.get_job(record.scrape_job_id)
+            if record.scrape_job_id else None
+        )
+        if scrape_request is None:
+            files = await self._scraped_file_service.list_by_history_record(record_id)
+            tmdb_id = record.tmdb_id or next((item.tmdb_id for item in files if item.tmdb_id), None)
+            tmdb_id = tmdb_id or (record.conflict_data or {}).get("tmdb_id")
+            if not tmdb_id or not record.title or record.season_number is None or record.episode_number is None:
+                raise HTTPException(status_code=400, detail="记录缺少已存的标题或季集信息，请改用按 TMDB ID 重刮")
+            scrape_request = ScrapeByIdRequest(
+                file_path=input_.path,
+                tmdb_id=tmdb_id,
+                season=record.season_number,
+                episode=record.episode_number,
+                output_dir=getattr(old_job, "output_dir", None),
+                metadata_dir=getattr(old_job, "metadata_dir", None),
+                link_mode=getattr(old_job, "link_mode", None),
+                **locators,
+            )
+        await self.fill_organize_params(record, scrape_request)
+        correcting = getattr(old_job, "operation", None) == "rematch"
+        if correcting:
+            from server.models.organize import OrganizeMode
+            scrape_request.link_mode = OrganizeMode.COPY
+        job = await self._scrape_job_service.create_job(
+            ScrapeJobCreate(
+                file_path=input_.path,
+                output_dir=scrape_request.output_dir or str(Path(input_.path).parent),
+                metadata_dir=scrape_request.metadata_dir,
+                link_mode=scrape_request.link_mode,
+                file_locator=locators.get("file_locator"),
+                output_locator=locators.get("output_locator"),
+                metadata_locator=locators.get("metadata_locator"),
+                allow_local_output=bool(locators.get("allow_local_output")),
+                advanced_settings=scrape_request.advanced_settings or getattr(old_job, "advanced_settings", None),
+                source=ScrapeJobSource.MANUAL,
+                source_id=record.manual_job_id,
+                replaces_job_id=old_job.replaces_job_id if correcting else record.scrape_job_id,
+                correction_history_id=old_job.correction_history_id if correcting else None,
+                continuation_history_id=record_id,
+                correction_tmdb_id=scrape_request.tmdb_id,
+                correction_season=scrape_request.season,
+                correction_episode=scrape_request.episode,
+                operation="rematch" if correcting else operation,
+                selection_log=selection_log,
+                skip_emby_check=scrape_request.skip_emby_check,
+                file_action=scrape_request.file_action,
+            ),
+            skip_duplicate_check=True,
+        )
+        if job is None:
+            raise HTTPException(status_code=409, detail="该记录或文件已在处理中，请勿重复提交")
+        return {"success": True, "queued": True, "job_id": job.id, "message": "已加入队列，请在记录页查看结果"}
+
     async def execute_scrape_and_update(
         self,
         record_id: str,
@@ -376,72 +455,74 @@ class HistoryScrapeActions:
         # 不能先把状态改成运行中再失败
         prepared: RescrapeInput | None = None
         registration_source: str | None = None
-        if resolve_input and record is not None:
-            remote = bool(getattr(scrape_request, "file_locator", None))
-            await self.fill_organize_params(record, scrape_request)
-            prepared, prepared_steps, registration_source = await self.prepare_input(record, remote=remote)
-            scrape_request.file_path = prepared.path
-            existing_logs.extend(prepared_steps)
-            await history_service.update_scrape_logs(record_id, existing_logs)
-
-        # 如果有用户选择日志，添加到原有日志后
-        if user_selection_log:
-            user_log = ScrapeLogStep(
-                name="用户手动选择",
-                completed=True,
-                logs=[ScrapeLogEntry(message=user_selection_log)],
-            )
-            existing_logs.append(user_log)
-            await history_service.update_scrape_logs(record_id, existing_logs)
-
-        # 创建日志回调
-        async def on_log_update(logs):
-            # 将新日志追加到原有日志后
-            combined_logs = existing_logs + logs
-            await history_service.update_scrape_logs(record_id, combined_logs)
-
-        # 先落 running：列表与详情页据此实时显示「正在处理」——重刮/处理都要跑几十秒；
-        # started_at 取当下（记录可能创建于几天前，executed_at 不能当本次开始时间用）
-        run_started_at = datetime.now()
-        await history_service.update_record(
-            record_id,
-            status=TaskStatus.RUNNING,
-            error_message="",
-            started_at=run_started_at,
-            # 记下本次使用的匹配：用户换过 ID/季/集时记录跟着更新，
-            # 下次重试的预填不会又拿出旧 ID
-            tmdb_id=scrape_request.tmdb_id,
-            season_number=scrape_request.season,
-            episode_number=scrape_request.episode,
-        )
-
         try:
-            result = await scraper.scrape_by_id(scrape_request, on_log_update=on_log_update)
-        except HTTPException:
-            await self._release_input(prepared, dest_path=None, success=False)
-            raise
-        except Exception as exc:
-            # 任何未预期的异常都要落 failed，否则记录会永远停在 running，
-            # 而 running 状态在本服务里是禁止再加工的
+            if resolve_input and record is not None:
+                remote = bool(getattr(scrape_request, "file_locator", None))
+                await self.fill_organize_params(record, scrape_request)
+                prepared, prepared_steps, registration_source = await self.prepare_input(record, remote=remote)
+                scrape_request.file_path = prepared.path
+                existing_logs.extend(prepared_steps)
+                await history_service.update_scrape_logs(record_id, existing_logs)
+
+            # 如果有用户选择日志，添加到原有日志后
+            if user_selection_log:
+                user_log = ScrapeLogStep(
+                    name="用户手动选择",
+                    completed=True,
+                    logs=[ScrapeLogEntry(message=user_selection_log)],
+                )
+                existing_logs.append(user_log)
+                await history_service.update_scrape_logs(record_id, existing_logs)
+
+            # 创建日志回调
+            async def on_log_update(logs):
+                # 将新日志追加到原有日志后
+                combined_logs = existing_logs + logs
+                await history_service.update_scrape_logs(record_id, combined_logs)
+
+            # 先落 running：列表与详情页据此实时显示「正在处理」——重刮/处理都要跑几十秒；
+            # started_at 取当下（记录可能创建于几天前，executed_at 不能当本次开始时间用）
+            run_started_at = datetime.now()
             await history_service.update_record(
                 record_id,
-                status=TaskStatus.FAILED,
-                error_message=str(exc),
-                duration_seconds=(datetime.now() - run_started_at).total_seconds(),
+                status=TaskStatus.RUNNING,
+                error_message="",
+                started_at=run_started_at,
+                # 记下本次使用的匹配：用户换过 ID/季/集时记录跟着更新，
+                # 下次重试的预填不会又拿出旧 ID
+                tmdb_id=scrape_request.tmdb_id,
+                season_number=scrape_request.season,
+                episode_number=scrape_request.episode,
             )
+
+            try:
+                result = await scraper.scrape_by_id(scrape_request, on_log_update=on_log_update)
+            except (asyncio.CancelledError, HTTPException):
+                raise
+            except Exception as exc:
+                # 任何未预期的异常都要落 failed，否则记录会永远停在 running，
+                # 而 running 状态在本服务里是禁止再加工的
+                await history_service.update_record(
+                    record_id,
+                    status=TaskStatus.FAILED,
+                    error_message=str(exc),
+                    duration_seconds=(datetime.now() - run_started_at).total_seconds(),
+                )
+                raise
+
+            return await self._finalize_prepared(
+                record_id=record_id,
+                result=result,
+                prepared=prepared,
+                manual_job_id=manual_job_id,
+                duration_seconds=(datetime.now() - run_started_at).total_seconds(),
+                registration_source=registration_source,
+            )
+        except BaseException:
             await self._release_input(prepared, dest_path=None, success=False)
             raise
 
-        return await self._finalize_prepared(
-            record_id=record_id,
-            result=result,
-            prepared=prepared,
-            manual_job_id=manual_job_id,
-            duration_seconds=(datetime.now() - run_started_at).total_seconds(),
-            registration_source=registration_source,
-        )
-
-    async def reorganize_from_metadata(self, record_id: str) -> dict:
+    async def reorganize_from_metadata(self, record_id: str, *, claimed: bool = False) -> dict:
         """用已存元数据重跑整理（命名/移动/NFO/图片），全程不请求 TMDB。
 
         与重刮的分工：重新整理用于「配置改了、目标被删了、上次整理结果不对」；
@@ -455,7 +536,7 @@ class HistoryScrapeActions:
         if record is None:
             raise HTTPException(status_code=404, detail="记录不存在")
 
-        if record.status == TaskStatus.RUNNING:
+        if record.status == TaskStatus.RUNNING and not claimed:
             raise HTTPException(status_code=400, detail="该记录正在处理中，请稍后再试")
 
         season_num = record.season_number
@@ -468,7 +549,7 @@ class HistoryScrapeActions:
 
         # 源文件路径与 TMDB ID 都取自登记表，缺失时退回记录自身
         files = await self._scraped_file_service.list_by_history_record(record_id)
-        tmdb_id = next((item.tmdb_id for item in files if item.tmdb_id), None)
+        tmdb_id = record.tmdb_id or next((item.tmdb_id for item in files if item.tmdb_id), None)
         if tmdb_id is None and record.conflict_data:
             tmdb_id = record.conflict_data.get("tmdb_id")
         if tmdb_id is None:
@@ -480,73 +561,77 @@ class HistoryScrapeActions:
         locators = await self.restore_locators(record)
         # 输入与重刮同一套规则：源文件优先、源文件没了就用产物（顺带清旧产物，
         # 否则整理步骤会撞上「目标文件已存在」）
-        prepared, prepared_steps, registration_source = await self.prepare_input(
-            record, remote=bool(locators.get("file_locator"))
-        )
-
-        series, season_info = rebuild_metadata(
-            record, tmdb_id=tmdb_id, season_num=season_num, episode_num=episode_num
-        )
-
-        conflict_data = record.conflict_data or {}
-        link_mode_value = conflict_data.get("link_mode")
-        from server.models.organize import OrganizeMode
-
-        scrape_request = ScrapeByIdRequest(
-            file_path=prepared.path,
-            tmdb_id=tmdb_id,
-            season=season_num,
-            episode=episode_num,
-            output_dir=conflict_data.get("output_dir"),
-            metadata_dir=conflict_data.get("metadata_dir"),
-            link_mode=OrganizeMode(link_mode_value) if link_mode_value else None,
-            **locators,
-        )
-        # 重新整理同样要补齐输出目录：缺了会改成「原地重命名」
-        await self.fill_organize_params(record, scrape_request)
-
-        existing_logs = list(record.scrape_logs or [])
-        existing_logs.extend(prepared_steps)
-        user_log = ScrapeLogStep(
-            name="重新整理",
-            completed=True,
-            logs=[ScrapeLogEntry(message="用户触发重新整理（使用已存元数据）")],
-        )
-        existing_logs.append(user_log)
-        await history_service.update_scrape_logs(record_id, existing_logs)
-
-        # 先落 running 状态：列表与详情页据此实时显示「正在重新整理」
-        run_started_at = datetime.now()
-        await history_service.update_record(
-            record_id,
-            status=TaskStatus.RUNNING,
-            error_message="",
-            started_at=run_started_at,
-        )
-
-        async def on_log_update(logs):
-            await history_service.update_scrape_logs(record_id, existing_logs + logs)
-
-        scraper = get_scraper_service()
+        prepared = None
         try:
-            result = await scraper.reorganize_with_metadata(
-                scrape_request,
-                series=series,
-                season_info=season_info,
-                on_log_update=on_log_update,
+            prepared, prepared_steps, registration_source = await self.prepare_input(
+                record, remote=bool(locators.get("file_locator"))
             )
-        except Exception:
+
+            series, season_info = rebuild_metadata(
+                record, tmdb_id=tmdb_id, season_num=season_num, episode_num=episode_num
+            )
+
+            conflict_data = record.conflict_data or {}
+            link_mode_value = conflict_data.get("link_mode")
+            from server.models.organize import OrganizeMode
+
+            scrape_request = ScrapeByIdRequest(
+                file_path=prepared.path,
+                tmdb_id=tmdb_id,
+                season=season_num,
+                episode=episode_num,
+                output_dir=conflict_data.get("output_dir"),
+                metadata_dir=conflict_data.get("metadata_dir"),
+                link_mode=OrganizeMode(link_mode_value) if link_mode_value else None,
+                **locators,
+            )
+            # 重新整理同样要补齐输出目录：缺了会改成「原地重命名」
+            await self.fill_organize_params(record, scrape_request)
+
+            existing_logs = list(record.scrape_logs or [])
+            existing_logs.extend(prepared_steps)
+            user_log = ScrapeLogStep(
+                name="重新整理",
+                completed=True,
+                logs=[ScrapeLogEntry(message="用户触发重新整理（使用已存元数据）")],
+            )
+            existing_logs.append(user_log)
+            await history_service.update_scrape_logs(record_id, existing_logs)
+
+            # 先落 running 状态：列表与详情页据此实时显示「正在重新整理」
+            run_started_at = datetime.now()
+            await history_service.update_record(
+                record_id,
+                status=TaskStatus.RUNNING,
+                error_message="",
+                started_at=run_started_at,
+            )
+
+            async def on_log_update(logs):
+                await history_service.update_scrape_logs(record_id, existing_logs + logs)
+
+            scraper = get_scraper_service()
+            try:
+                result = await scraper.reorganize_with_metadata(
+                    scrape_request,
+                    series=series,
+                    season_info=season_info,
+                    on_log_update=on_log_update,
+                )
+            except BaseException:
+                raise
+
+            return await self._finalize_prepared(
+                record_id=record_id,
+                result=result,
+                prepared=prepared,
+                manual_job_id=record.manual_job_id,
+                duration_seconds=(datetime.now() - run_started_at).total_seconds(),
+                registration_source=registration_source,
+            )
+        except BaseException:
             await self._release_input(prepared, dest_path=None, success=False)
             raise
-
-        return await self._finalize_prepared(
-            record_id=record_id,
-            result=result,
-            prepared=prepared,
-            manual_job_id=record.manual_job_id,
-            duration_seconds=(datetime.now() - run_started_at).total_seconds(),
-            registration_source=registration_source,
-        )
 
     async def _finalize(
         self,

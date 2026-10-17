@@ -7,8 +7,7 @@ import { getRetryMatch } from '@/modules/history/utils'
 /**
  * 批量重试（列表页多选后用）
  *
- * 串行逐条：TMDB 有速率限制、多条同时搬运文件还会互相抢目录，所以一条跑完再跑下一条
- * （后端 retry 接口本身是同步执行完才返回的）。
+ * 串行提交到持久队列，实际执行由后端 worker 的并发限制管理。
  *
  * 只提交「匹配三件套齐全」的记录：确认不了 TMDB ID/季/集就没有可重试的参数，
  * 弹窗问用户又失去了批量的意义，因此计入 skipped 并在结束时说明，绝不猜一个 ID 去跑。
@@ -28,12 +27,12 @@ export function useHistoryBatchRetry(options: {
   const total = ref(0)
   const failed = ref(0)
   const skipped = ref(0)
-  /** 用户点了「停止」：当前这条跑完就不再往下发 */
+  /** 用户点了「停止」：当前这条提交后就不再往下发 */
   const stopRequested = ref(false)
 
   /** 状态上允许批量重试（与列表行的「处理」按钮同一套判定） */
   const canRetry = (record: HistoryRecord) =>
-    record.status === 'timeout' || record.status === 'failed' || record.status === 'pending_action'
+    ['timeout', 'failed', 'cancelled', 'skipped', 'deleted'].includes(record.status)
 
   /** 可勾选：状态可重试且缺匹配信息就无法批量跑 */
   const isSelectable = (record: HistoryRecord) => canRetry(record) && getRetryMatch(record) !== null
@@ -41,7 +40,7 @@ export function useHistoryBatchRetry(options: {
   /** 状态可重试但缺匹配信息（勾选框禁用，界面要说明原因） */
   const needsManualCount = (records: HistoryRecord[]) => records.filter((r) => canRetry(r) && !isSelectable(r)).length
 
-  const progressText = computed(() => (running.value ? `批量重试中 ${done.value}/${total.value}` : ''))
+  const progressText = computed(() => (running.value ? `批量提交中 ${done.value}/${total.value}` : ''))
 
   const stop = () => {
     stopRequested.value = true
@@ -105,11 +104,11 @@ export function useHistoryBatchRetry(options: {
     options.clearSelection()
 
     if (stopped) {
-      message.info(`已停止，完成 ${done.value}/${total.value} 条`)
+      message.info(`已停止，已提交 ${done.value}/${total.value} 条`)
     } else if (failed.value > 0) {
-      message.warning(`批量重试完成：成功 ${done.value - failed.value} 条，失败 ${failed.value} 条`)
+      message.warning(`批量提交完成：已入队 ${done.value - failed.value} 条，失败 ${failed.value} 条`)
     } else {
-      message.success(`批量重试完成：${done.value} 条`)
+      message.success(`批量提交完成：已入队 ${done.value} 条`)
     }
     return !stopped
   }

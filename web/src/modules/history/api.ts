@@ -132,6 +132,17 @@ export const historyApi = {
     return response.data
   },
 
+  async rescrapeRecord(
+    record: { id: string; status: string },
+    request: RetryRequest
+  ): Promise<HistoryActionResponse> {
+    const action = record.status === 'success' ? 'rematch' : 'retry'
+    const response = await api.post<HistoryActionResponse>(
+      `/history/${record.id}/${action}`, request,
+    )
+    return response.data
+  },
+
   /**
    * 重试刮削记录
    */

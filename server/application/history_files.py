@@ -25,7 +25,9 @@ from server.application.history_service import HistoryService, split_record_fold
 from server.application.manual_job_service import ManualJobService
 from server.application.scraped_file_service import ScrapedFileService
 from server.application.scrape_job_service import ScrapeJobService
-from server.common.path_security import PathSecurityError, validate_media_path
+from server.common.path_security import (
+    PathSecurityError, validate_media_file_entry, validate_media_path,
+)
 from server.domain.system.config_service import ConfigService
 from server.models.history import (
     HistoryFileDeleteResponse,
@@ -115,11 +117,7 @@ class HistoryFileService:
         if target_path and metadata_root:
             try:
                 safe_metadata_root = validate_media_path(metadata_root)
-                safe_target_path = validate_media_path(
-                    target_path,
-                    must_exist=True,
-                    require_file=True,
-                )
+                safe_target_path = validate_media_file_entry(target_path)
             except PathSecurityError:
                 safe_metadata_root = None
                 safe_target_path = None
@@ -189,7 +187,7 @@ class HistoryFileService:
             path
             for path in season_dir.iterdir()
             if path.is_file()
-            and path.name.startswith(target.stem)
+            and path.stem in {target.stem, f"{target.stem}-thumb"}
             and path.suffix.lower() in _METADATA_SUFFIXES
         )
 
@@ -229,7 +227,7 @@ class HistoryFileService:
             for season in metadata_series_dir.iterdir()
             if season.is_dir()
             for path in season.iterdir()
-            if path.is_file() and path.name.startswith(target.stem)
+            if path.is_file() and path.stem in {target.stem, f"{target.stem}-thumb"}
         }
         skip = _SERIES_SHARED_NAMES | {_SEASON_SHARED_NAME} | metadata_season_names
         return not self._has_other_files(metadata_series_dir, skip, recursive=True)
@@ -366,11 +364,7 @@ class HistoryFileService:
                 )
                 continue
             try:
-                safe_path = validate_media_path(
-                    entry.path,
-                    must_exist=True,
-                    require_file=True,
-                )
+                safe_path = validate_media_file_entry(entry.path)
                 safe_path.unlink()
             except (OSError, PathSecurityError) as exc:  # 权限、占用、路径失效等
                 logger.warning("删除文件失败 %s: %s", entry.path, exc)

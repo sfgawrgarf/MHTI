@@ -875,15 +875,17 @@ async def rematch_successful_record(
             output_locator=getattr(old_job, "output_locator", None),
             metadata_locator=getattr(old_job, "metadata_locator", None),
             allow_local_output=getattr(old_job, "allow_local_output", False),
-            link_mode=getattr(old_job, "link_mode", None),
+            link_mode=OrganizeMode.COPY,
             source=ScrapeJobSource.MANUAL,
             source_id=getattr(old_job, "source_id", None),
-            advanced_settings=getattr(old_job, "advanced_settings", None),
+            advanced_settings=(old_job.advanced_settings.model_copy(update={"overwrite_video": False})
+                               if old_job.advanced_settings else None),
             replaces_job_id=old_job.id,
             correction_history_id=record.id,
             correction_tmdb_id=request.tmdb_id,
             correction_season=request.season,
             correction_episode=request.episode,
+            operation="rematch",
         )
     )
     if correction is None:
@@ -892,6 +894,7 @@ async def rematch_successful_record(
     return {
         "success": True,
         "job_id": correction.id,
+        "queued": True,
         "message": "已创建纠正任务；新任务成功后才会替代原成功记录，并保留 7 天备份",
     }
 
@@ -903,16 +906,7 @@ async def retry_scrape(
     history_service: HistoryService = Depends(get_history_service),
     actions: HistoryScrapeActions = Depends(get_history_scrape_actions),
 ) -> dict:
-    """重刮记录（可按指定 TMDB ID / 季 / 集）。
-
-    状态限制只保留「正在处理中」：这条接口同时承担「内联 TMDB ID 直接重刮」，
-    用于修正匹配错的成功记录——只允许 failed/timeout/cancelled 时无法修正错误匹配。
-    已经跑完的记录允许重刮，代价是可能产生重复产物（旧产物由后端先清掉），
-    所以前端必须二次确认。
-
-    输入文件不由调用方指定：后端按「源文件优先、源文件不存在就用整理后的产物」
-    自行解析（resolve_input），否则拿 folder_path 那串「源 => 产物」当路径会直接报文件不存在。
-    """
+    """将失败或终止记录加入统一工作队列；成功记录使用 rematch。"""
     # 直接调用旧函数签名时，使用兼容路径；生产请求走持久化用例。
     if not isinstance(actions, HistoryScrapeActions):
         record = await history_service.get_record(record_id)
@@ -999,8 +993,8 @@ async def retry_scrape(
     )
 
     # 5. 执行刮削（输入解析与旧产物清理在用例层完成）
-    return await actions.execute_scrape_and_update(
-        record_id, scrape_request, user_log, resolve_input=True
+    return await actions.queue_record_operation(
+        record_id, scrape_request, operation="retry", selection_log=user_log,
     )
 
 
@@ -1035,4 +1029,4 @@ async def reorganize_record(
     actions: HistoryScrapeActions = Depends(get_history_scrape_actions),
 ) -> dict:
     """用已存元数据重跑整理（不请求 TMDB）。"""
-    return await actions.reorganize_from_metadata(record_id)
+    return await actions.queue_record_operation(record_id, operation="reorganize")

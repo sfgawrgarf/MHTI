@@ -12,6 +12,7 @@ from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource, ScrapeJob
 _SCRAPE_JOBS_DDL = """
     CREATE TABLE IF NOT EXISTS scrape_jobs (
         id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL DEFAULT 'scrape',
         file_path TEXT NOT NULL,
         output_dir TEXT NOT NULL,
         metadata_dir TEXT,
@@ -57,6 +58,7 @@ class ScrapeJobRepository(BaseRepository):
             if not columns:
                 raise aiosqlite.OperationalError("Missing scrape_jobs table")
             missing = {
+                "operation": "TEXT NOT NULL DEFAULT 'scrape'",
                 "link_mode": "TEXT",
                 "advanced_settings": "TEXT",
                 "file_locator": "TEXT",
@@ -90,11 +92,49 @@ class ScrapeJobRepository(BaseRepository):
             (file_path,),
         )
 
+    async def complete_correction(self, job_id: str) -> None:
+        """Replace original audit rows only after the correction published safely."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "SELECT replaces_job_id, correction_history_id FROM scrape_jobs "
+                "WHERE id = ? AND operation = 'rematch'", (job_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise ValueError("纠正任务不存在")
+            cursor = await db.execute(
+                "UPDATE scrape_jobs SET status = 'replaced', replaced_by_job_id = ?, "
+                "finished_at = ? WHERE id = ? AND (replaced_by_job_id IS NULL OR replaced_by_job_id = ?)",
+                (job_id, datetime.now().isoformat(), row[0], job_id),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                raise ValueError("原任务已被其他纠正任务替代")
+            await db.execute(
+                "UPDATE history_records SET status = 'replaced', error_message = ? WHERE id = ?",
+                (f"已由纠正任务 {job_id} 替代；原文件备份保留七天", row[1]),
+            )
+            await db.execute(
+                "UPDATE scrape_jobs SET status = 'success', finished_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), job_id),
+            )
+            await db.commit()
+
     async def get_pending_file_paths(self) -> set[str]:
         rows = await self._fetch_all(
             "SELECT file_path FROM scrape_jobs WHERE status IN ('pending', 'running', 'pending_action')"
         )
         return {row[0] for row in rows}
+
+    async def get_active_ids_by_source(self, source_id: int) -> list[str]:
+        """Cancellation must cover every active child, not one UI page."""
+        rows = await self._fetch_all(
+            "SELECT id FROM scrape_jobs WHERE source = 'manual' AND source_id = ? "
+            "AND status IN ('pending', 'running', 'pending_action')",
+            (source_id,),
+        )
+        return [str(row[0]) for row in rows]
 
     async def has_media_version(self, source_fingerprint: str) -> bool:
         """Return whether a local source was already recorded as a version."""
@@ -151,13 +191,17 @@ class ScrapeJobRepository(BaseRepository):
                     (data.continuation_history_id,),
                 )
                 history = await cursor.fetchone()
-                if not history or history[0] not in {
+                allowed_statuses = {
                     "pending_action",
                     "failed",
                     "timeout",
                     "cancelled",
                     "skipped",
-                }:
+                    "deleted",
+                }
+                if data.operation == "reorganize":
+                    allowed_statuses.add("success")
+                if not history or history[0] not in allowed_statuses:
                     await db.rollback()
                     return False
 
@@ -182,8 +226,8 @@ class ScrapeJobRepository(BaseRepository):
                  allow_local_output, status, created_at, replaces_job_id,
                  correction_history_id, correction_tmdb_id, correction_season,
                  correction_episode, continuation_history_id, file_action,
-                 selection_log, skip_emby_check)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 selection_log, skip_emby_check, operation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -209,9 +253,10 @@ class ScrapeJobRepository(BaseRepository):
                     data.file_action,
                     data.selection_log,
                     1 if data.skip_emby_check else 0,
+                    data.operation,
                 ),
             )
-            if data.replaces_job_id:
+            if data.replaces_job_id and data.operation != "rematch":
                 cursor = await db.execute(
                     """
                     UPDATE scrape_jobs
@@ -228,12 +273,14 @@ class ScrapeJobRepository(BaseRepository):
                 cursor = await db.execute(
                     """
                     UPDATE history_records
-                    SET status = 'running', error_message = '已排队，等待处理'
+                    SET status = 'running', error_message = '已排队，等待处理',
+                        scrape_job_id = ?
                     WHERE id = ? AND status IN (
-                        'pending_action', 'failed', 'timeout', 'cancelled', 'skipped'
+                        'pending_action', 'failed', 'timeout', 'cancelled', 'skipped',
+                        'deleted', 'success'
                     )
                     """,
-                    (data.continuation_history_id,),
+                    (job_id, data.continuation_history_id),
                 )
                 if cursor.rowcount != 1:
                     await db.rollback()

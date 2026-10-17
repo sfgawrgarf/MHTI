@@ -59,9 +59,11 @@ async def _shutdown_application(
     logger.info("Shutting down application...")
 
     from server.application.file_io import shutdown_file_io
+    from server.bootstrap import get_scheduler_service
     from server.application.manual_job_service import shutdown_workers as shutdown_manual_workers
     from server.application.scrape_job_service import shutdown_workers as shutdown_scrape_workers
 
+    await _shutdown_step("scheduler", get_scheduler_service().stop())
     await _shutdown_step("manual workers", shutdown_manual_workers())
     if watcher is not None and watcher._running:
         await _shutdown_step("watcher", watcher.stop())
@@ -245,6 +247,8 @@ async def lifespan(app: FastAPI):
             logger.info("Detected enabled watch folders, starting watcher service")
             await watcher.start()
 
+        from server.bootstrap import get_scheduler_service
+        await get_scheduler_service().start()
         logger.info("Application started successfully")
         yield
     finally:
@@ -418,3 +422,4 @@ if __name__ == "__main__":
         reload=True,
         reload_dirs=["server"],
     )
+
