@@ -155,6 +155,8 @@ Shutdown only requeues a running job without `output_committed_at`. Requeue and
 closing that job's still-running owned history happen in one SQLite transaction;
 history changes cannot first synchronize an already-successful job to failed.
 Cancellation during the completion notification preserves the committed result.
+If history was marked successful before the final correction/job commit, verified
+receipt replay finishes that commit and replacement links before retiring receipts.
 
 Cleanup bookkeeping has its own exception boundary. A temporary database failure
 while recording cleanup cannot downgrade a business result after the last receipt

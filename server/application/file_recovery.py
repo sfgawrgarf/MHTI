@@ -139,7 +139,10 @@ async def _reconcile_job(service, job_id, records):
             else:
                 await run_file_io(plan.rollback, cleanup=False)
         if outputs:
-            if job.status in {ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}:
+            if (job.status in {ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}
+                    or (job.status == ScrapeJobStatus.SUCCESS and not committed)):
+                # History success can precede the final job/correction commit.
+                # Finish that interrupted transaction after verifying outputs.
                 changed = await history.update_record(history_id, status=TaskStatus.SUCCESS, error_message='',
                                             tmdb_id=data.get('tmdb_id'), title=data.get('title'),
                                             season_number=data.get('season'), episode_number=data.get('episode'),

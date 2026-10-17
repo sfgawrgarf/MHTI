@@ -11,6 +11,7 @@ from server.tests.application.test_recovery_regressions import recovery_env, bin
 from server.tests.application.test_audit_remediation import audit_env  # noqa: F401
 from server.tests.application.test_file_operation_recovery import running_job
 from server.tests.application.test_commit_cleanup import committed_correction
+from server.tests.application.test_copy_trial import copy_request
 from server.tests.application.test_scraper_service import FakeTMDB, _build_service, _patch_tail
 from server.application import scrape_job_service as jobs_module
 from server.application.file_recovery import reconcile_file_operations
@@ -151,6 +152,48 @@ async def test_shutdown_reset_losing_to_commit_does_not_modify_history(recovery_
     assert not await env.jobs.reset_job_to_pending(job.id)
     assert (await env.jobs.get_job(job.id)).status == ScrapeJobStatus.SUCCESS
     assert (await env.history.get_record(record.id)).status == TaskStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_shutdown_between_history_success_and_correction_commit_finishes_commit(recovery_env, monkeypatch):
+    env = recovery_env
+    scraper = _build_service(env.db, FakeTMDB())
+    _patch_tail(monkeypatch, scraper)
+    bind_worker(env, monkeypatch, scraper)
+    old = await env.jobs.create_job(copy_request(env, env.source))
+    await jobs_module._execute_scrape_job(env.jobs, old.id)
+    old = await env.jobs.get_job(old.id)
+    registered = await env.scraped.list_by_history_record(old.history_record_id)
+    target = Path(registered[0].target_path)
+    job = await env.jobs.create_job(copy_request(
+        env, target, operation='rematch', correction_history_id=old.history_record_id,
+        replaces_job_id=old.id, file_action='overwrite',
+    ))
+    started = asyncio.Event()
+    register = env.scraped.register_output
+
+    async def pause_first_registration(**kwargs):
+        if not started.is_set():
+            started.set()
+            await asyncio.Event().wait()
+        await register(**kwargs)
+
+    monkeypatch.setattr(env.scraped, 'register_output', pause_first_registration)
+    task = asyncio.create_task(jobs_module._execute_scrape_job(env.jobs, job.id))
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        before = await env.jobs.get_job(job.id)
+        assert before.status == ScrapeJobStatus.SUCCESS and before.output_committed_at is None
+        monkeypatch.setattr(jobs_module, '_workers_stopping', True)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    after = await env.jobs.get_job(job.id)
+    assert after.status == ScrapeJobStatus.SUCCESS and after.output_committed_at
+    assert (await env.jobs.get_job(old.id)).status == ScrapeJobStatus.REPLACED
+    assert (await env.history.get_record(old.history_record_id)).status == TaskStatus.REPLACED
+    assert (await env.history.get_record(after.history_record_id)).status == TaskStatus.SUCCESS
+    assert target.read_bytes() == b'original video'
 
 
 @pytest.mark.asyncio
