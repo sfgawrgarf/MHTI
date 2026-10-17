@@ -60,6 +60,16 @@ async def _reconcile_job(service, job_id, records):
                 outputs.append(item)
             elif item['phase'] in {'published', 'complete'}:
                 raise journal.RecoveryConflict(f"已发布产物身份发生变化: {item['destination']}")
+            elif item['phase'] == 'prepared':
+                available = journal.signature(Path(item['source'])) == item['source_signature']
+                if not available:
+                    # A failed retry may already have restored its staged input.
+                    available = any(stage['destination'] == item['source'] and
+                                    journal.signature(Path(stage['source'])) in
+                                    (stage.get('source_signature'), stage.get('payload_signature'))
+                                    for stage in stages)
+                if not available:
+                    raise journal.RecoveryConflict(f"发布未确认且源路径已变化，保留暂存内容: {item['source']}")
         correcting = job.operation == 'rematch'
         rollback = correcting and job.status not in {ScrapeJobStatus.SUCCESS, ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}
         if outputs:

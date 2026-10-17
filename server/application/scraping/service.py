@@ -550,7 +550,7 @@ class ScraperService:
                 return folders
         except FileExistsError as exc:
             result.status = ScrapeStatus.FILE_CONFLICT
-            result.dest_path = str(exc.args[0])
+            result.dest_path = result.dest_path or str(exc.filename or exc.args[0])
             result.message = f"目标文件已存在: {result.dest_path}"
             raise
         finally:

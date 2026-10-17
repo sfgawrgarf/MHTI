@@ -325,3 +325,46 @@ async def test_colocated_metadata_discovery_keeps_shared_deletion_rules(recovery
     assert {str(season), str(series)}.isdisjoint({item.path for item in listing.files})
     backup_listing = await env.files.list_files(record.id, include_shared_metadata=True)
     assert {str(season), str(series)} <= {item.path for item in backup_listing.files}
+
+
+@pytest.mark.asyncio
+async def test_metadata_conflict_after_publication_preserves_actual_video_path(temp_db, tmp_path, monkeypatch):
+    source = tmp_path / 'input.mp4'
+    source.write_bytes(b'video')
+    service = _build_service(temp_db, FakeTMDB())
+    _patch_tail(monkeypatch, service)
+
+    def conflict_after_media(self):
+        raise FileExistsError(17, 'File exists', str(tmp_path / 'other.nfo'))
+
+    monkeypatch.setattr(journal.MetadataPlan, 'commit', conflict_after_media)
+    result = await service.scrape_by_id(ScrapeByIdRequest(
+        file_path=str(source), output_dir=str(tmp_path / 'out'), tmdb_id=123,
+        season=1, episode=1, link_mode=OrganizeMode.MOVE,
+    ))
+    assert result.status == ScrapeStatus.FILE_CONFLICT
+    assert Path(result.dest_path).read_bytes() == b'video'
+    assert result.dest_path != '17'
+    assert not list((tmp_path / 'out').rglob('.mhti-metadata-*'))
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_publication_keeps_only_surviving_payload(recovery_env):
+    import shutil
+    env = recovery_env
+    job, _ = await running_job(env)
+    target = env.output / 'published.mkv'
+    payload = env.output / '.mhti-publish-interrupted' / 'payload.tmp'
+    payload.parent.mkdir(parents=True)
+    shutil.copy2(env.source, payload)
+    token = journal.owner.set(job.id)
+    try:
+        receipt = journal.begin_publish(env.source, target, OrganizeMode.MOVE)
+        journal.prepared(receipt, payload)
+    finally:
+        journal.owner.reset(token)
+    env.source.unlink()  # Another process removes the original before recovery.
+    await env.jobs.prepare_recovery()
+    assert payload.read_bytes() == b'original video'
+    assert journal.read_records(job.id)
+    assert (await env.jobs.get_job(job.id)).status == ScrapeJobStatus.PENDING_ACTION
