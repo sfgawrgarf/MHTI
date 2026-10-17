@@ -74,3 +74,33 @@ distributed lock or a filesystem compare-and-swap against arbitrary concurrent
 external edits to a target selected for explicit overwrite. Receipt persistence
 is not a claim of whole-filesystem durability after power loss. Preserve the
 configured data and media volumes across restarts.
+
+## Follow-up after PR #85
+
+The follow-up in PR #86 covers four remaining boundaries:
+
+- Episode ownership exclusions use full paths. Another season's identically named
+  video or sidecar continues to protect shared series metadata, including when
+  only its NFO remains. Series discovery does not depend on a season directory
+  being present, so series-only artwork/NFO is included in correction snapshots.
+- Metadata replay validates an already-published target before asking for the
+  staged source. Cleanup can therefore resume after partial or complete removal
+  of the private metadata directory; empty plans are also forgotten. A missing
+  source still fails safely when the target needs to be written.
+- Publication records save staging-directory identity before creating payloads.
+  COPY and cross-filesystem MOVE exclusively create the payload and persist its
+  inode identity before copy2 begins. A process exit during copying leaves an
+  attributable partial payload. Recovery removes it only while its recorded
+  source is still available and both directory and payload ownership match.
+- Metadata copies use the same staging accounting. Replay reclaims their owned
+  partial payloads before retrying; rollback/cleanup also handles those receipts.
+  Replaced paths, unknown directory content, or a missing media source retain
+  files and receipts for inspection. Normal cleanup never scans by prefix to
+  delete unknown directories.
+
+Tests include real subprocess exits in COPY, cross-filesystem MOVE fallback, and
+metadata COPY, repeated recovery after partial/complete metadata cleanup, and
+physical deletion across seasons with equal filenames. All tests run in GitHub
+Actions only. Older unrecorded partial directories cannot be attributed safely
+from their names and require operator inspection; the new accounting applies to
+operations begun after this fix.

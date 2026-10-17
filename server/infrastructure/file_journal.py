@@ -97,7 +97,72 @@ def begin_publish(source: Path, destination: Path, mode) -> dict | None:
                       details=details.get())
 
 
+def _identity(path: Path) -> dict | None:
+    value = signature(path)
+    return {'dev': value['dev'], 'ino': value['ino']} if value else None
+
+
+def _publication_record(record: dict) -> tuple[dict, dict]:
+    if 'metadata_write' in record:
+        plan, item = record['metadata_write']
+        return item, plan
+    return record, record
+
+
+def stage_directory(record: dict | None, directory: Path) -> None:
+    if record is not None:
+        item, parent = _publication_record(record)
+        item['staging'] = {'directory': str(directory), 'directory_identity': _identity(directory)}
+        save(parent)
+
+
+def copy_started(record: dict | None, payload: Path) -> None:
+    if record is not None:
+        # copy2 truncates this exclusive entry without changing its inode.
+        # Persist that identity before bytes start changing size and mtime.
+        with payload.open('xb'):
+            pass
+        item, parent = _publication_record(record)
+        item['staging']['payload_identity'] = _identity(payload)
+        if item is parent:
+            item['phase'] = 'copying'
+        save(parent)
+
+
+def cleanup_staging(item: dict) -> bool:
+    info = item.get('staging')
+    if info is None:
+        return False  # Receipts from older versions use the prepared signature.
+    raw = Path(info['directory'])
+    if raw.is_symlink():
+        raise RecoveryConflict(f'发布暂存目录变为软链接: {raw}')
+    directory = validate_media_path(str(raw))
+    if not directory.exists():
+        return True  # Already cleaned by the publisher or an earlier recovery.
+    if not directory.name.startswith('.mhti-publish-') or _identity(directory) != info['directory_identity']:
+        raise RecoveryConflict(f'发布暂存目录身份发生变化: {directory}')
+    payload = directory / 'payload.tmp'
+    if any(path.name != payload.name for path in directory.iterdir()):
+        raise RecoveryConflict(f'发布暂存目录包含未登记文件: {directory}')
+    actual = signature(payload)
+    if actual is not None:
+        expected = info.get('payload_signature')
+        if expected is not None:
+            owned = actual == expected
+        else:
+            owned = info.get('payload_identity') == _identity(payload) and not payload.is_symlink()
+        if not owned:
+            raise RecoveryConflict(f'发布暂存文件身份发生变化: {payload}')
+        payload.unlink()
+    directory.rmdir()
+    return True
+
+
 def prepared(record: dict | None, payload: Path) -> None:
+    if record is not None:
+        item, _ = _publication_record(record)
+        if 'staging' in item:
+            item['staging']['payload_signature'] = signature(payload)
     if record is not None and 'metadata_write' in record:
         plan, item = record['metadata_write']
         item['published_signature'] = signature(payload)
@@ -154,7 +219,7 @@ def restore_stage(record: dict) -> None:
     destination = validate_media_path(record['destination'])
     if not destination.exists():
         if signature(source) in (record.get('source_signature'), record.get('payload_signature')):
-            forget(record)
+            finish_record(record)
             return
         raise RecoveryConflict(f'让位文件和原路径无法核对: {source} / {destination}')
     if not owns_destination(record):
@@ -168,11 +233,14 @@ def restore_stage(record: dict) -> None:
         from server.models.organize import OrganizeMode
         with operation_kind('recovery'):
             publish_file(destination, source, OrganizeMode.MOVE)
-    forget(record)
+    finish_record(record)
 
 
 def finish_record(record: dict) -> None:
     """Remove only a proven leftover publication payload, never arbitrary content."""
+    if cleanup_staging(record):
+        forget(record)
+        return
     payload = Path(record.get('payload', ''))
     if payload.name == 'payload.tmp' and payload.parent.name.startswith('.mhti-publish-'):
         if signature(payload) == record.get('payload_signature'):
@@ -258,15 +326,18 @@ class MetadataPlan:
         from server.infrastructure.file_operations import publish_file
         from server.models.organize import OrganizeMode
         for item in self.record['files']:
-            source = validate_media_file_entry(item['source'])
             target = Path(item['destination'])
             validate_media_path(str(target))
             if target.is_symlink():
                 raise RecoveryConflict(f'元数据目标变为软链接: {target}')
             if item.get('published_signature') and signature(target) == item['published_signature']:
+                cleanup_staging(item)
                 continue
             if target.exists() and digest(target) == item['digest']:
+                cleanup_staging(item)
                 continue  # Identical shared metadata may belong to another writer.
+            source = validate_media_file_entry(item['source'])
+            cleanup_staging(item)
             before = item['before']
             if signature(target) != (before['signature'] if before else None):
                 raise RecoveryConflict(f'元数据目标被其他任务修改: {target}')
@@ -305,6 +376,8 @@ class MetadataPlan:
         self.cleanup()
 
     def cleanup(self) -> None:
+        for item in self.record['files']:
+            cleanup_staging(item)
         safe = validate_media_path(str(self.directory))
         if self.directory.is_symlink() or not safe.name.startswith('.mhti-metadata-'):
             raise RecoveryConflict('元数据暂存目录身份不一致')

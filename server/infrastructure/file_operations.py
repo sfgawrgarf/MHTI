@@ -50,6 +50,7 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
     with TemporaryDirectory(prefix=".mhti-publish-", dir=destination.parent) as staging:
         # Do not expose a video/subtitle suffix to concurrent media scanners.
         staged = Path(staging) / "payload.tmp"
+        file_journal.stage_directory(receipt, Path(staging))
         if mode == OrganizeMode.HARDLINK:
             os.link(source, staged)
         elif mode == OrganizeMode.SYMLINK:
@@ -61,8 +62,10 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
             except OSError as exc:
                 if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP}:
                     raise
+                file_journal.copy_started(receipt, staged)
                 shutil.copy2(source, staged)
         else:
+            file_journal.copy_started(receipt, staged)
             shutil.copy2(source, staged)
         file_journal.prepared(receipt, staged)
         check_file_cancelled()
