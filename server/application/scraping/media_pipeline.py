@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Mapping
 
 from server.common.path_security import validate_media_path
 from server.infrastructure.file_operations import publish_file
+from server.infrastructure.file_journal import operation_kind
 from server.infrastructure.log_security import safe_log_value
 from server.models.organize import OrganizeMode
 from server.application.file_io import check_file_cancelled
@@ -246,8 +247,9 @@ class ScraperMediaPipeline:
                 final_path = validate_media_path(str(dest_folder / f"{dest_stem}{language}{sub.extension}"))
                 source_subtitle = validate_media_path(sub.path, must_exist=True, require_file=True)
                 try:
-                    publish_file(source_subtitle, final_path, link_mode,
-                                 overwrite=conflict_action == "overwrite")
+                    with operation_kind("sidecar"):
+                        publish_file(source_subtitle, final_path, link_mode,
+                                     overwrite=conflict_action == "overwrite")
                     moved_subtitles.append(str(final_path))
                 except OSError as exc:
                     logger.warning("字幕处理失败: %s", safe_log_value(exc))

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from server.infrastructure import file_journal
 from server.models.organize import OrganizeMode
 from server.common.file_cancellation import check_file_cancelled
 
@@ -36,9 +37,13 @@ def _publish_no_replace(staged: Path, destination: Path) -> None:
 def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
                  *, overwrite: bool = False) -> None:
     check_file_cancelled()
-    if source == destination:
-        return
     mode = mode or OrganizeMode.MOVE
+    receipt = file_journal.begin_publish(source, destination, mode)
+    if source == destination:
+        file_journal.prepared(receipt, source)
+        file_journal.published(receipt)
+        file_journal.completed(receipt)
+        return
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Stage on the destination filesystem. Even MOVE retains its source until
     # publication succeeds, including cross-device moves and failed replaces.
@@ -59,11 +64,14 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
                 shutil.copy2(source, staged)
         else:
             shutil.copy2(source, staged)
+        file_journal.prepared(receipt, staged)
         check_file_cancelled()
         if overwrite:
             os.replace(staged, destination)
         else:
             # Atomic no-clobber publication, including concurrent writers.
             _publish_no_replace(staged, destination)
+        file_journal.published(receipt)
         if mode == OrganizeMode.MOVE:
             source.unlink()
+        file_journal.completed(receipt)

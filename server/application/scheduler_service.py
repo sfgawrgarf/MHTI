@@ -42,12 +42,18 @@ class SchedulerService:
 
     async def _run(self) -> None:
         last_backup_cleanup = None
+        cleanup_interval = 3600
         while True:
             try:
-                if last_backup_cleanup is None or (datetime.now() - last_backup_cleanup).total_seconds() >= 3600:
+                if last_backup_cleanup is None or (datetime.now() - last_backup_cleanup).total_seconds() >= cleanup_interval:
                     from server.application.correction_service import cleanup_expired_correction_backups
-                    await cleanup_expired_correction_backups()
                     last_backup_cleanup = datetime.now()
+                    try:
+                        await cleanup_expired_correction_backups()
+                        cleanup_interval = 3600
+                    except Exception:
+                        cleanup_interval = 60
+                        logger.exception("纠正备份清理失败，60 秒后重试")
                 await self.tick_once()
             except asyncio.CancelledError:
                 raise

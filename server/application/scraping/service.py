@@ -511,53 +511,54 @@ class ScraperService:
         advanced_settings: ManualJobAdvancedSettings | None = None,
         allow_staged_source: bool = False,
     ) -> tuple[Path, Path, Path]:
-        """Write metadata at the resolved destination before publishing media."""
-        staging_options = {"allow_staged_source": True} if allow_staged_source else {}
-        resolved_dest_path = await run_file_io(
-            self.rename_service.resolve_destination_path,
-            rename_request,
-            **staging_options,
-        )
-        resolved_dest_path = Path(resolved_dest_path)
-        source_path = Path(rename_request.source_path)
-        if (
-            resolved_dest_path != source_path
-            and (resolved_dest_path.exists() or resolved_dest_path.is_symlink())
-            and rename_request.conflict_action != "overwrite"
-        ):
-            result.status = ScrapeStatus.FILE_CONFLICT
-            result.message = f"目标文件已存在: {resolved_dest_path}"
-            result.dest_path = str(resolved_dest_path)
-            raise FileExistsError(str(resolved_dest_path))
+        """Prepare metadata privately and publish to the reserved final name."""
+        from server.application.scraping.output_transaction import reserve_destination
+        from server.infrastructure import file_journal
 
-        nfo_path, _, _ = await self._write_local_metadata_only(
-            title=title,
-            season=season,
-            episode=episode,
-            year=year,
-            metadata_dir=metadata_dir,
-            output_dir_for_preview=output_dir_display or str(resolved_dest_path.parent),
-            nfo_content=nfo_content,
-            series=series,
-            season_info=season_info,
-            move_step=move_step,
-            notify_log_update=notify_log_update,
-            link_mode=rename_request.link_mode,
-            advanced_settings=advanced_settings,
-            dest_path_override=resolved_dest_path,
-            require_metadata_dir=False,
-        )
-        result.nfo_path = nfo_path or None
-        return await self._organize_local_output(
-            rename_request=rename_request,
-            source_display_path=source_display_path,
-            output_dir_display=output_dir_display,
-            mode_name=mode_name,
-            move_step=move_step,
-            notify_log_update=notify_log_update,
-            result=result,
-            **staging_options,
-        )
+        options = {"allow_staged_source": True} if allow_staged_source else {}
+        plan = None
+        completed = False
+        details_token = file_journal.details.set({
+            "tmdb_id": result.selected_id, "title": title, "season": season, "episode": episode,
+        })
+        try:
+            async with reserve_destination(self.rename_service, rename_request, metadata_dir=metadata_dir, **options) as destination:
+                plan = await run_file_io(file_journal.MetadataPlan.create, destination, metadata_dir)
+                nfo_path, _, _ = await self._write_local_metadata_only(
+                    title=title, season=season, episode=episode, year=year,
+                    metadata_dir=str(plan.content),
+                    output_dir_for_preview=output_dir_display or str(destination.parent),
+                    nfo_content=nfo_content, series=series, season_info=season_info,
+                    move_step=move_step, notify_log_update=notify_log_update,
+                    link_mode=rename_request.link_mode, advanced_settings=advanced_settings,
+                    dest_path_override=destination, require_metadata_dir=False,
+                )
+                await run_file_io(plan.prepare)
+                folders = await self._organize_local_output(
+                    rename_request=rename_request, source_display_path=source_display_path,
+                    output_dir_display=output_dir_display, mode_name=mode_name,
+                    move_step=move_step, notify_log_update=notify_log_update,
+                    result=result, destination_override=destination, **options,
+                )
+                await run_file_io(plan.commit)
+                if nfo_path:
+                    relative = Path(nfo_path).relative_to(plan.content)
+                    result.nfo_path = str(Path(plan.record['final_series']).parent / relative)
+                if file_journal.owner.get() is None:
+                    await run_file_io(plan.cleanup)
+                completed = True
+                return folders
+        except FileExistsError as exc:
+            result.status = ScrapeStatus.FILE_CONFLICT
+            result.dest_path = result.dest_path or str(exc.filename or exc.args[0])
+            result.message = f"目标文件已存在: {result.dest_path}"
+            raise
+        finally:
+            file_journal.details.reset(details_token)
+            # Workers reconcile durable receipts even when cancellation arrives
+            # after publication but before this coroutine receives the result.
+            if plan is not None and not completed and file_journal.owner.get() is None:
+                await run_file_io(plan.rollback)
 
     async def _record_media_version(
         self,
@@ -689,6 +690,7 @@ class ScraperService:
         notify_log_update: Callable[[], Awaitable[None]],
         result: ScrapeResult,
         allow_staged_source: bool = False,
+        destination_override: Path | None = None,
     ) -> tuple[Path, Path, Path]:
         return await self._output_writer.organize_local_output(
             rename_request=rename_request,
@@ -699,6 +701,7 @@ class ScraperService:
             notify_log_update=notify_log_update,
             result=result,
             allow_staged_source=allow_staged_source,
+            destination_override=destination_override,
         )
 
     async def _resolve_metadata_folders(

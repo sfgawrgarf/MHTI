@@ -378,6 +378,7 @@ class OutputWriter:
         notify_log_update: Callable[[], Awaitable[None]],
         result: ScrapeResult,
         allow_staged_source: bool = False,
+        destination_override: Path | None = None,
     ) -> tuple[Path, Path, Path]:
         """沿用原本地整理链路。"""
         move_step.logs.append(ScrapeLogEntry(message=f"源文件: {source_display_path}"))
@@ -386,6 +387,8 @@ class OutputWriter:
         await notify_log_update()
 
         options = {"allow_staged_source": True} if allow_staged_source else {}
+        if destination_override is not None:
+            options["destination_override"] = destination_override
         rename_result = await run_file_io(
             self._facade.rename_service.execute_rename, rename_request, **options,
         )

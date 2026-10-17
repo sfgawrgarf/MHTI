@@ -54,7 +54,7 @@ _METADATA_SUFFIXES = {".nfo", ".jpg", ".jpeg", ".png", ".webp"}
 _JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 
 # 系列级共享元数据文件名
-_SERIES_SHARED_NAMES = {"tvshow.nfo", "poster.jpg", "backdrop.jpg"}
+_SERIES_SHARED_NAMES = {"tvshow.nfo", "poster.jpg", "backdrop.jpg", "logo.png", "banner.jpg"}
 _SEASON_SHARED_NAME = "season.nfo"
 
 
@@ -79,7 +79,7 @@ class HistoryFileService:
 
     # ---- 清单 ----
 
-    async def list_files(self, record_id: str) -> HistoryFileListResponse:
+    async def list_files(self, record_id: str, *, include_shared_metadata: bool = False) -> HistoryFileListResponse:
         """列出记录关联的源文件与刮削产物（含元数据）。"""
         record = await self._history_service.get_record(record_id)
         if record is None:
@@ -114,9 +114,9 @@ class HistoryFileService:
             (entry for entry in entries if entry.role == HistoryFileRole.ORGANIZED), None
         )
         target_path = target_entry.path if target_entry and target_entry.deletable else None
-        if target_path and metadata_root:
+        if target_path:
             try:
-                safe_metadata_root = validate_media_path(metadata_root)
+                safe_metadata_root = validate_media_path(metadata_root or str(Path(target_path).parent.parent.parent))
                 safe_target_path = validate_media_file_entry(target_path)
             except PathSecurityError:
                 safe_metadata_root = None
@@ -124,7 +124,7 @@ class HistoryFileService:
             if safe_metadata_root and safe_target_path:
                 metadata_paths = self._metadata_files(
                     safe_target_path,
-                    safe_metadata_root,
+                    safe_metadata_root, include_shared=include_shared_metadata,
                 )
             else:
                 metadata_paths = []
@@ -166,7 +166,7 @@ class HistoryFileService:
 
         return config_dir
 
-    def _metadata_files(self, target: Path, metadata_root: Path) -> list[Path]:
+    def _metadata_files(self, target: Path, metadata_root: Path, *, include_shared: bool = False) -> list[Path]:
         """列出产物视频对应的元数据文件（集专属总是列出，共享文件按需）。
 
         目录同构关系来自整理模板：产物 `<整理目录>\\<系列>\\<季>\\<stem>.mp4` 对应元数据
@@ -192,16 +192,19 @@ class HistoryFileService:
         )
 
         files = list(episode_files)
-        if self._is_single_episode_season(target, episode_files, season_dir):
-            season_shared = season_dir / _SEASON_SHARED_NAME
-            if season_shared.is_file():
-                files.append(season_shared)
-        if self._is_single_episode_series(target, series_dir):
+        if include_shared or self._is_single_episode_season(target, episode_files, season_dir):
+            files.extend(path for path in season_dir.iterdir() if path.is_file() and (
+                path.name == _SEASON_SHARED_NAME or (path.name.startswith('season') and path.name.endswith('-poster.jpg'))
+            ))
+        if include_shared or self._is_single_episode_series(target, series_dir):
             files.extend(
                 series_dir / name
                 for name in sorted(_SERIES_SHARED_NAMES)
                 if (series_dir / name).is_file()
             )
+            extras = series_dir / 'extrafanart'
+            if extras.is_dir() and not extras.is_symlink():
+                files.extend(path for path in extras.iterdir() if path.is_file() and path.suffix.lower() in _METADATA_SUFFIXES)
         return files
 
     def _is_single_episode_season(
@@ -211,25 +214,33 @@ class HistoryFileService:
 
         产物侧与元数据侧都要看：视频可能在别处，但元数据目录里还留着别的集的 nfo/图片。
         """
-        if self._has_other_files(target.parent, {target.name}, recursive=False):
-            return False
         metadata_own = {path.name for path in episode_files} | {_SEASON_SHARED_NAME}
+        metadata_own.update(path.name for path in metadata_season_dir.glob('season*-poster.jpg'))
+        product_ignore = {target.name} | (metadata_own if target.parent == metadata_season_dir else set())
+        if self._has_other_files(target.parent, product_ignore, recursive=False):
+            return False
+        if target.parent == metadata_season_dir:
+            metadata_own.add(target.name)
         return not self._has_other_files(metadata_season_dir, metadata_own, recursive=False)
 
     def _is_single_episode_series(self, target: Path, metadata_series_dir: Path) -> bool:
         """本系列是否只剩这一集（决定 tvshow.nfo / poster / backdrop 能否一起删）。"""
-        # 产物侧：整个系列目录下只剩这一个视频
-        if self._has_other_files(target.parent.parent, {target.name}, recursive=True):
-            return False
-        # 元数据侧：系列目录下只剩本集元数据与几份共享文件
         metadata_season_names = {
             path.name
             for season in metadata_series_dir.iterdir()
             if season.is_dir()
             for path in season.iterdir()
-            if path.is_file() and path.stem in {target.stem, f"{target.stem}-thumb"}
+            if path.is_file() and (path.stem in {target.stem, f"{target.stem}-thumb"}
+                                   or (path.name.startswith('season') and path.name.endswith('-poster.jpg')))
         }
-        skip = _SERIES_SHARED_NAMES | {_SEASON_SHARED_NAME} | metadata_season_names
+        extras = metadata_series_dir / 'extrafanart'
+        extra_names = {path.name for path in extras.iterdir() if path.is_file()} if extras.is_dir() else set()
+        skip = _SERIES_SHARED_NAMES | {_SEASON_SHARED_NAME} | metadata_season_names | extra_names
+        product_ignore = {target.name} | (skip if target.parent.parent == metadata_series_dir else set())
+        if self._has_other_files(target.parent.parent, product_ignore, recursive=True):
+            return False
+        if target.parent.parent == metadata_series_dir:
+            skip.add(target.name)
         return not self._has_other_files(metadata_series_dir, skip, recursive=True)
 
     def _has_other_files(self, folder: Path, ignore_names: set[str], *, recursive: bool) -> bool:
