@@ -273,6 +273,7 @@ class HistoryService:
         timeout_step: str | None = None,
         timeout_seconds: int | None = None,
         tmdb_id: int | None = None,
+        expected_job_id: str | None = None,
     ) -> bool:
         """Update a history record's status and conflict info."""
         await self._ensure_db()
@@ -302,6 +303,7 @@ class HistoryService:
             timeout_step=timeout_step,
             timeout_seconds=timeout_seconds,
             tmdb_id=tmdb_id,
+            expected_job_id=expected_job_id,
         )
 
         # 发送 WebSocket 通知

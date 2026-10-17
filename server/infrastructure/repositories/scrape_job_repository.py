@@ -485,19 +485,30 @@ class ScrapeJobRepository(BaseRepository):
             return cursor.rowcount == 1
 
     async def reset_job_to_pending(self, job_id: str) -> bool:
-        """Return a running job to a clean pending state."""
+        """Atomically requeue uncommitted work and close only its own history."""
         async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
                 """
                 UPDATE scrape_jobs
                 SET status = 'pending', started_at = NULL, finished_at = NULL,
                     error_message = NULL
-                WHERE id = ? AND status = 'running'
+                WHERE id = ? AND status = 'running' AND output_committed_at IS NULL
                 """,
                 (job_id,),
             )
+            changed = cursor.rowcount == 1
+            if changed:
+                await db.execute(
+                    """UPDATE history_records
+                       SET status = 'failed', error_message = '任务因服务重启中断，已重新排队'
+                       WHERE scrape_job_id = ? AND status = 'running'
+                         AND id = (SELECT COALESCE(history_record_id, continuation_history_id)
+                                   FROM scrape_jobs WHERE id = ?)""",
+                    (job_id, job_id),
+                )
             await db.commit()
-            return cursor.rowcount == 1
+            return changed
 
     async def delete_jobs(self, ids: list[str]) -> int:
         """Delete terminal jobs; active jobs must be cancelled first."""
