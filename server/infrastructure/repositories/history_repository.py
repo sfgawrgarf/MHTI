@@ -382,6 +382,7 @@ class HistoryRepository(BaseRepository):
         timeout_step: str | None = None,
         timeout_seconds: int | None = None,
         tmdb_id: int | None = None,
+        expected_job_id: str | None = None,
     ) -> bool:
         updates = []
         params = []
@@ -460,13 +461,17 @@ class HistoryRepository(BaseRepository):
             return False
 
         params.append(record_id)
+        where = "id = ?"
+        if expected_job_id is not None:
+            where += " AND scrape_job_id = ?"
+            params.append(expected_job_id)
 
         async with self._connect() as db:
             cursor = await db.execute(
-                f"UPDATE history_records SET {', '.join(updates)} WHERE id = ?",
+                f"UPDATE history_records SET {', '.join(updates)} WHERE {where}",
                 params,
             )
-            if status is not None:
+            if status is not None and cursor.rowcount:
                 await db.execute(
                     """UPDATE scrape_jobs
                        SET status = ?,

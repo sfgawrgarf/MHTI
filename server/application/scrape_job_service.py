@@ -1265,7 +1265,7 @@ async def _execute_scrape_job_body(service: ScrapeJobService, job_id: str) -> No
         await _run_scrape_job(service, job_id)
     except asyncio.CancelledError:
         job = await service.get_job(job_id)
-        if job is None:
+        if job is None or job.status != ScrapeJobStatus.RUNNING or job.output_committed_at:
             raise
 
         history_id = job.history_record_id or job.continuation_history_id
@@ -1274,19 +1274,8 @@ async def _execute_scrape_job_body(service: ScrapeJobService, job_id: str) -> No
 
         history_service = HistoryService(db_path=service.db_path)
         if _workers_stopping:
-            # Shutdown is recoverable: leave the durable job pending.  The
-            # history boundary is marked failed so the next attempt creates a
-            # fresh running record instead of showing a permanently running
-            # entry from the previous process.
-            if history_id:
-                try:
-                    await history_service.update_record(
-                        history_id,
-                        status=TaskStatus.FAILED,
-                        error_message="任务因服务重启中断，已重新排队",
-                    )
-                except Exception:
-                    logger.exception("Unable to finalize recovered history: %s", history_id)
+            # The conditional transaction must succeed before closing history;
+            # a terminal/committed result can no longer be interrupted.
             await service.reset_job_to_pending(job_id)
             raise
 
@@ -1304,6 +1293,7 @@ async def _execute_scrape_job_body(service: ScrapeJobService, job_id: str) -> No
                     history_id,
                     status=TaskStatus.CANCELLED,
                     error_message=message,
+                    expected_job_id=job_id,
                 )
                 await history_service.flush_and_clear_log_cache(history_id)
             except Exception:
@@ -1330,7 +1320,7 @@ async def _execute_scrape_job_body(service: ScrapeJobService, job_id: str) -> No
             error_message=message,
             expected_status=ScrapeJobStatus.RUNNING,
         )
-        if history_id:
+        if transitioned and history_id:
             from server.application.history_service import HistoryService
             from server.models.history import TaskStatus
 
@@ -1340,6 +1330,7 @@ async def _execute_scrape_job_body(service: ScrapeJobService, job_id: str) -> No
                     history_id,
                     status=TaskStatus.FAILED,
                     error_message=message,
+                    expected_job_id=job_id,
                 )
                 await history_service.flush_and_clear_log_cache(history_id)
             except Exception:

@@ -209,13 +209,26 @@ api.interceptors.response.use(
       }
 
       originalRequest._retry = true
+      const accessToken = getToken()
+      const refreshToken = getRefreshToken()
+      const session = localStorage.getItem(SESSION_ID_KEY)
+      const credentialsChanged = () => getToken() !== accessToken
+        || getRefreshToken() !== refreshToken || localStorage.getItem(SESSION_ID_KEY) !== session
+
+      // A delayed 401 from the previous login cannot invalidate the current one.
+      const authorization = originalRequest.headers.Authorization
+      if (accessToken && authorization && authorization !== `Bearer ${accessToken}`) {
+        originalRequest.headers.Authorization = `Bearer ${accessToken}`
+        return api(originalRequest)
+      }
 
       try {
         const refreshed = await refreshStoredAccessToken()
-        if (refreshed) {
+        if (refreshed && getToken() === refreshed.accessToken) {
           originalRequest.headers.Authorization = `Bearer ${refreshed.accessToken}`
           return api(originalRequest)
         } else {
+          if (credentialsChanged()) return Promise.reject(error)
           // 刷新失败，跳转登录
           console.log('[API] 无法刷新 Token，跳转登录')
           clearStoredAuthTokens()
@@ -226,6 +239,7 @@ api.interceptors.response.use(
         }
       } catch (refreshError) {
         console.error('[API] 刷新异常', refreshError)
+        if (credentialsChanged()) return Promise.reject(error)
         clearStoredAuthTokens()
         if (window.location.pathname !== '/login') {
           window.location.href = '/login'

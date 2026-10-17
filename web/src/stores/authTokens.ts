@@ -107,6 +107,11 @@ export function createTokenManager(deps: {
       console.log('[Auth] 没有 Refresh Token，无法刷新')
       return false
     }
+    const session = getStoredSessionId()
+    const accessToken = getAccessToken()
+    const credentialsUnchanged = () => getRefreshToken() === refreshToken
+      && getStoredSessionId() === session && getAccessToken() === accessToken
+    const hasCurrentCredentials = () => !!getAccessToken() && !!getRefreshToken()
 
     try {
       console.log('[Auth] 调用刷新 API')
@@ -114,12 +119,18 @@ export function createTokenManager(deps: {
       if (!refreshed) {
         throw new Error('刷新响应无效')
       }
+      // The API layer already stored the rotation. A login/logout may run
+      // before this continuation; never reinstall a stale successful result.
+      if (getStoredSessionId() !== session || getAccessToken() !== refreshed.accessToken) {
+        return hasCurrentCredentials()
+      }
       updateAccessToken(refreshed.accessToken, refreshed.expiresIn)
       console.log('[Auth] 刷新成功，新 Token 有效期', refreshed.expiresIn, '秒')
       return true
     } catch (error) {
       console.log('[Auth] 刷新 API 失败', error)
-      // 刷新失败，清除登录状态
+      // Only the credentials that started this refresh may be logged out.
+      if (!credentialsUnchanged()) return hasCurrentCredentials()
       clearTokens()
       deps.isAuthenticated.value = false
       deps.username.value = null

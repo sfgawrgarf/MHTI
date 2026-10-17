@@ -23,24 +23,30 @@ class ScrapedFileRepository(BaseRepository):
         title: str | None,
         scraped_at: str,
         history_record_id: str | None,
+        expected_job_id: str | None = None,
     ) -> None:
+        ownership = ""
+        ownership_params = ()
+        if expected_job_id is not None:
+            ownership = "WHERE EXISTS (SELECT 1 FROM history_records WHERE id = ? AND scrape_job_id = ?)"
+            ownership_params = (history_record_id, expected_job_id)
         async with self._connect() as db:
             # 使用 INSERT OR REPLACE 实现 upsert
             await db.execute(
-                """
+                f"""
                 INSERT OR REPLACE INTO scraped_files
                 (id, source_path, target_path, file_size, tmdb_id, season, episode, title, scraped_at, history_record_id)
-                VALUES (
+                SELECT
                     COALESCE((SELECT id FROM scraped_files WHERE source_path = ?), ?),
                     ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
+                {ownership}
                 """,
                 (
                     source_path, record_id,
                     source_path, target_path, file_size,
                     tmdb_id, season, episode, title,
                     scraped_at, history_record_id,
-                ),
+                ) + ownership_params,
             )
             await db.commit()
 
@@ -56,15 +62,21 @@ class ScrapedFileRepository(BaseRepository):
         episode: int | None,
         title: str | None,
         scraped_at: str,
+        expected_job_id: str | None = None,
     ) -> int:
         """把某条历史记录的登记行就地更新（重刮用），返回更新行数。
 
         重刮会换产物路径（甚至换源文件），若按 source_path upsert 就会多出一条登记行，
         「已刮削文件」页与删除弹窗都跟着出现重复项。这里按历史记录定位原行，id 保持不变。
         """
+        ownership = ""
+        ownership_params = ()
+        if expected_job_id is not None:
+            ownership = "AND EXISTS (SELECT 1 FROM history_records WHERE id = ? AND scrape_job_id = ?)"
+            ownership_params = (history_record_id, expected_job_id)
         async with self._connect() as db:
             cursor = await db.execute(
-                """
+                f"""
                 UPDATE scraped_files SET
                     source_path = COALESCE(NULLIF(?, ''), source_path),
                     target_path = ?, file_size = ?, tmdb_id = ?,
@@ -74,12 +86,13 @@ class ScrapedFileRepository(BaseRepository):
                     WHERE history_record_id = ?
                     ORDER BY scraped_at DESC LIMIT 1
                 )
+                {ownership}
                 """,
                 (
                     source_path or "", target_path, file_size, tmdb_id,
                     season, episode, title, scraped_at,
                     history_record_id,
-                ),
+                ) + ownership_params,
             )
             await db.commit()
             return cursor.rowcount or 0

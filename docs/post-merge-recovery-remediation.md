@@ -140,3 +140,36 @@ cancellation before publication, fresh service recovery, and a child process exi
 after COPY publication but before metadata/final DB completion. TMDB and Emby use
 fixed responses; no production credentials or media are accessed. All execution
 remains in GitHub Actions. Production service updating is a separate operation.
+
+## Recovery ownership, shutdown and login boundaries (PR #88)
+
+Recovery checks the current history owner and replacement links before replay.
+Superseded receipts only clean identity-verified private publication/metadata
+staging. They never replay media paths, metadata, registration, source removal,
+or terminal-state changes into a successor. Surviving rescrape-stage media is
+retained with `cleanup_error` for inspection because a successor may still use it.
+History updates and both registration update/insert paths additionally compare
+the expected job ID inside their SQL statements, including the error path.
+
+Shutdown only requeues a running job without `output_committed_at`. Requeue and
+closing that job's still-running owned history happen in one SQLite transaction;
+history changes cannot first synchronize an already-successful job to failed.
+Cancellation during the completion notification preserves the committed result.
+
+Cleanup bookkeeping has its own exception boundary. A temporary database failure
+while recording cleanup cannot downgrade a business result after the last receipt
+has been removed. Filesystem cleanup failures still retain receipts for retry.
+If only bookkeeping fails after complete cleanup, the cleanup timestamp may remain
+unset; this does not mean the business operation failed and does not trigger replay.
+
+The token manager compares the credentials that started a refresh before clearing
+login state, and compares a successful refresh result with current storage before
+updating its timer. A newer login is preserved on stale success and stale failure;
+a logout is not undone. The API 401 handler applies the same ownership rule and
+retries a delayed old-login 401 with the current token without rotating it.
+
+Regression coverage includes real worker cancellation after successful publication,
+reorganizing before replay of an old receipt, registration update and insert after
+ownership changes, superseded metadata/stage cleanup, cleanup I/O plus database
+failures, stale refresh success/failure, and login/logout between promise settlement
+and the token-manager continuation. Full validation runs in GitHub Actions.
