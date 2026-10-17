@@ -68,4 +68,37 @@ describe('cross-tab refresh', () => {
     expect(await refreshStoredAccessToken()).toBeNull()
     expect(post).not.toHaveBeenCalled()
   })
+
+  it('keeps a newer login when an older token-manager refresh completes', async () => {
+    vi.useFakeTimers()
+    const { ref } = await import('vue')
+    const { createTokenManager } = await import('../../stores/authTokens')
+    let release!: (value: { data: { access_token: string; refresh_token: string; expires_in: number } }) => void
+    let markStarted!: () => void
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    post.mockImplementation(() => {
+      markStarted()
+      return new Promise(resolve => { release = resolve })
+    })
+    const deps = {
+      expiresAt: ref<number | null>(null), sessionId: ref<string | null>('old-session'),
+      isAuthenticated: ref(true), username: ref<string | null>('admin'),
+    }
+    const manager = createTokenManager(deps)
+    try {
+      manager.setTokens('old-access', 'old', 'old-session', 3600)
+      const pending = manager.refreshAccessToken()
+      await started
+      // A successful new login can happen in this tab or another tab sharing storage.
+      manager.setTokens('new-login-access', 'new-login-refresh', 'new-login-session', 3600)
+      release({ data: { access_token: 'late-access', refresh_token: 'late-refresh', expires_in: 3600 } })
+      await pending
+      expect(localStorage.getItem('refresh_token')).toBe('new-login-refresh')
+      expect(localStorage.getItem('access_token')).toBe('new-login-access')
+      expect(deps.isAuthenticated.value).toBe(true)
+    } finally {
+      manager.clearTokens()
+      vi.useRealTimers()
+    }
+  })
 })
