@@ -201,7 +201,8 @@ class MetadataPlan:
         (directory / 'originals').mkdir()
         final_series = (base / destination.parent.parent.name) if metadata_dir else destination.parent.parent
         final_season = final_series / destination.parent.name
-        record = new_record('metadata', directory=str(directory), destination=str(destination),
+        identity = signature(directory)
+        record = new_record('metadata', directory=str(directory), directory_identity={'dev': identity['dev'], 'ino': identity['ino']}, destination=str(destination),
                             final_series=str(final_series), final_season=str(final_season), seeds=[], files=[])
         plan = cls(record)
         series = plan.content / destination.parent.parent.name
@@ -222,8 +223,6 @@ class MetadataPlan:
                 if entry.is_symlink():
                     raise RecoveryConflict(f'元数据不能通过软链接覆盖: {entry}')
                 source = validate_media_file_entry(str(entry))
-                if source.is_symlink():
-                    raise RecoveryConflict(f'元数据不能通过软链接覆盖: {source}')
                 backup = directory / 'originals' / str(len(record['seeds']))
                 shutil.copy2(source, backup)
                 staged_file = stage_dir / entry.relative_to(final_dir)
@@ -240,6 +239,9 @@ class MetadataPlan:
         for source in self.content.rglob('*'):
             if not source.is_file():
                 continue
+            if source.is_symlink():
+                raise RecoveryConflict(f'元数据暂存文件不能是软链接: {source}')
+            validate_media_file_entry(str(source))
             relative = source.relative_to(self.content)
             destination = Path(self.record['final_series']).parent / relative
             destination = validate_media_path(str(destination))
@@ -294,6 +296,8 @@ class MetadataPlan:
             before = item['before']
             if before:
                 backup = validate_media_file_entry(before['backup'])
+                if backup.is_symlink() or digest(backup) != before['digest']:
+                    raise RecoveryConflict(f'元数据备份内容发生变化: {backup}')
                 with operation_kind('metadata'):
                     publish_file(backup, target, OrganizeMode.COPY, overwrite=True)
             else:
@@ -305,5 +309,9 @@ class MetadataPlan:
         if self.directory.is_symlink() or not safe.name.startswith('.mhti-metadata-'):
             raise RecoveryConflict('元数据暂存目录身份不一致')
         if safe.exists():
+            actual = signature(safe)
+            identity = self.record.get('directory_identity')
+            if identity != {'dev': actual['dev'], 'ino': actual['ino']}:
+                raise RecoveryConflict('元数据暂存目录已被替换，保留文件')
             shutil.rmtree(safe, ignore_errors=False)
         forget(self.record)

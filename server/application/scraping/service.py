@@ -517,7 +517,7 @@ class ScraperService:
 
         options = {"allow_staged_source": True} if allow_staged_source else {}
         plan = None
-        media_published = False
+        completed = False
         details_token = file_journal.details.set({
             "tmdb_id": result.selected_id, "title": title, "season": season, "episode": episode,
         })
@@ -540,13 +540,13 @@ class ScraperService:
                     move_step=move_step, notify_log_update=notify_log_update,
                     result=result, destination_override=destination, **options,
                 )
-                media_published = True
                 await run_file_io(plan.commit)
                 if nfo_path:
                     relative = Path(nfo_path).relative_to(plan.content)
                     result.nfo_path = str(Path(plan.record['final_series']).parent / relative)
                 if file_journal.owner.get() is None:
                     await run_file_io(plan.cleanup)
+                completed = True
                 return folders
         except FileExistsError as exc:
             result.status = ScrapeStatus.FILE_CONFLICT
@@ -557,7 +557,7 @@ class ScraperService:
             file_journal.details.reset(details_token)
             # Workers reconcile durable receipts even when cancellation arrives
             # after publication but before this coroutine receives the result.
-            if plan is not None and not media_published and file_journal.owner.get() is None:
+            if plan is not None and not completed and file_journal.owner.get() is None:
                 await run_file_io(plan.rollback)
 
     async def _record_media_version(

@@ -214,25 +214,33 @@ class HistoryFileService:
 
         产物侧与元数据侧都要看：视频可能在别处，但元数据目录里还留着别的集的 nfo/图片。
         """
-        if self._has_other_files(target.parent, {target.name}, recursive=False):
-            return False
         metadata_own = {path.name for path in episode_files} | {_SEASON_SHARED_NAME}
+        metadata_own.update(path.name for path in metadata_season_dir.glob('season*-poster.jpg'))
+        product_ignore = {target.name} | (metadata_own if target.parent == metadata_season_dir else set())
+        if self._has_other_files(target.parent, product_ignore, recursive=False):
+            return False
+        if target.parent == metadata_season_dir:
+            metadata_own.add(target.name)
         return not self._has_other_files(metadata_season_dir, metadata_own, recursive=False)
 
     def _is_single_episode_series(self, target: Path, metadata_series_dir: Path) -> bool:
         """本系列是否只剩这一集（决定 tvshow.nfo / poster / backdrop 能否一起删）。"""
-        # 产物侧：整个系列目录下只剩这一个视频
-        if self._has_other_files(target.parent.parent, {target.name}, recursive=True):
-            return False
-        # 元数据侧：系列目录下只剩本集元数据与几份共享文件
         metadata_season_names = {
             path.name
             for season in metadata_series_dir.iterdir()
             if season.is_dir()
             for path in season.iterdir()
-            if path.is_file() and path.stem in {target.stem, f"{target.stem}-thumb"}
+            if path.is_file() and (path.stem in {target.stem, f"{target.stem}-thumb"}
+                                   or (path.name.startswith('season') and path.name.endswith('-poster.jpg')))
         }
-        skip = _SERIES_SHARED_NAMES | {_SEASON_SHARED_NAME} | metadata_season_names
+        extras = metadata_series_dir / 'extrafanart'
+        extra_names = {path.name for path in extras.iterdir() if path.is_file()} if extras.is_dir() else set()
+        skip = _SERIES_SHARED_NAMES | {_SEASON_SHARED_NAME} | metadata_season_names | extra_names
+        product_ignore = {target.name} | (skip if target.parent.parent == metadata_series_dir else set())
+        if self._has_other_files(target.parent.parent, product_ignore, recursive=True):
+            return False
+        if target.parent.parent == metadata_series_dir:
+            skip.add(target.name)
         return not self._has_other_files(metadata_series_dir, skip, recursive=True)
 
     def _has_other_files(self, folder: Path, ignore_names: set[str], *, recursive: bool) -> bool:

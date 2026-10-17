@@ -1233,11 +1233,15 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     from server.infrastructure.file_journal import owner
 
     token = owner.set(job_id)
+    cancelled = False
     try:
         await _execute_scrape_job_body(service, job_id)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
         try:
-            await drain_recovery(service, job_id)
+            await drain_recovery(service, job_id, cancelled=cancelled and not _workers_stopping)
         finally:
             owner.reset(token)
 

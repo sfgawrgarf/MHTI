@@ -134,15 +134,32 @@ async def reconcile_file_operations(service, job_id=None):
         await _reconcile_job(service, owner, items)
 
 
-async def drain_recovery(service, job_id):
+async def drain_recovery(service, job_id, *, cancelled=False):
     """Repeated cancellation must not abandon a committed file's DB receipt."""
-    task = asyncio.create_task(reconcile_file_operations(service, job_id))
-    cancelled = False
+    async def settle():
+        # A second cancellation can interrupt the body's terminal DB write.
+        # Finish that transition in the same shielded task as file recovery.
+        if cancelled:
+            from server.application.history_service import HistoryService
+            job = await service.get_job(job_id)
+            if job and job.status in {ScrapeJobStatus.PENDING, ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING_ACTION}:
+                changed = await service.update_job(job_id, status=ScrapeJobStatus.CANCELLED,
+                                                   expected_status=job.status, finished_at=datetime.now())
+                if changed:
+                    job = await service.get_job(job_id)
+            if job and job.status == ScrapeJobStatus.CANCELLED:
+                history_id = job.history_record_id or job.continuation_history_id
+                if history_id:
+                    await HistoryService(db_path=service.db_path).update_record(history_id, status=TaskStatus.CANCELLED)
+        await reconcile_file_operations(service, job_id)
+
+    task = asyncio.create_task(settle())
+    interrupted = False
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            cancelled = True
+            interrupted = True
     task.result()
-    if cancelled:
+    if interrupted:
         raise asyncio.CancelledError

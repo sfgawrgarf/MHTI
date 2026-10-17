@@ -238,3 +238,90 @@ def test_journal_rejects_forged_identity_and_symlinks(tmp_path):
     with pytest.raises(journal.RecoveryConflict, match='软链接'):
         journal.read_records()
     assert unrelated.read_text() == '{}'
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_finishes_history_and_file_receipt(recovery_env, monkeypatch):
+    from types import SimpleNamespace
+    from server.tests.application.test_recovery_regressions import bind_worker
+    from server.application import scrape_job_service as jobs
+    env = recovery_env
+    committed, wait_for_cancel, terminal_write = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    target = env.output / 'published.mkv'
+
+    async def scrape(request, **kwargs):
+        publish_file(env.source, target, OrganizeMode.MOVE)
+        committed.set()
+        await wait_for_cancel.wait()
+
+    original = env.history.update_record
+    blocked = False
+
+    async def interrupted_terminal_write(*args, **kwargs):
+        nonlocal blocked
+        if kwargs.get('status') == TaskStatus.CANCELLED and not blocked:
+            blocked = True
+            terminal_write.set()
+            await wait_for_cancel.wait()
+        return await original(*args, **kwargs)
+
+    bind_worker(env, monkeypatch, SimpleNamespace(scrape_file=scrape))
+    monkeypatch.setattr(env.history, 'update_record', interrupted_terminal_write)
+    job = await env.jobs.create_job(ScrapeJobCreate(file_path=str(env.source), output_dir=str(env.output)))
+    task = asyncio.create_task(jobs._execute_scrape_job(env.jobs, job.id))
+    try:
+        await asyncio.wait_for(committed.wait(), 5)
+        task.cancel()
+        await asyncio.wait_for(terminal_write.wait(), 5)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        updated = await env.jobs.get_job(job.id)
+        record = await env.history.get_record(updated.history_record_id)
+        assert updated.status == ScrapeJobStatus.CANCELLED
+        assert record.status == TaskStatus.CANCELLED
+        assert str(target) in record.folder_path
+        assert target.read_bytes() == b'original video'
+        assert journal.read_records(job.id) == []
+    finally:
+        wait_for_cancel.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def test_metadata_cleanup_rejects_replaced_staging_directory(tmp_path):
+    target = tmp_path / 'out' / 'Show' / 'Season 1' / 'S01E01.mkv'
+    plan = journal.MetadataPlan.create(target, None)
+    moved = plan.directory.with_name(plan.directory.name + '-original')
+    plan.directory.rename(moved)
+    plan.directory.mkdir()
+    unrelated = plan.directory / 'keep.txt'
+    unrelated.write_text('other writer')
+    with pytest.raises(journal.RecoveryConflict, match='替换'):
+        plan.cleanup()
+    assert unrelated.read_text() == 'other writer'
+    assert moved.exists()
+
+
+@pytest.mark.asyncio
+async def test_colocated_metadata_discovery_keeps_shared_deletion_rules(recovery_env):
+    from server.models.organize import OrganizeConfig
+    env = recovery_env
+    await env.config.save_organize_config(OrganizeConfig(organize_dir=str(env.output)))
+    target = env.output / 'Show' / 'Season 1' / 'S01E10.mkv'
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'video')
+    own = target.with_suffix('.nfo')
+    own.write_text('episode')
+    season = target.parent / 'season.nfo'
+    season.write_text('season')
+    series = target.parent.parent / 'tvshow.nfo'
+    series.write_text('series')
+    record = await record_for(env, f'{env.source} => {target}')
+    listing = await env.files.list_files(record.id)
+    assert {str(own), str(season), str(series)} <= {item.path for item in listing.files}
+    target.with_name('S01E11.mkv').write_bytes(b'other episode')
+    listing = await env.files.list_files(record.id)
+    assert str(own) in {item.path for item in listing.files}
+    assert {str(season), str(series)}.isdisjoint({item.path for item in listing.files})
+    backup_listing = await env.files.list_files(record.id, include_shared_metadata=True)
+    assert {str(season), str(series)} <= {item.path for item in backup_listing.files}
