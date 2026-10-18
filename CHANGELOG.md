@@ -8,7 +8,7 @@
 ## [Unreleased]
 
 ### 发布
-- 增加 Docker Hub 镜像 `asdfvf2/mhti`，后续发版与 GHCR 同步推送 AMD64/ARM64 镜像；提供按摘要补同步已发布版本的云端工作流。
+- 后续镜像仅发布到 Docker Hub `asdfvf2/mhti`，支持 AMD64/ARM64；Compose 默认镜像、部署文档和发布说明同步切换至 Docker Hub，移除已完成迁移的补同步工作流。
 
 ### 计划中
 - 多语言支持 (i18n)

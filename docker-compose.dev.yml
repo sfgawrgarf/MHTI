@@ -1,5 +1,5 @@
 # Local development override. It deliberately leaves the default Compose file
-# pinned to a published GHCR image.
+# pinned to a published Docker Hub image.
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build

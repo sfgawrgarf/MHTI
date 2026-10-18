@@ -3,7 +3,7 @@
 # Architecture: Caddy (reverse proxy) + FastAPI (API)
 #   - Port 8000: Main entry (Caddy - frontend + API unified)
 #
-# Default deployment uses the image published to GitHub Container Registry.
+# Default deployment uses the image published to Docker Hub.
 # Override MHTI_VERSION in a local .env file when deliberately upgrading.
 # For local source builds, use docker-compose.dev.yml as an override.
 #
@@ -15,7 +15,7 @@
 
 services:
   mhti:
-    image: ghcr.io/sfgawrgarf/mhti:${MHTI_VERSION:-2.1.8}
+    image: asdfvf2/mhti:${MHTI_VERSION:-2.1.8}
     container_name: mhti
     restart: unless-stopped
 
