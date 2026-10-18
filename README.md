@@ -343,6 +343,8 @@ services:
 `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`。
 容器内 Caddy 监听 8000，uvicorn 只监听 `127.0.0.1:8001`，前端静态文件由 Caddy 直接提供。
 
+镜像同时发布到 [Docker Hub](https://hub.docker.com/r/asdfvf2/mhti)。使用 Docker Hub 时，将 Compose 中的镜像地址改为 `asdfvf2/mhti:${MHTI_VERSION:-2.1.8}`，挂载目录和环境变量保持相同。直接拉取命令为 `docker pull asdfvf2/mhti:2.1.8`；支持 AMD64 和 ARM64。
+
 镜像内的 API 和 Caddy 均以 UID/GID `10001:10001` 非 root 运行。已有 root 用户运行的部署升级前，先停止容器并迁移可写挂载目录的所有权；这只改变宿主机文件所有者，不会修改文件内容：
 
 ```bash
