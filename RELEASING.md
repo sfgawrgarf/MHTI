@@ -42,11 +42,11 @@ git push origin v1.0.0
 
 1. ✅ 构建前端 (Vue.js)
 2. ✅ 构建 Docker 多架构镜像 (amd64, arm64)
-3. ✅ 推送到 GitHub Container Registry 和 Docker Hub（`ghcr.io/sfgawrgarf/mhti`、`asdfvf2/mhti` 的版本标签和稳定版 `latest`）
+3. ✅ 仅推送到 Docker Hub（`asdfvf2/mhti` 的版本标签和稳定版 `latest`）
 4. ✅ 打包前端和源代码，并生成校验和
 5. ✅ 创建 GitHub Release
 
-工作流不会生成或上传 AMD64/ARM64 Docker 离线镜像大包；多架构镜像保留在 GHCR 和 Docker Hub。
+工作流不会生成或上传 AMD64/ARM64 Docker 离线镜像大包；多架构镜像发布到 Docker Hub。
 
 准备新版本时，在同一个 PR 中更新后端、前端、锁文件根版本、镜像标签、README 和 Compose 默认版本，
 并将已完成的 Unreleased 更新整理到目标版本章节。当前目标稳定版为 `2.1.8`。
@@ -74,18 +74,16 @@ git push origin v1.0.0
 
 发布 `v1.2.3` 时，会自动创建以下标签：
 
-以下 GHCR 标签也会同步发布为 `asdfvf2/mhti` 对应的 Docker Hub 标签。
-
 | 标签 | 说明 |
 |------|------|
-| `ghcr.io/sfgawrgarf/mhti:1.2.3` | 完整版本号 |
-| `ghcr.io/sfgawrgarf/mhti:1.2` | 主次版本号 |
-| `ghcr.io/sfgawrgarf/mhti:1` | 主版本号 |
-| `ghcr.io/sfgawrgarf/mhti:latest` | 最新稳定版（非预发布） |
+| `asdfvf2/mhti:1.2.3` | 完整版本号 |
+| `asdfvf2/mhti:1.2` | 主次版本号 |
+| `asdfvf2/mhti:1` | 主版本号 |
+| `asdfvf2/mhti:latest` | 最新稳定版（非预发布） |
 
 ## 必需的 GitHub 配置
 
-发布工作流使用仓库内置的 `GITHUB_TOKEN` 推送至 GHCR；工作流已授予 `packages: write` 权限。
+发布工作流使用 Docker Hub 令牌推送镜像，使用仓库内置的 `GITHUB_TOKEN` 创建 GitHub Release 和上传前端、源码及校验和附件。
 
 在仓库 **Settings → Secrets and variables → Actions** 配置两个 Repository secrets：
 
@@ -96,12 +94,6 @@ git push origin v1.0.0
 
 令牌只保存到 GitHub Secrets，不写入源码或日志。Docker Hub 仓库 `asdfvf2/mhti` 使用 Public 可见性。缺少授权时发布工作流会在推送前失败。
 
-首次发布后，请在 GitHub 的 **Packages** 页面将 `mhti` 容器包可见性设为 **Public**，这样其他用户无需登录 GitHub 即可执行 `docker compose pull`。
-
-### 补同步已发布的版本
-
-在 main 上手动运行 **Sync Published Image to Docker Hub**：填写已发布的正式版本号和 GHCR 的完整 `sha256:` 摘要。工作流会验证该 GitHub Release 已正式发布、版本标签与摘要相符，并包含 AMD64/ARM64，然后使用 Skopeo `--all --preserve-digests` 复制完整镜像和验证目标摘要，不重新构建旧版本。只有 GitHub 当前最新正式版允许勾选 `update_aliases`，更新主次版本、主版本和 `latest`。同步与正式发版共用串行锁，避免同时修改镜像标签。
-
 ## 发布检查清单
 
 发布前请确认：
@@ -110,4 +102,4 @@ git push origin v1.0.0
 - [ ] 文档已更新
 - [ ] CHANGELOG 已更新（如有）
 - [ ] 版本号符合语义化规范
-- [ ] GitHub Actions 的 `packages: write` 权限可用
+- [ ] Docker Hub 发布凭据有效，目标仓库可公开拉取
