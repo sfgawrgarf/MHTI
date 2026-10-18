@@ -28,10 +28,7 @@ on:
       - '.gitignore'
   pull_request:
     branches: [main, master]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
+    # Required checks must also run for documentation-only pull requests.
   workflow_dispatch:  # 手动触发
 
 jobs:
