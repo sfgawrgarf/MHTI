@@ -7,7 +7,7 @@
 #
 # 功能：
 #   1. 构建 Docker 多架构镜像 (Dockerfile 内部构建前端)
-#   2. 推送到 GitHub Container Registry (GHCR)
+#   2. 推送到 GitHub Container Registry (GHCR) 和 Docker Hub
 #   3. 打包前端和源代码
 #   4. 创建 GitHub Release
 # =============================================================================
@@ -16,6 +16,10 @@ name: Build and Release
 
 permissions:
   contents: read
+
+concurrency:
+  group: mhti-container-publish
+  cancel-in-progress: false
 
 on:
   push:
@@ -34,6 +38,7 @@ on:
 
 env:
   DOCKER_IMAGE: ghcr.io/sfgawrgarf/mhti
+  DOCKERHUB_IMAGE: docker.io/asdfvf2/mhti
   REGISTRY: ghcr.io
 
 jobs:
@@ -182,7 +187,7 @@ jobs:
           PY
 
   # ===========================================================================
-  # 构建并推送 Docker 镜像到 GitHub Container Registry
+  # 一次构建并推送 Docker 镜像到 GHCR 和 Docker Hub
   # ===========================================================================
   build-and-push:
     name: 🐳 构建并推送 Docker 镜像
@@ -192,6 +197,17 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: 验证 Docker Hub 发布授权
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "$DOCKERHUB_USERNAME" != "asdfvf2" || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "请配置 DOCKERHUB_USERNAME=asdfvf2 和具有镜像推送权限的 DOCKERHUB_TOKEN" >&2
+            exit 1
+          fi
+
       - name: 检出代码
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -214,12 +230,21 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
-          images: ${{ env.DOCKER_IMAGE }}
+          images: |
+            ${{ env.DOCKER_IMAGE }}
+            ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
             type=semver,pattern={{major}},value=${{ needs.prepare.outputs.version }}
             type=raw,value=latest,enable=${{ needs.prepare.outputs.is_prerelease == 'false' }}
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 构建并推送 Docker 镜像
         id: build-push
@@ -343,6 +368,7 @@ jobs:
 
           version = os.environ["VERSION"]
           docker_image = os.environ["DOCKER_IMAGE"]
+          dockerhub_image = os.environ["DOCKERHUB_IMAGE"]
           repository = os.environ["GITHUB_REPOSITORY"]
           changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
           heading = re.search(
@@ -364,6 +390,14 @@ jobs:
           ---
 
           ### 🐳 Docker 部署
+
+          #### 从 Docker Hub 拉取
+
+          ```bash
+          docker pull {dockerhub_image}:{version}
+          ```
+
+          Docker Hub 与 GHCR 同步发布 AMD64/ARM64 镜像，版本标签可互换使用。
 
           #### 从 GitHub Container Registry 拉取（推荐）
 
@@ -408,6 +442,7 @@ jobs:
 
           - 📖 [使用文档](https://github.com/{repository}/blob/main/README.md)
           - 🐳 [Container package](https://github.com/{repository}/pkgs/container/mhti)
+          - 🐳 [Docker Hub](https://hub.docker.com/r/asdfvf2/mhti)
           - 🐛 [问题反馈](https://github.com/{repository}/issues)
           """
           Path("release-body.md").write_text(body, encoding="utf-8")
@@ -439,4 +474,5 @@ jobs:
           echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
           echo "| 版本 | $RELEASE_TAG |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker 镜像 | \`$DOCKER_IMAGE:$VERSION\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Hub | \`$DOCKERHUB_IMAGE:$VERSION\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Release | [查看](https://github.com/$REPOSITORY/releases/tag/$RELEASE_TAG) |" >> $GITHUB_STEP_SUMMARY
