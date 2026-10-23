@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-2.1.8-blue.svg)
+![Version](https://img.shields.io/badge/version-2.1.9-blue.svg)
 ![Python](https://img.shields.io/badge/Python-3.12+-green.svg)
 ![Vue](https://img.shields.io/badge/Vue-3.5-brightgreen.svg)
 ![Node](https://img.shields.io/badge/Node-24-339933.svg)
@@ -302,7 +302,7 @@ mkdir -p data media output
 sudo chown -R 10001:10001 data output
 
 # 默认使用已发布的固定版本；升级时显式指定目标版本
-export MHTI_VERSION=2.1.8
+export MHTI_VERSION=2.1.9
 
 # 拉取固定版本镜像并启动服务（Docker Compose v2）
 docker compose pull
@@ -323,7 +323,7 @@ docker compose logs -f mhti
 ```yaml
 services:
   mhti:
-    image: asdfvf2/mhti:${MHTI_VERSION:-2.1.8}
+    image: asdfvf2/mhti:${MHTI_VERSION:-2.1.9}
     container_name: mhti
     restart: unless-stopped
     ports:
@@ -343,7 +343,7 @@ services:
 `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`。
 容器内 Caddy 监听 8000，uvicorn 只监听 `127.0.0.1:8001`，前端静态文件由 Caddy 直接提供。
 
-后续镜像仅发布到 [Docker Hub](https://hub.docker.com/r/asdfvf2/mhti)。直接拉取命令为 `docker pull asdfvf2/mhti:2.1.8`；支持 AMD64 和 ARM64。
+后续镜像仅发布到 [Docker Hub](https://hub.docker.com/r/asdfvf2/mhti)。直接拉取命令为 `docker pull asdfvf2/mhti:2.1.9`；支持 AMD64 和 ARM64。
 
 镜像内的 API 和 Caddy 均以 UID/GID `10001:10001` 非 root 运行。已有 root 用户运行的部署升级前，先停止容器并迁移可写挂载目录的所有权；这只改变宿主机文件所有者，不会修改文件内容：
 
