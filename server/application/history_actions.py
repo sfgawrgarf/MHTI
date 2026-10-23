@@ -297,7 +297,8 @@ class HistoryScrapeActions:
                 link_mode=scrape_request.link_mode,
                 source=ScrapeJobSource.MANUAL,
                 source_id=record.manual_job_id,
-                advanced_settings=getattr(scrape_request, "advanced_settings", None),
+                advanced_settings=(getattr(scrape_request, "advanced_settings", None)
+                                   or getattr(old_job, "advanced_settings", None)),
                 replaces_job_id=old_job.replaces_job_id if correcting else record.scrape_job_id,
                 operation="rematch" if correcting else "scrape",
                 correction_history_id=old_job.correction_history_id if correcting else None,

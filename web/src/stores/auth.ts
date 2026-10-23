@@ -98,7 +98,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   // 检查认证状态
-  async function checkAuth(): Promise<boolean> {
+  async function checkAuth(allowRefresh = true): Promise<boolean> {
     const token = getAccessToken()
     const refreshToken = getRefreshToken()
     const storedExpiresAt = getStoredExpiresAt()
@@ -163,9 +163,16 @@ export const useAuthStore = defineStore('auth', () => {
     } catch (error) {
       console.log('[Auth] 验证失败，尝试刷新', error)
       // 验证失败，尝试刷新
-      const refreshed = await refreshAccessToken()
+      const status = (error as { response?: { status?: number } }).response?.status
+      const refreshed = allowRefresh && status === 401 && await refreshAccessToken()
       if (refreshed) {
-        return checkAuth()
+        return checkAuth(false)
+      }
+      if (status !== 401) {
+        // A service/network error does not invalidate stored credentials.
+        isAuthenticated.value = false
+        isReady.value = true
+        return false
       }
 
       console.log('[Auth] 刷新也失败，清除登录状态')

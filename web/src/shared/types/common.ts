@@ -169,6 +169,7 @@ export interface ProxyConfigRequest {
   port: number
   username?: string | null
   password?: string | null
+  clear_auth?: boolean
 }
 
 export interface ProxyConfigResponse {

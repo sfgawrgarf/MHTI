@@ -86,19 +86,24 @@ async def get_proxy_config(
     )
 
 
+async def _proxy_from_request(request: ProxyConfigRequest, service: ConfigService) -> ProxyConfig:
+    saved = await service.get_proxy_config()
+    # Never send saved credentials to a different proxy host automatically.
+    preserve = not request.clear_auth and request.host == saved.host and request.type == saved.type
+    return ProxyConfig(
+        type=request.type, host=request.host, port=request.port,
+        username=None if request.clear_auth else (request.username or (saved.username if preserve else None)),
+        password=None if request.clear_auth else (request.password or (saved.password if preserve else None)),
+    )
+
+
 @router.put("/proxy", response_model=ProxyConfigResponse)
 async def save_proxy_config(
     request: ProxyConfigRequest,
     config_service: ConfigService = Depends(get_config_service),
 ) -> ProxyConfigResponse:
     """Save proxy configuration."""
-    config = ProxyConfig(
-        type=request.type,
-        host=request.host,
-        port=request.port,
-        username=request.username,
-        password=request.password,
-    )
+    config = await _proxy_from_request(request, config_service)
     await config_service.save_proxy_config(config)
     return ProxyConfigResponse(
         type=config.type,
@@ -121,17 +126,12 @@ async def delete_proxy_config(
 async def test_proxy(
     request: ProxyConfigRequest | None = None,
     tmdb_service: TMDBService = Depends(get_tmdb_service),
+    config_service: ConfigService = Depends(get_config_service),
 ) -> ProxyTestResponse:
     """Test proxy connection to TMDB."""
     proxy_url = None
     if request is not None:
-        proxy_url = ProxyConfig(
-            type=request.type,
-            host=request.host,
-            port=request.port,
-            username=request.username,
-            password=request.password,
-        ).get_url()
+        proxy_url = (await _proxy_from_request(request, config_service)).get_url()
 
     success, message, latency = await tmdb_service.test_proxy(proxy_url)
     return ProxyTestResponse(
