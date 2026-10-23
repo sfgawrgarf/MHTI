@@ -15,7 +15,7 @@
 
 services:
   mhti:
-    image: asdfvf2/mhti:${MHTI_VERSION:-2.1.8}
+    image: asdfvf2/mhti:${MHTI_VERSION:-2.1.9}
     container_name: mhti
     restart: unless-stopped
 
