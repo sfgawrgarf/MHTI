@@ -65,6 +65,9 @@ jobs:
         run: pip-audit -r requirements.lock --no-deps
 
       - name: 运行测试
+        # Audit branch: collect regression evidence even when dependency audit fails.
+        # The failed audit step still keeps this job red.
+        if: ${{ !cancelled() }}
         run: |
           pytest server/tests/ -v --cov=server --cov-report=xml --cov-report=term-missing --cov-fail-under=77
 
