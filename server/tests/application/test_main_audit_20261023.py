@@ -1,7 +1,7 @@
 """Regression coverage for the main audit remediation."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import aiosqlite
@@ -54,14 +54,17 @@ async def test_frequent_pings_do_not_postpone_session_revalidation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_recovers_from_one_failed_finish_write(temp_db, monkeypatch):
+@pytest.mark.parametrize("second", [0, 58, 59])
+async def test_scheduler_recovers_from_one_failed_finish_write(temp_db, monkeypatch, second):
     async with aiosqlite.connect(temp_db) as db:
         await create_all_tables(db)
         await db.commit()
     service = SchedulerService(db_path=temp_db)
     scheduled = await service.create_task(ScheduledTaskCreate(
         name='audit', folder_path='/media', cron_expression='* * * * *'))
-    now = datetime.now() + timedelta(minutes=2)
+    # Anchor to the persisted cron occurrence, never the wall-clock seconds.
+    assert scheduled.next_run is not None
+    now = scheduled.next_run + timedelta(seconds=second)
     monkeypatch.setattr(service, '_dispatch', AsyncMock())
     finish = service._repo.finish_run
     attempts = 0
@@ -81,7 +84,14 @@ async def test_scheduler_recovers_from_one_failed_finish_write(temp_db, monkeypa
             pass  # Mirrors _run: log and continue at the next tick.
     result = await service.get_task(scheduled.id)
     assert result.last_status == 'success'
-    service._dispatch.assert_awaited_once()
+    dispatched = [call.args[0]['running_for'] for call in service._dispatch.await_args_list]
+    # Crossing a minute legitimately dispatches the next occurrence. Completion
+    # retries must not dispatch the same occurrence a second time.
+    expected = [scheduled.next_run.isoformat()]
+    if second >= 58:
+        expected.append((scheduled.next_run + timedelta(minutes=1)).isoformat())
+    assert dispatched == expected
+    assert len(dispatched) == len(set(dispatched))
 
 
 @pytest.mark.asyncio
