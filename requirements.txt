@@ -11,3 +11,5 @@ PyJWT>=2.15,<3.0
 p115client==0.0.9.6.5.1
 # Security floor for the p115client HTTP stack.
 multidict>=6.9.1,<7.0
+# Remove compromised emSign certificate chains.
+certifi>=2026.10.19

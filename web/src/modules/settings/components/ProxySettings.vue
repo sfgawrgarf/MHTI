@@ -9,7 +9,7 @@
  * 保存/测试失败的错误信息除了 toast 也落在分组顶部的错误条（可回看，不会一闪而过）。
  */
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NIcon, NInput, NInputNumber, NRadio, NRadioGroup } from 'naive-ui'
+import { NButton, NCheckbox, NIcon, NInput, NInputNumber, NRadio, NRadioGroup } from 'naive-ui'
 import { CheckmarkCircleOutline, CloseCircleOutline } from '@vicons/ionicons5'
 import { configApi } from '@/shared/api/config'
 import type { ProxyType } from '@/shared/types/common'
@@ -23,6 +23,7 @@ const port = ref<number | null>(null)
 const username = ref('')
 const password = ref('')
 const hasAuth = ref(false)
+const clearAuth = ref(false)
 const testResult = ref<{ success: boolean; message: string; latency?: number } | null>(null)
 const testing = ref(false)
 
@@ -34,6 +35,7 @@ const load = async () => {
   host.value = config.host
   port.value = config.port || null
   hasAuth.value = config.has_auth
+  clearAuth.value = false
   // 不加载密码，保持空
 }
 
@@ -44,6 +46,7 @@ const save = async () => {
     port: port.value || 0,
     username: username.value || null,
     password: password.value || null,
+    clear_auth: clearAuth.value,
   })
   testResult.value = null
   username.value = ''
@@ -86,6 +89,7 @@ const testConnection = async () => {
       port: port.value || 0,
       username: username.value || null,
       password: password.value || null,
+    clear_auth: clearAuth.value,
     })
     testResult.value = {
       success: result.success,
@@ -157,6 +161,7 @@ onMounted(reload)
         </SettingsField>
       </div>
 
+      <NCheckbox v-if="hasAuth" v-model:checked="clearAuth">清除已保存的代理认证信息</NCheckbox>
       <p v-if="hasAuth" class="note">已保存过认证信息，留空则沿用原密码</p>
     </template>
 

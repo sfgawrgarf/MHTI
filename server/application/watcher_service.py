@@ -527,6 +527,7 @@ class WatcherService:
         self._process_task: asyncio.Task | None = None
         self._initial_scan_task: asyncio.Task | None = None
         self._lifecycle_lock = asyncio.Lock()
+        self._pending_lock = asyncio.Lock()
 
     async def _ensure_db(self) -> None:
         """确保监控目录表可用并完成旧库列迁移。"""
@@ -619,6 +620,12 @@ class WatcherService:
     async def update_folder(
         self, folder_id: str, update: WatchedFolderUpdate
     ) -> WatchedFolder | None:
+        async with self._pending_lock:
+            return await self._update_folder_locked(folder_id, update)
+
+    async def _update_folder_locked(
+        self, folder_id: str, update: WatchedFolderUpdate
+    ) -> WatchedFolder | None:
         """Update a watched folder."""
         await self._ensure_db()
 
@@ -658,6 +665,10 @@ class WatcherService:
         return updated_folder
 
     async def delete_folder(self, folder_id: str) -> bool:
+        async with self._pending_lock:
+            return await self._delete_folder_locked(folder_id)
+
+    async def _delete_folder_locked(self, folder_id: str) -> bool:
         """Delete a watched folder."""
         await self._ensure_db()
 
@@ -665,12 +676,18 @@ class WatcherService:
         if folder_id in self._strategies:
             await self._stop_folder_watch(folder_id)
 
-        return await self._repo.delete_folder(folder_id)
+        deleted = await self._repo.delete_folder(folder_id)
+        for path, pending in list(self._pending_files.items()):
+            if pending.folder.id == folder_id:
+                self._pending_files.pop(path, None)
+        return deleted
 
     async def replace_folders(self, folders: list[WatchedFolder]) -> None:
         """Replace all watched folders from a validated configuration snapshot."""
         await self._ensure_db()
-        await self._repo.replace_folders(folders)
+        async with self._pending_lock:
+            await self._repo.replace_folders(folders)
+            self._pending_files.clear()
 
     async def get_status(self) -> WatcherStatusResponse:
         """Get watcher status."""
@@ -906,6 +923,10 @@ class WatcherService:
             )
 
     async def _process_pending_once(self) -> None:
+        async with self._pending_lock:
+            await self._process_pending_locked()
+
+    async def _process_pending_locked(self) -> None:
         """Process one stable-file batch without dropping failed handoffs."""
         if not self._pending_files:
             return
@@ -915,9 +936,14 @@ class WatcherService:
         missing_local_paths: set[str] = set()
 
         for path, pending in list(self._pending_files.items()):
-            folder = pending.folder
-            if not folder.enabled:
+            folder = await self.get_folder(pending.folder.id)
+            if (folder is None or not folder.enabled
+                    or folder.path != pending.folder.path
+                    or folder.provider != pending.folder.provider
+                    or folder.file_id != pending.folder.file_id):
+                self._pending_files.pop(path, None)
                 continue
+            pending.folder = folder
             if current_time - pending.detected_at < folder.file_stable_seconds:
                 continue
 

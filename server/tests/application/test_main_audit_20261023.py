@@ -1,4 +1,4 @@
-"""Review-only regressions against main 7a643fe; assertions describe desired behavior."""
+"""Regression coverage for the main audit remediation."""
 
 import asyncio
 from datetime import datetime, timedelta
@@ -80,7 +80,8 @@ async def test_scheduler_recovers_from_one_failed_finish_write(temp_db, monkeypa
         except aiosqlite.OperationalError:
             pass  # Mirrors _run: log and continue at the next tick.
     result = await service.get_task(scheduled.id)
-    assert result.last_status != 'running', 'A transient finish failure stranded the schedule'
+    assert result.last_status == 'success'
+    service._dispatch.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -127,3 +128,29 @@ async def test_conflict_resolution_preserves_task_specific_settings(audit_env):
         file_path=str(env.source), tmdb_id=123, season=1, episode=10, output_dir=str(env.output)))
     queued = await env.jobs.get_job(result['job_id'])
     assert queued.advanced_settings == custom
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('host,clear_auth', [('proxy.example', True), ('other.example', False)])
+async def test_proxy_clear_or_changed_host_does_not_reuse_credentials(audit_env, host, clear_auth):
+    config = audit_env.config
+    await config.save_proxy_config(ProxyConfig(
+        type='http', host='proxy.example', port=8080, username='user', password='secret'))
+    await save_proxy_config(ProxyConfigRequest(
+        type='http', host=host, port=8080, clear_auth=clear_auth), config)
+    saved = await config.get_proxy_config()
+    assert saved.username is None and saved.password is None
+
+
+@pytest.mark.asyncio
+async def test_pending_watcher_uses_updated_output(audit_env, tmp_path, monkeypatch):
+    service = WatcherService(db_path=audit_env.db)
+    folder = await service.create_folder(WatchedFolderCreate(path=str(tmp_path), file_stable_seconds=0))
+    source = audit_env.source
+    service._pending_files[str(source)] = PendingFile(path=str(source), detected_at=0, folder=folder)
+    dispatch = AsyncMock(return_value={str(source)})
+    monkeypatch.setattr(service, '_create_jobs_for_files', dispatch)
+    await service.update_folder(folder.id, WatchedFolderUpdate(output_dir=str(audit_env.output)))
+    await service._process_pending_once()
+    dispatch.assert_awaited_once()
+    assert dispatch.call_args.args[1].output_dir == str(audit_env.output)

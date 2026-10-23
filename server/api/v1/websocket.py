@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from json import JSONDecodeError
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -77,6 +78,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 last_pong_time,
                 session_id=auth.session_id,
                 username=auth.username,
+                heartbeat_time=lambda: last_pong_time,
             )
         )
 
@@ -116,19 +118,6 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "ping":
                 # 客户端心跳响应
                 last_pong_time = asyncio.get_event_loop().time()
-                # 更新超时任务
-                if timeout_task:
-                    timeout_task.cancel()
-                    timeout_task = asyncio.create_task(
-                        _timeout_monitor(
-                            websocket,
-                            client_id,
-                            manager,
-                            last_pong_time,
-                            session_id=auth.session_id,
-                            username=auth.username,
-                        )
-                    )
                 # 响应 pong
                 try:
                     await manager.send_to_client(client_id, {"type": "pong"})
@@ -266,6 +255,7 @@ async def _timeout_monitor(
     *,
     session_id: str | None = None,
     username: str | None = None,
+    heartbeat_time: Callable[[], float] | None = None,
 ):
     """客户端超时检测
 
@@ -299,7 +289,7 @@ async def _timeout_monitor(
                     )
                     break
             current_time = asyncio.get_event_loop().time()
-            if current_time - last_pong_time > CLIENT_TIMEOUT:
+            if current_time - (heartbeat_time() if heartbeat_time else last_pong_time) > CLIENT_TIMEOUT:
                 logger.warning(f"[{client_id}] 客户端超时（{CLIENT_TIMEOUT}s 无响应），主动断开")
                 try:
                     await manager.close_client(

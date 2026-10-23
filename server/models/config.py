@@ -47,6 +47,7 @@ class ProxyConfigRequest(BaseModel):
     port: int = 0
     username: str | None = None
     password: str | None = None
+    clear_auth: bool = False
 
 
 class ProxyConfigResponse(BaseModel):

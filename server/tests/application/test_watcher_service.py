@@ -12,7 +12,7 @@ from server.application.watcher_service import (
     WatcherService,
 )
 from server.models.organize import OrganizeMode
-from server.models.watcher import DetectedFile, WatchedFolder, WatcherMode
+from server.models.watcher import DetectedFile, WatchedFolder, WatchedFolderCreate, WatcherMode
 
 
 def _local_folder(path: str) -> WatchedFolder:
@@ -34,7 +34,9 @@ async def test_pending_files_stay_queued_until_job_handoff_succeeds(
     failed_path.write_bytes(b"retry")
 
     service = WatcherService(db_path=temp_db)
-    folder = _local_folder(str(tmp_path))
+    folder = await service.create_folder(WatchedFolderCreate(
+        path=str(tmp_path), mode=WatcherMode.COMPAT, file_stable_seconds=0
+    ))
     service._pending_files[str(completed_path)] = PendingFile(
         path=str(completed_path),
         detected_at=0,

@@ -27,6 +27,7 @@ class SchedulerService:
         self.db_path = db_path or DATABASE_PATH
         self._repo = SchedulerRepository(db_path)
         self._task: asyncio.Task | None = None
+        self._pending_finishes: dict[str, tuple[dict, datetime, str | None]] = {}
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -63,6 +64,10 @@ class SchedulerService:
 
     async def tick_once(self, now: datetime | None = None) -> None:
         now = now or datetime.now()
+        # Retry completion writes without dispatching the same occurrence again.
+        for task_id, completion in list(self._pending_finishes.items()):
+            await self._repo.finish_run(*completion)
+            self._pending_finishes.pop(task_id, None)
         for _ in range(20):
             claimed = await self._repo.claim_due(now)
             if claimed is None:
@@ -73,7 +78,9 @@ class SchedulerService:
             except Exception as exc:
                 error = str(exc) or type(exc).__name__
                 logger.exception("定时任务投递失败: %s", claimed["id"])
+            self._pending_finishes[claimed["id"]] = (claimed, now, error)
             await self._repo.finish_run(claimed, now, error)
+            self._pending_finishes.pop(claimed["id"], None)
 
     async def _dispatch(self, claimed: dict) -> None:
         from server.application.manual_job_service import ManualJobService

@@ -42,11 +42,13 @@ it('bounds authentication retries when verify fails but refresh remains availabl
   })
   const { useAuthStore } = await import('./auth')
   await useAuthStore().checkAuth()
-  expect(verify.mock.calls.length).toBeLessThanOrEqual(2)
+  expect(verify).toHaveBeenCalledTimes(1)
+  expect(refresh).not.toHaveBeenCalled()
+  expect(localStorage.getItem('access_token')).toBe('access')
 })
 
 it('makes directories beyond the first page available in the folder picker', async () => {
-  const all = Array.from({ length: 25 }, (_, i) => ({
+  const all = Array.from({ length: 125 }, (_, i) => ({
     name: `dir-${i}`, path: `/media/dir-${i}`, is_dir: true, provider: 'local',
   }))
   browse.mockImplementation(async (_path: string, page: number, pageSize: number) => ({
@@ -57,5 +59,17 @@ it('makes directories beyond the first page available in the folder picker', asy
   const picker = useFolderBrowser()
   await picker.loadDirectory('/media', 'local', null)
   // This picker exposes no page/next-page control: omitted directories cannot be selected.
-  expect(picker.directories.value.map(entry => entry.path)).toContain('/media/dir-24')
+  expect(picker.directories.value.map(entry => entry.path)).toContain('/media/dir-124')
+})
+
+it('refreshes at most once when a replacement token is also unauthorized', async () => {
+  verify.mockRejectedValue({ response: { status: 401 } })
+  refresh.mockImplementation(async () => {
+    localStorage.setItem('access_token', 'replacement')
+    return { accessToken: 'replacement', expiresIn: 3600 }
+  })
+  const { useAuthStore } = await import('./auth')
+  expect(await useAuthStore().checkAuth()).toBe(false)
+  expect(verify).toHaveBeenCalledTimes(2)
+  expect(refresh).toHaveBeenCalledTimes(1)
 })

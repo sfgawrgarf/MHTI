@@ -37,29 +37,42 @@ export function useFolderBrowser(options: UseFolderBrowserOptions = {}) {
   // 父目录的 file_id（来自后端响应），返回上级时直接使用，无需前端维护栈
   const parentFileId = ref<string | null>(null)
 
+  let loadSequence = 0
+
   // 加载目录
   const loadDirectory = async (
     path: string = '',
     provider?: StorageProvider,
     fileId?: string | null,
   ) => {
+    const sequence = ++loadSequence
     loading.value = true
     const effectiveProvider = provider ?? currentProvider.value
     const effectiveFileId = fileId !== undefined ? fileId : currentFileId.value
     try {
-      const response = await fsApi.browse(path, 1, 20, effectiveProvider, effectiveFileId)
+      const pageSize = 100
+      const response = await fsApi.browse(path, 1, pageSize, effectiveProvider, effectiveFileId)
+      const allEntries = [...response.entries]
+      let pageEntries = response.entries
+      for (let page = 2; allEntries.length < response.total && pageEntries.length > 0; page++) {
+        if (sequence !== loadSequence) return
+        const next = await fsApi.browse(path, page, pageSize, effectiveProvider, effectiveFileId)
+        pageEntries = next.entries
+        allEntries.push(...pageEntries)
+      }
+      if (sequence !== loadSequence) return
       currentPath.value = response.current_path
       parentPath.value = response.parent_path
-      entries.value = response.entries
+      entries.value = allEntries
       currentProvider.value = effectiveProvider
       // 优先用后端返回的 file_id（115 子目录必须），fallback 到请求时的值
       currentFileId.value = response.current_file_id ?? effectiveFileId ?? null
       parentFileId.value = response.parent_file_id ?? null
-      options.onLoaded?.(response)
+      options.onLoaded?.({ ...response, entries: allEntries })
     } catch (error: unknown) {
-      options.onError?.(error)
+      if (sequence === loadSequence) options.onError?.(error)
     } finally {
-      loading.value = false
+      if (sequence === loadSequence) loading.value = false
     }
   }
 
