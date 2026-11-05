@@ -28,7 +28,8 @@ const formatTime = (time: string | null) => {
 /** 计算进度百分比（原 ScanPage 实现） */
 const getProgressPercent = (job: ManualJob) => {
   if (job.total_count === 0) return 0
-  return Math.round(((job.success_count + job.skip_count + job.error_count) / job.total_count) * 100)
+  const percent = ((job.success_count + job.skip_count + job.error_count) / job.total_count) * 100
+  return Math.min(100, Math.max(0, Math.round(percent)))
 }
 
 const statusBadge = () => getJobStatusBadge(props.job)

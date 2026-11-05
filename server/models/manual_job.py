@@ -111,6 +111,8 @@ class ManualJob(BaseModel):
     skip_count: int = 0
     error_count: int = 0
     total_count: int = 0
+    # None while scanning/dispatching; otherwise accepted + recorded skips.
+    dispatched_count: int | None = None
     error_message: str | None = None
     child_pending_count: int = 0
     child_running_count: int = 0

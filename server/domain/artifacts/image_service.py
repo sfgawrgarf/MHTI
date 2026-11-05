@@ -8,6 +8,8 @@ from pathlib import Path
 
 import httpx
 
+from server.infrastructure.http import shared_http_client
+
 from server.models.image import (
     BatchDownloadResponse,
     ImageDownloadRequest,
@@ -115,7 +117,7 @@ class ImageService:
         for attempt in range(total_attempts):
             temporary_path: Path | None = None
             try:
-                async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
+                async with shared_http_client(timeout=timeout, proxy=proxy_url) as client:
                     response = await client.get(safe_url, headers=self._headers)
 
                     if response.status_code == 404:

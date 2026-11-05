@@ -356,6 +356,10 @@ class HistoryScrapeActions:
                     finished_at=datetime.now(),
                     error_message=message,
                 )
+        if record.manual_job_id:
+            from server.application.manual_job_service import ManualJobService
+
+            await ManualJobService(db_path=self._history_service.db_path).refresh_progress(record.manual_job_id)
         return {"success": True, "message": "已跳过"}
 
     async def queue_record_operation(
@@ -701,19 +705,12 @@ class HistoryScrapeActions:
             except Exception as exc:  # noqa: BLE001 - 登记是附带动作，不能拖垮刮削结果
                 logger.warning(f"登记刮削产物失败 {record_id}: {exc}")
 
-            # 更新手动任务统计（skip_count - 1, success_count + 1）
+            # Recompute from persisted outcomes; repeated retries must be idempotent.
             if manual_job_id:
                 from server.application.manual_job_service import ManualJobService
 
-                job_service = ManualJobService()
-                job = await job_service.get_job(manual_job_id)
-                if job:
-                    await job_service.update_job_status(
-                        manual_job_id,
-                        job.status,  # 保持原状态
-                        success_count=job.success_count + 1,
-                        skip_count=max(0, job.skip_count - 1),
-                    )
+                job_service = ManualJobService(db_path=history_service.db_path)
+                await job_service.refresh_progress(manual_job_id)
 
             return {"success": True, "message": "处理成功", "dest_path": result.dest_path}
 

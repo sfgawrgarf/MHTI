@@ -1044,6 +1044,19 @@ class ScraperService:
             if alias_match.episode is not None:
                 parsed.episode = alias_match.episode
 
+        # A known negative permission result is actionable; unknown status must
+        # not prevent existing aliases, AI assistance, or normal search.
+        try:
+            adult_enabled, adult_message, _checked_at = await self.config_service.get_adult_status()
+        except Exception:
+            logger.warning("读取 TMDB 成人内容权限失败，继续常规搜索")
+            adult_enabled, adult_message = None, None
+        if adult_enabled is False:
+            result.status = ScrapeStatus.API_FAILED
+            result.message = adult_message or "TMDB Token 未开启 R18 可见性，请到设置页重新验证 Token"
+            result.scrape_logs = scrape_logs
+            return result
+
         # Step 2: Search TMDB using API
         search_step = ScrapeLogStep(name="搜索 TMDB", logs=[])
         search_step.logs.append(ScrapeLogEntry(message=f"搜索关键词: {parsed.series_name}"))
@@ -1051,12 +1064,25 @@ class ScraperService:
         await notify_log_update()
 
         try:
-            search_response = await self.tmdb_service.search_series_by_api(parsed.series_name)
-            # 只保留成人内容
-            adult_results = [r for r in search_response.results if r.adult]
+            from server.domain.parsing.parsers.cleaner import strip_known_group_prefix
+
+            keywords = [parsed.series_name]
+            stripped = strip_known_group_prefix(parsed.series_name)
+            if stripped and stripped != parsed.series_name:
+                keywords.append(stripped)
+            adult_results: list[TMDBSearchResult] = []
+            for keyword in keywords:
+                if keyword != parsed.series_name:
+                    search_step.logs.append(ScrapeLogEntry(message=f"去除制作组前缀重试: {keyword}"))
+                search_response = await self.tmdb_service.search_series_by_api(keyword)
+                adult_results = [r for r in search_response.results if r.adult]
+                search_step.logs.append(ScrapeLogEntry(
+                    message=f"TMDB 返回 {len(search_response.results)} 条，其中成人内容 {len(adult_results)} 条"
+                ))
+                await notify_log_update()
+                if adult_results:
+                    break
             result.search_results = adult_results
-            search_step.logs.append(ScrapeLogEntry(message=f"找到 {len(adult_results)} 个匹配结果"))
-            await notify_log_update()
         except httpx.TimeoutException:
             search_step.logs.append(ScrapeLogEntry(message="TMDB 搜索超时", level=ScrapeLogLevel.ERROR))
             search_step.completed = False

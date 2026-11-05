@@ -133,9 +133,15 @@ CORS_ORIGINS = [
 # Allow all private network origins (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
 CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL", "false").lower() == "true"
 
+# Explicit LAN opt-in must not enable credentialed requests from arbitrary sites.
+CORS_PRIVATE_ORIGIN_PATTERN = (
+    r"https?://(?:localhost|127\.0\.0\.1|\[::1\]|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?::\d+)?"
+)
+
 # Allow additional origins from environment
 if extra_origins := os.getenv("CORS_ORIGINS"):
-    CORS_ORIGINS.extend(extra_origins.split(","))
+    CORS_ORIGINS.extend(origin.strip() for origin in extra_origins.split(",") if origin.strip() and origin.strip() != "*")
 
 # API Routers
 from server.api.v1.auth import router as auth_router
@@ -281,7 +287,8 @@ setup_middleware(app, debug=DEBUG_MODE)
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if CORS_ALLOW_ALL_ORIGINS else CORS_ORIGINS,
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=CORS_PRIVATE_ORIGIN_PATTERN if CORS_ALLOW_ALL_ORIGINS else None,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],

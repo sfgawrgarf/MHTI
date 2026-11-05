@@ -35,6 +35,7 @@ DOWNLOAD_CONFIG_KEY = "download_config"
 WATCHER_CONFIG_KEY = "watcher_config"
 NFO_CONFIG_KEY = "nfo_config"
 SYSTEM_CONFIG_KEY = "system_config"
+TASK_TIMEOUT_MIGRATED_KEY = "system_config_task_timeout_migrated"
 EMBY_CONFIG_KEY = "emby_config"
 NAMING_CONFIG_KEY = "naming_config"
 CLOUD_115_CONFIG_KEY = "cloud_115_config"
@@ -401,10 +402,14 @@ class ConfigService:
     async def save_system_config(self, config: SystemConfig) -> None:
         """Save system configuration."""
         data = config.model_dump()
-        await self.set(SYSTEM_CONFIG_KEY, json.dumps(data))
+        await self._repo.set_value(
+            SYSTEM_CONFIG_KEY, json.dumps(data), False, datetime.now().isoformat(),
+            migration_marker=TASK_TIMEOUT_MIGRATED_KEY,
+        )
 
     async def get_system_config(self) -> SystemConfig:
         """Get system configuration with migration support."""
+        await self._repo.migrate_task_timeout(SYSTEM_CONFIG_KEY, TASK_TIMEOUT_MIGRATED_KEY)
         value = await self.get(SYSTEM_CONFIG_KEY)
         if value is None:
             # 新安装：尝试从 DownloadConfig 迁移 retry_count/concurrent_downloads

@@ -2,8 +2,8 @@
 
 import unicodedata
 
-from server.models.parser import ParsedInfo
 from server.domain.parsing.parsers import DEFAULT_PLUGINS, ParseContext, ParserPlugin
+from server.models.parser import ParsedInfo
 
 
 class ParserService:

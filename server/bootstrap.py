@@ -58,6 +58,9 @@ async def cleanup_services() -> None:
     """
     container = await get_container_async()
     container.clear()
+    from server.infrastructure.http import close_http_clients
+
+    await close_http_clients()
     ServiceContainer._instance = None
     logger.info("Service container cleaned up")
 

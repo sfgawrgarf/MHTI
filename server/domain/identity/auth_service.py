@@ -1,5 +1,6 @@
 """Authentication service - database-backed."""
 
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -54,20 +55,53 @@ class AuthService:
         """Clear config cache to force reload."""
         self._config_cache = None
 
-    def _hash_password(self, password: str, salt: str | None = None) -> tuple[str, str]:
+    # Adapted from upstream v2.0.1; see licenses/MHTI-upstream/.
+    _PBKDF2_ALGORITHM = "pbkdf2_sha256"
+    _PBKDF2_ITERATIONS = 600_000
+    _LEGACY_ITERATIONS = 100_000
+
+    def _hash_password(
+        self, password: str, salt: str | None = None, iterations: int | None = None,
+    ) -> tuple[str, str]:
         """Hash password with salt. Returns (hash, salt)."""
         if salt is None:
             salt = secrets.token_hex(16)
-        hashed = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100000)
+        rounds = self._PBKDF2_ITERATIONS if iterations is None else iterations
+        hashed = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), rounds)
         return hashed.hex(), salt
 
+    def _format_password_hash(self, password: str) -> str:
+        hashed, salt = self._hash_password(password)
+        return f"{self._PBKDF2_ALGORITHM}${self._PBKDF2_ITERATIONS}${salt}${hashed}"
+
+    @classmethod
+    def _parse_password_hash(cls, stored_hash: str) -> tuple[int, str, str] | None:
+        parts = stored_hash.split("$")
+        if len(parts) == 2:
+            rounds, salt, expected = cls._LEGACY_ITERATIONS, *parts
+        elif len(parts) == 4 and parts[0] == cls._PBKDF2_ALGORITHM:
+            try:
+                rounds, salt, expected = int(parts[1]), parts[2], parts[3]
+            except ValueError:
+                return None
+        else:
+            return None
+        if not 1 <= rounds <= 5_000_000 or not salt or len(expected) != 64:
+            return None
+        try:
+            bytes.fromhex(expected)
+        except ValueError:
+            return None
+        return rounds, salt, expected
+
     def _verify_password(self, password: str, stored_hash: str) -> bool:
-        """Verify password against stored hash (format: salt$hash)."""
-        if "$" not in stored_hash:
+        """Verify both versioned PBKDF2 hashes and legacy salt$hash values."""
+        parsed = self._parse_password_hash(stored_hash)
+        if parsed is None:
             return False
-        salt, hash_value = stored_hash.split("$", 1)
-        computed_hash, _ = self._hash_password(password, salt)
-        return secrets.compare_digest(computed_hash, hash_value)
+        rounds, salt, expected = parsed
+        computed_hash, _ = self._hash_password(password, salt, rounds)
+        return secrets.compare_digest(computed_hash, expected)
 
     async def is_initialized(self) -> bool:
         """Check if admin account exists."""
@@ -79,8 +113,7 @@ class AuthService:
 
     async def register_admin(self, username: str, password: str) -> bool:
         """Register admin account. Returns True if successful."""
-        hash_value, salt = self._hash_password(password)
-        password_hash = f"{salt}${hash_value}"
+        password_hash = await asyncio.to_thread(self._format_password_hash, password)
 
         manager = await get_db_manager()
         async with manager.get_connection() as db:
@@ -117,7 +150,27 @@ class AuthService:
                 "SELECT password_hash FROM admin WHERE username = ?", (username,)
             )
             row = await cursor.fetchone()
-            return bool(row and self._verify_password(password, row[0]))
+        if row is None or not await asyncio.to_thread(self._verify_password, password, row[0]):
+            return False
+        parsed = self._parse_password_hash(row[0])
+        if parsed is not None and (parsed[0] < self._PBKDF2_ITERATIONS or row[0].count("$") == 1):
+            upgraded = await asyncio.to_thread(self._format_password_hash, password)
+            async with manager.get_connection() as db:
+                cursor = await db.execute(
+                    "UPDATE admin SET password_hash = ? WHERE username = ? AND password_hash = ?",
+                    (upgraded, username, row[0]),
+                )
+                await db.commit()
+                # A simultaneous password change must not be undone or accepted.
+                if cursor.rowcount != 1:
+                    cursor = await db.execute(
+                        "SELECT password_hash FROM admin WHERE username = ?", (username,),
+                    )
+                    current = await cursor.fetchone()
+                    return bool(current and await asyncio.to_thread(
+                        self._verify_password, password, current[0],
+                    ))
+        return True
 
     async def get_user_id(self, username: str) -> int | None:
         """Get user ID by username."""
@@ -251,8 +304,7 @@ class AuthService:
         except_session_id: str,
     ) -> tuple[bool, list[str]]:
         """Change a password and revoke other sessions atomically."""
-        hash_value, salt = self._hash_password(new_password)
-        password_hash = f"{salt}${hash_value}"
+        password_hash = await asyncio.to_thread(self._format_password_hash, new_password)
 
         manager = await get_db_manager()
         async with manager.get_connection() as db:

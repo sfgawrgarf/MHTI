@@ -7,11 +7,18 @@
 - 测试客户端基础设施
 """
 
+import os
 import tempfile
 from pathlib import Path
 from typing import Generator
 
 import pytest
+
+# DATA_DIR is captured when server modules are imported. Isolate even API tests
+# and subprocesses before importing the application or opening its global pool.
+_test_data_dir = tempfile.TemporaryDirectory(prefix="mhti-test-data-")
+os.environ["DATA_DIR"] = _test_data_dir.name
+
 from fastapi.testclient import TestClient
 
 from server.api.deps import AuthContext, require_auth

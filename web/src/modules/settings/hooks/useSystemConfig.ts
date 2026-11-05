@@ -10,7 +10,7 @@ import { useSettingsForm } from '@/modules/settings/hooks/useSettingsForm'
  */
 export function useSystemConfig() {
   const scrapeThreads = ref(4)
-  const taskTimeout = ref(30)
+  const taskTimeout = ref(300)
   const retryCount = ref(3)
   const concurrentDownloads = ref(3)
 

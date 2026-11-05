@@ -27,6 +27,7 @@ from server.models.storage import (
 )
 
 logger = logging.getLogger(__name__)
+_SKIP_REASON = "已有处理中的刮削任务，本次未重复投递"
 
 
 def _link_mode_to_organize_mode(link_mode: LinkMode) -> OrganizeMode:
@@ -197,6 +198,27 @@ class ManualJobService:
         await self._ensure_db()
         return await self._repo.prepare_recovery()
 
+    async def refresh_progress(self, job_id: int) -> None:
+        await self._ensure_db()
+        await self._repo.refresh_progress(job_id)
+
+    async def _record_skipped_file(self, job_id: int, file_path: str) -> bool:
+        """Persist a searchable reason for dispatch skips, including resumed scans."""
+        from server.application.history_service import HistoryService
+        from server.models.history import HistoryRecordCreate, TaskSource, TaskStatus
+
+        try:
+            await HistoryService(db_path=self.db_path).create_record(HistoryRecordCreate(
+                task_name=f"跳过：{Path(file_path).name}", folder_path=file_path,
+                status=TaskStatus.SKIPPED, source=TaskSource.MANUAL,
+                total_files=1, success_count=0, failed_count=0, duration_seconds=0,
+                error_message=_SKIP_REASON, manual_job_id=job_id,
+            ))
+        except Exception:
+            logger.exception("手动任务 #%s 跳过记录写入失败", job_id)
+            return False
+        return True
+
     async def claim_job(self, job_id: int) -> bool:
         """Atomically move one pending manual job to running."""
         async with _get_job_state_lock():
@@ -216,6 +238,11 @@ class ManualJobService:
         rows, total = await self._repo.list_jobs(
             limit=limit, offset=offset, search=search, status=status
         )
+        for row in rows:
+            await self._repo.refresh_progress(int(row['id']))
+        rows, total = await self._repo.list_jobs(
+            limit=limit, offset=offset, search=search, status=status
+        )
         child_counts = await self._repo.get_child_counts([int(row["id"]) for row in rows])
         jobs = [
             self._row_to_job(row, child_counts.get(int(row["id"])))
@@ -226,6 +253,8 @@ class ManualJobService:
     async def get_job(self, job_id: int) -> ManualJob | None:
         """Get a manual job by ID."""
         await self._ensure_db()
+
+        await self._repo.refresh_progress(job_id)
 
         row = await self._repo.get_job_raw(job_id)
         if row is None:
@@ -312,6 +341,7 @@ class ManualJobService:
         skip_count: int | None = None,
         error_count: int | None = None,
         total_count: int | None = None,
+        dispatched_count: int | None = None,
         error_message: str | None = None,
         expected_status: ManualJobStatus | None = None,
     ) -> bool:
@@ -327,6 +357,7 @@ class ManualJobService:
             skip_count=skip_count,
             error_count=error_count,
             total_count=total_count,
+            dispatched_count=dispatched_count,
             error_message=error_message,
             expected_status=expected_status,
         )
@@ -381,6 +412,7 @@ class ManualJobService:
             skip_count=row["skip_count"],
             error_count=row["error_count"],
             total_count=row["total_count"],
+            dispatched_count=row["dispatched_count"],
             error_message=row["error_message"],
             child_pending_count=child_counts.get("pending", 0),
             child_running_count=child_counts.get("running", 0),
@@ -502,20 +534,21 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
                 )
         files = [f.path for f in scan_result]
 
-        total_count = len(files)
+        processed_paths = await service._repo.get_dispatched_paths(job_id)
+        total_count = max(job.total_count, len(set(files) | processed_paths))
         await service.update_job_status(job_id, ManualJobStatus.RUNNING, total_count=total_count)
 
-        if total_count == 0:
+        if not files:
             await service.update_job_status(
                 job_id,
-                ManualJobStatus.SUCCESS,
-                finished_at=datetime.now(),
-                error_message="没有找到视频文件",
+                ManualJobStatus.RUNNING,
+                dispatched_count=len(processed_paths),
             )
+            await service.refresh_progress(job_id)
             return
 
         # 为每个文件创建刮削任务
-        scrape_service = ScrapeJobService()
+        scrape_service = ScrapeJobService(db_path=service.db_path)
         organize_mode = _link_mode_to_organize_mode(job.link_mode)
         child_settings = (
             job.advanced_settings or ManualJobAdvancedSettings()
@@ -524,6 +557,8 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
         skipped_count = 0
 
         for file_path in files:
+            if file_path in processed_paths:
+                continue
             logger.info(f"手动任务 #{job_id} 投递文件: {file_path}")
             # 115 源文件需要构造 file_locator，携带 file_id 以便刮削下载
             file_locator = None
@@ -551,18 +586,20 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
             created = await scrape_service.create_job(job_create)
             if created is not None:
                 dispatched_count += 1
+                processed_paths.add(file_path)
             else:
                 skipped_count += 1
                 logger.info(f"手动任务 #{job_id} 跳过（已有处理中任务）: {file_path}")
+                if await service._record_skipped_file(job_id, file_path):
+                    processed_paths.add(file_path)
 
-        # 完成 - 手动任务只负责扫描和投递，不等待刮削完成
+        # Dispatch completion is only a checkpoint; children own the outcomes.
         await service.update_job_status(
             job_id,
-            ManualJobStatus.SUCCESS,
-            finished_at=datetime.now(),
-            success_count=dispatched_count,  # 实际投递成功的数量
-            skip_count=skipped_count,
+            ManualJobStatus.RUNNING,
+            dispatched_count=len(processed_paths),
         )
+        await service.refresh_progress(job_id)
         logger.info(
             f"Manual job {job_id} completed: {dispatched_count} dispatched, {skipped_count} skipped"
         )

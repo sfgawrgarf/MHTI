@@ -60,6 +60,8 @@ COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
 
 # Copy backend source code
 COPY server/ ./server/
+COPY LICENSE THIRD_PARTY_NOTICES.md ./
+COPY licenses/ ./licenses/
 
 # Copy frontend build artifacts
 COPY --from=frontend-builder /app/dist /app/static/

@@ -192,6 +192,9 @@ async def test_execute_job_forwards_locators_to_scrape_job_create(
     created_jobs: list[ScrapeJobCreate] = []
 
     class FakeScrapeJobService:
+        def __init__(self, **kwargs):
+            pass
+
         async def create_job(self, job: ScrapeJobCreate):
             created_jobs.append(job)
             return None
@@ -258,6 +261,9 @@ async def test_execute_job_builds_file_locator_for_p115_source(
     created_jobs: list[ScrapeJobCreate] = []
 
     class FakeScrapeJobService:
+        def __init__(self, **kwargs):
+            pass
+
         async def create_job(self, job: ScrapeJobCreate):
             created_jobs.append(job)
             return None

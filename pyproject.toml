@@ -40,6 +40,8 @@ addopts = "-v --tb=short"
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 
 [tool.mypy]
