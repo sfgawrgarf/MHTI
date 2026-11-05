@@ -19,6 +19,9 @@ watchdog = ">=4.0,<5.0"
 pyjwt = ">=2.15,<3.0"
 multidict = ">=6.9.1,<7.0"
 p115client = "0.0.9.6.5.1"
+python-concurrenttools = "0.1.8"
+brotli = ">=1.2.1,<2.0"
+filelock = ">=4.2.1,<5.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "9.1.1"
