@@ -9,6 +9,8 @@ from time import monotonic
 
 import httpx
 
+from server.infrastructure.http import shared_http_client
+
 from server.common.exceptions import (
     TMDBConnectionError,
     TMDBError,
@@ -157,7 +159,7 @@ class TMDBService:
         try:
             # Bound the entire request, including backoff, not each attempt alone.
             async with asyncio.timeout(timeout):
-                async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
+                async with shared_http_client(timeout=timeout, proxy=proxy_url) as client:
                     for attempt in range(retries + 1):
                         retry_after = None
                         try:
@@ -206,7 +208,7 @@ class TMDBService:
         try:
             start = time.time()
             timeout = await self._get_timeout()
-            async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
+            async with shared_http_client(timeout=timeout, proxy=proxy_url) as client:
                 response = await client.get(
                     TMDB_BASE_URL,
                     headers={"User-Agent": "Mozilla/5.0"},
@@ -285,7 +287,7 @@ class TMDBService:
                 params = {"api_key": token}
 
             timeout = await self._get_timeout()
-            async with httpx.AsyncClient(timeout=timeout, proxy=proxy_url) as client:
+            async with shared_http_client(timeout=timeout, proxy=proxy_url) as client:
                 response = await client.get(url, headers=headers, params=params)
 
                 if response.status_code == 200:

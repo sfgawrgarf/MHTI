@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import aiosqlite
 
 from server.infrastructure.repositories.base import BaseRepository
@@ -34,7 +36,8 @@ class ConfigRepository(BaseRepository):
         return row["value"], bool(row["encrypted"])
 
     async def set_value(
-        self, key: str, value: str, encrypted: bool, updated_at: str
+        self, key: str, value: str, encrypted: bool, updated_at: str,
+        *, migration_marker: str | None = None,
     ) -> None:
         async with self._connect() as db:
             await db.execute(
@@ -48,6 +51,38 @@ class ConfigRepository(BaseRepository):
                 """,
                 (key, value, 1 if encrypted else 0, updated_at),
             )
+            if migration_marker:
+                await db.execute(
+                    "INSERT OR IGNORE INTO config (key, value) VALUES (?, '1')",
+                    (migration_marker,),
+                )
+            await db.commit()
+
+    async def migrate_task_timeout(self, key: str, marker: str) -> None:
+        """Upgrade the old default once, serialized with explicit settings saves."""
+        if await self.exists(marker):
+            return
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute("SELECT 1 FROM config WHERE key = ?", (marker,))
+            if await cursor.fetchone():
+                await db.rollback()
+                return
+            cursor = await db.execute("SELECT value FROM config WHERE key = ?", (key,))
+            row = await cursor.fetchone()
+            if row:
+                try:
+                    data = json.loads(row[0])
+                except (TypeError, ValueError):
+                    data = None
+                if isinstance(data, dict) and data.get("task_timeout", data.get("scrape_timeout")) == 30:
+                    data.pop("scrape_timeout", None)
+                    data["task_timeout"] = 300
+                    await db.execute(
+                        "UPDATE config SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+                        (json.dumps(data), key),
+                    )
+            await db.execute("INSERT INTO config (key, value) VALUES (?, '1')", (marker,))
             await db.commit()
 
     async def delete_value(self, key: str) -> bool:

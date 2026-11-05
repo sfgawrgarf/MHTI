@@ -7,15 +7,33 @@
 - 测试客户端基础设施
 """
 
+import asyncio
+import os
 import tempfile
 from pathlib import Path
 from typing import Generator
 
 import pytest
+
+# DATA_DIR is captured when server modules are imported. Isolate even API tests
+# and subprocesses before importing the application or opening its global pool.
+_test_data_dir = tempfile.TemporaryDirectory(prefix="mhti-test-data-")
+os.environ["DATA_DIR"] = _test_data_dir.name
+
 from fastapi.testclient import TestClient
 
 from server.api.deps import AuthContext, require_auth
 from server.main import app
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Close pooled SQLite worker threads before pytest exits."""
+    from server.infrastructure.db import close_database
+
+    try:
+        asyncio.run(close_database())
+    finally:
+        _test_data_dir.cleanup()
 
 
 # =============================================================================

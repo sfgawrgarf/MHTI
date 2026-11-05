@@ -35,6 +35,7 @@ export interface ManualJob {
   skip_count: number
   error_count: number
   total_count: number
+  dispatched_count: number | null
   error_message: string | null
   source: ManualJobSource
   advanced_settings: ManualJobAdvancedSettings | null

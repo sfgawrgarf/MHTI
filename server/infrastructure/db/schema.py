@@ -12,6 +12,7 @@ MANUAL_JOB_COLUMNS = (
     ("target_locator", "TEXT"),
     ("metadata_locator", "TEXT"),
     ("allow_local_output", "INTEGER DEFAULT 0"),
+    ("dispatched_count", "INTEGER"),
 )
 
 SCRAPE_JOB_COLUMNS = (

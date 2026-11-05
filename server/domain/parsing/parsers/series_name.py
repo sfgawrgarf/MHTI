@@ -1,3 +1,5 @@
+# Adapted from xiyan520/MHTI v2.0.1; modified for this fork.
+# Upstream Apache-2.0 notices: licenses/MHTI-upstream/.
 """Series name extraction plugin - 剧名提取器.
 
 仅从文件名提取，不依赖路径。
@@ -50,6 +52,7 @@ EPISODE_MARKERS = [
     r"\[\d{1,3}\]",                           # [01]
     r"\(\d{1,2}\)\s*$",                       # (1) 在末尾
     r"\s+\d{1,3}\s*［",
+    r"[\s_\-·]([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ])(?=[\s_\-·]|$)",  # 罗马数字集数：既已当集数，标题里要截掉
 
     # ===== 副标题标记 =====
     r"(?<=\s)～[^～]{2,}～",                 # ～副标题～（前面须有空格）
@@ -58,7 +61,8 @@ EPISODE_MARKERS = [
     r"『[^』]+』",                            # 『副标题』
 
     # ===== 特别篇标记 =====
-    r"OVA|OAD|ONA|SP|特別編|特別篇|番外編|番外篇",
+    # OVA/OAD/ONA/SP 要求字母边界：否则 SPY×FAMILY 这类标题会被整段截掉
+    r"(?<![A-Za-z])(?:OVA|OAD|ONA|SP)(?![A-Za-z])|特別編|特別篇|番外編|番外篇",
     r"劇場版|剧场版|総集編|总集编|完結編|完结编|最終編|最终编",
 ]
 

@@ -53,7 +53,7 @@ const emit = defineEmits<{
       <NInputNumber
         :value="taskTimeout"
         :min="10"
-        :max="300"
+        :max="1800"
         @update:value="emit('update:taskTimeout', $event)"
       />
     </SettingsField>

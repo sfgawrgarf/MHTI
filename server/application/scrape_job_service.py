@@ -332,7 +332,18 @@ class ScrapeJobService:
         notifier = get_notifier()
         await notifier.notify_job_created(job_id, job.file_path, ScrapeJobStatus.PENDING.value)
 
+        await self.refresh_manual_parent(created_job)
         return created_job
+
+    async def refresh_manual_parent(self, job: ScrapeJob) -> None:
+        if job.source != ScrapeJobSource.MANUAL or not job.source_id:
+            return
+        from server.application.manual_job_service import ManualJobService
+
+        try:
+            await ManualJobService(db_path=self.db_path).refresh_progress(job.source_id)
+        except Exception:
+            logger.exception("刷新手动任务进度失败: %s", job.id)
 
     async def create_replacement_job(
         self,
@@ -520,6 +531,7 @@ class ScrapeJobService:
                     )
                 except Exception:
                     logger.exception("Unable to finalize cancelled history: %s", history_id)
+            await self.refresh_manual_parent(updated)
             try:
                 await get_notifier().notify_cancelled(job_id, message)
             except Exception:
@@ -1251,6 +1263,12 @@ async def _execute_scrape_job(service: ScrapeJobService, job_id: str) -> None:
             await drain_recovery(service, job_id, cancelled=cancelled and not _workers_stopping)
         finally:
             owner.reset(token)
+            try:
+                job = await service.get_job(job_id)
+                if job is not None:
+                    await service.refresh_manual_parent(job)
+            except Exception:
+                logger.exception("刷新手动任务进度失败: %s", job_id)
 
 
 async def _execute_scrape_job_body(service: ScrapeJobService, job_id: str) -> None:

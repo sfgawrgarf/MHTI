@@ -31,7 +31,7 @@ const activeChildCount = computed(() =>
 const progressPercentage = computed(() => {
   if (props.totalCount === 0) return 0
   const completed = props.successCount + props.skipCount + props.errorCount
-  return Math.round((completed / props.totalCount) * 100)
+  return Math.min(100, Math.max(0, Math.round((completed / props.totalCount) * 100)))
 })
 
 // 成功率

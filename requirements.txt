@@ -9,6 +9,11 @@ sse-starlette>=2.0,<3.0
 watchdog>=4.0,<5.0
 PyJWT>=2.15,<3.0
 p115client==0.0.9.6.5.1
+# p115client still imports threadpool_map, removed in concurrenttools 0.1.9.
+python-concurrenttools==0.1.8
+# Security floors for HTTP decompression and transitive filesystem locks.
+brotli>=1.2.1,<2.0
+filelock>=4.2.1,<5.0
 # Security floor for the p115client HTTP stack.
 multidict>=6.9.1,<7.0
 # Remove compromised emSign certificate chains.

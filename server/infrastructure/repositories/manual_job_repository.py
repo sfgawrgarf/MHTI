@@ -33,6 +33,7 @@ _MANUAL_JOBS_DDL = """
         skip_count INTEGER DEFAULT 0,
         error_count INTEGER DEFAULT 0,
         total_count INTEGER DEFAULT 0,
+        dispatched_count INTEGER,
         error_message TEXT
     )
 """
@@ -51,6 +52,8 @@ class ManualJobRepository(BaseRepository):
                 columns = {row[1] for row in await cursor.fetchall()}
             if "schedule_key" not in columns:
                 await db.execute("ALTER TABLE manual_jobs ADD COLUMN schedule_key TEXT")
+            if "dispatched_count" not in columns:
+                await db.execute("ALTER TABLE manual_jobs ADD COLUMN dispatched_count INTEGER")
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_jobs_schedule_key "
                 "ON manual_jobs(schedule_key)"
@@ -183,6 +186,12 @@ class ManualJobRepository(BaseRepository):
 
     async def prepare_recovery(self) -> list[int]:
         """Reset interrupted manual scans and return pending IDs."""
+        candidates = await self._fetch_all(
+            "SELECT id FROM manual_jobs WHERE (status = 'running' AND dispatched_count IS NOT NULL) "
+            "OR (status = 'success' AND dispatched_count IS NULL)",
+        )
+        for row in candidates:
+            await self.refresh_progress(int(row[0]))
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
@@ -190,7 +199,7 @@ class ManualJobRepository(BaseRepository):
                 UPDATE manual_jobs
                 SET status = 'pending', started_at = NULL, finished_at = NULL,
                     error_message = NULL
-                WHERE status = 'running'
+                WHERE status = 'running' AND dispatched_count IS NULL
                 """
             )
             cursor = await db.execute(
@@ -203,6 +212,79 @@ class ManualJobRepository(BaseRepository):
             rows = await cursor.fetchall()
             await db.commit()
         return [int(row[0]) for row in rows]
+
+    async def get_dispatched_paths(self, job_id: int) -> set[str]:
+        """Recognize work accepted before an interrupted scan resumes."""
+        rows = await self._fetch_all(
+            "SELECT file_path FROM scrape_jobs WHERE source = 'manual' AND source_id = ? "
+            "AND replaces_job_id IS NULL AND operation != 'rematch' "
+            "UNION SELECT folder_path FROM history_records WHERE manual_job_id = ? "
+            "AND scrape_job_id IS NULL AND status IN ('skipped', 'deleted')",
+            (job_id, job_id),
+        )
+        return {str(row[0]) for row in rows}
+
+    async def refresh_progress(self, job_id: int) -> None:
+        """Recompute outcomes atomically; never add counters on retries.
+
+        Adapted from upstream v2.0.1. Continuation histories count once. Failed
+        correction attempts leave the original successful history authoritative.
+        """
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute("SELECT * FROM manual_jobs WHERE id = ?", (job_id,))
+            job = await cursor.fetchone()
+            if job is None or job['status'] == 'pending':
+                await db.rollback()
+                return
+            cursor = await db.execute(
+                """
+                SELECT status, COUNT(*) FROM (
+                    SELECT h.status FROM history_records h
+                    LEFT JOIN scrape_jobs j ON j.id = h.scrape_job_id
+                    WHERE h.manual_job_id = ? AND h.total_files > 0 AND h.status != 'replaced'
+                      AND (COALESCE(j.operation, '') != 'rematch' OR h.status = 'success')
+                    UNION ALL
+                    SELECT j.status FROM scrape_jobs j
+                    WHERE j.source = 'manual' AND j.source_id = ?
+                      AND j.operation != 'rematch' AND j.status != 'replaced'
+                      AND j.replaced_by_job_id IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM history_records h
+                                      WHERE h.scrape_job_id = j.id OR h.id = j.continuation_history_id)
+                ) GROUP BY status
+                """, (job_id, job_id),
+            )
+            counts = {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
+            success = counts.get('success', 0)
+            error = sum(counts.get(s, 0) for s in ('failed', 'timeout', 'cancelled'))
+            skipped = sum(counts.get(s, 0) for s in ('skipped', 'deleted'))
+            dispatched = job['dispatched_count']
+            # In the old release SUCCESS meant dispatch finished, even when
+            # children were still running. Repair those rows from real results.
+            if dispatched is None and job['status'] == 'success' and job['total_count']:
+                dispatched = job['total_count']
+            if dispatched is not None:
+                skipped += max(0, job['total_count'] - dispatched)
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM scrape_jobs WHERE source = 'manual' AND source_id = ? "
+                "AND status IN ('pending', 'running', 'pending_action')", (job_id,),
+            )
+            active = int((await cursor.fetchone())[0])
+            status, finished, message = job['status'], job['finished_at'], job['error_message']
+            if dispatched is not None and status != 'cancelled':
+                unsettled = active or counts.get('running', 0) or counts.get('pending_action', 0)
+                if unsettled or success + error + skipped < job['total_count']:
+                    status, finished, message = 'running', None, None
+                else:
+                    status = 'failed' if error and not success + skipped else 'success'
+                    finished = finished or datetime.now().isoformat()
+                    message = '全部文件处理失败' if status == 'failed' else None
+            await db.execute(
+                "UPDATE manual_jobs SET success_count = ?, error_count = ?, skip_count = ?, "
+                "dispatched_count = ?, status = ?, finished_at = ?, error_message = ? WHERE id = ?",
+                (success, error, skipped, dispatched, status, finished, message, job_id),
+            )
+            await db.commit()
 
     async def claim_job(self, job_id: int) -> bool:
         """Atomically claim a pending manual job for one worker."""
@@ -300,6 +382,7 @@ class ManualJobRepository(BaseRepository):
         skip_count: int | None = None,
         error_count: int | None = None,
         total_count: int | None = None,
+        dispatched_count: int | None = None,
         error_message: str | None = None,
         expected_status: ManualJobStatus | None = None,
     ) -> bool:
@@ -324,6 +407,9 @@ class ManualJobRepository(BaseRepository):
         if total_count is not None:
             updates.append("total_count = ?")
             params.append(total_count)
+        if dispatched_count is not None:
+            updates.append("dispatched_count = ?")
+            params.append(dispatched_count)
         if error_message is not None:
             updates.append("error_message = ?")
             params.append(error_message)

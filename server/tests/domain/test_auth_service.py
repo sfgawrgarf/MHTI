@@ -71,16 +71,14 @@ class TestPasswordHashing:
     def test_verify_password_correct(self, auth_service):
         """测试正确密码验证成功。"""
         password = "correct_password"
-        hash_value, salt = auth_service._hash_password(password)
-        stored_hash = f"{salt}${hash_value}"
+        stored_hash = auth_service._format_password_hash(password)
 
         assert auth_service._verify_password(password, stored_hash) is True
 
     def test_verify_password_incorrect(self, auth_service):
         """测试错误密码验证失败。"""
         password = "correct_password"
-        hash_value, salt = auth_service._hash_password(password)
-        stored_hash = f"{salt}${hash_value}"
+        stored_hash = auth_service._format_password_hash(password)
 
         assert auth_service._verify_password("wrong_password", stored_hash) is False
 
@@ -246,8 +244,7 @@ class TestAuthServiceAsync:
     async def test_verify_credentials_success(self, auth_service):
         """测试正确凭据验证成功。"""
         password = "test_password"
-        hash_value, salt = auth_service._hash_password(password)
-        stored_hash = f"{salt}${hash_value}"
+        stored_hash = auth_service._format_password_hash(password)
 
         mock_db = AsyncMock()
         mock_cursor = AsyncMock()
@@ -269,8 +266,7 @@ class TestAuthServiceAsync:
     async def test_verify_credentials_wrong_password(self, auth_service):
         """测试错误密码验证失败。"""
         password = "test_password"
-        hash_value, salt = auth_service._hash_password(password)
-        stored_hash = f"{salt}${hash_value}"
+        stored_hash = auth_service._format_password_hash(password)
 
         mock_db = AsyncMock()
         mock_cursor = AsyncMock()
@@ -383,7 +379,7 @@ class TestAuthServiceAsync:
         async with aiosqlite.connect(temp_db) as db:
             await configure_connection(db)
             await create_all_tables(db)
-            password_hash, salt = auth_service._hash_password("old-password")
+            password_hash, salt = auth_service._hash_password("old-password", iterations=100_000)
             cursor = await db.execute(
                 "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
                 ("admin", f"{salt}${password_hash}"),
@@ -435,7 +431,7 @@ class TestAuthServiceAsync:
         async with aiosqlite.connect(temp_db) as db:
             await configure_connection(db)
             await create_all_tables(db)
-            password_hash, salt = auth_service._hash_password("old-password")
+            password_hash, salt = auth_service._hash_password("old-password", iterations=100_000)
             cursor = await db.execute(
                 "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
                 ("admin", f"{salt}${password_hash}"),
@@ -488,7 +484,7 @@ class TestAuthServiceAsync:
         async with aiosqlite.connect(temp_db) as db:
             await configure_connection(db)
             await create_all_tables(db)
-            password_hash, salt = auth_service._hash_password("password")
+            password_hash, salt = auth_service._hash_password("password", iterations=100_000)
             await db.execute(
                 "INSERT INTO admin (username, password_hash) VALUES (?, ?)",
                 ("old-name", f"{salt}${password_hash}"),
