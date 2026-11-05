@@ -191,7 +191,14 @@ class ConfigService:
     # API Token 相关方法
     async def save_api_token(self, token: str) -> None:
         """Save TMDB API token (encrypted)."""
-        await self.set(API_TOKEN_KEY, token, encrypted=True)
+        # A previous token's negative probe must not block a replacement when
+        # the new probe is unavailable. Replace credentials and clear cached
+        # verification results in the same transaction.
+        await self._repo.set_value(
+            API_TOKEN_KEY, encrypt(token), True, datetime.now().isoformat(),
+            clear_keys=(API_TOKEN_VERIFIED_KEY, API_TOKEN_VERIFIED_AT_KEY,
+                        ADULT_ENABLED_KEY, ADULT_MESSAGE_KEY, ADULT_CHECKED_AT_KEY),
+        )
 
     async def get_api_token(self) -> str | None:
         """Get TMDB API token (decrypted)."""

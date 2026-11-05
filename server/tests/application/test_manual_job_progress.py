@@ -179,6 +179,32 @@ async def test_legacy_dispatch_success_is_repaired_from_children(audit_env, monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('old_skip_count', [0, 1])
+async def test_legacy_unrecorded_dispatch_skip_survives_upgrade(audit_env, monkeypatch, old_skip_count):
+    service, parent = await batch(audit_env, monkeypatch, dispatched=None, total=2)
+    job = await child(audit_env, parent)
+    await outcome(audit_env, parent, job, TaskStatus.SUCCESS)
+    await audit_env.jobs.update_job(job.id, status=ScrapeJobStatus.SUCCESS)
+    # Pre-upgrade counters may already have drifted after a successful retry.
+    await service.update_job_status(parent.id, ManualJobStatus.SUCCESS,
+                                    success_count=9, skip_count=old_skip_count)
+    for _ in range(3):
+        current = await service.get_job(parent.id)
+        assert current.status == ManualJobStatus.SUCCESS
+        assert (current.success_count, current.skip_count) == (1, 1)
+    assert parent.id not in await service.prepare_recovery()
+
+
+@pytest.mark.asyncio
+async def test_legacy_all_skipped_batch_finishes_without_history(audit_env, monkeypatch):
+    service, parent = await batch(audit_env, monkeypatch, dispatched=None, total=2)
+    await service.update_job_status(parent.id, ManualJobStatus.SUCCESS, skip_count=2)
+    current = await service.get_job(parent.id)
+    assert current.status == ManualJobStatus.SUCCESS
+    assert (current.success_count, current.skip_count) == (0, 2)
+
+
+@pytest.mark.asyncio
 async def test_legacy_schema_migration_preserves_jobs(audit_env, monkeypatch):
     service, parent = await batch(audit_env, monkeypatch, dispatched=None)
     async with aiosqlite.connect(audit_env.db) as db:

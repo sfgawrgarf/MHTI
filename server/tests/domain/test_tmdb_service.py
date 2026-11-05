@@ -33,6 +33,17 @@ def tmdb_service(config_service):
 class TestTMDBService:
     """Tests for TMDBService class."""
 
+    @pytest.mark.asyncio
+    async def test_new_token_probe_failure_cannot_keep_old_negative_status(self, tmdb_service, config_service):
+        await config_service.save_api_token("old-token")
+        await config_service.save_adult_status(False, "old negative result")
+        with patch.object(tmdb_service, "verify_api_token", AsyncMock(return_value=(True, None))), \
+             patch.object(tmdb_service, "check_adult_access", AsyncMock(side_effect=RuntimeError("probe unavailable"))):
+            status = await tmdb_service.save_and_verify_api_token("new-token")
+        assert status.is_configured and status.is_valid
+        assert status.adult_enabled is None
+        assert await config_service.get_api_token() == "new-token"
+
     def test_get_image_url(self, tmdb_service):
         """Test image URL generation."""
         url = tmdb_service.get_image_url("/abc123.jpg", "w500")
