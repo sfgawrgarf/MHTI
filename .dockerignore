@@ -34,6 +34,7 @@ web/dist/
 # Documentation
 *.md
 !README.md
+!THIRD_PARTY_NOTICES.md
 docs/
 
 # Build artifacts
