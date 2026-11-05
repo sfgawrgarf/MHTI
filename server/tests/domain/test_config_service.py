@@ -95,6 +95,16 @@ class TestConfigService:
         assert cookie == "session_id=abc123"
 
     @pytest.mark.asyncio
+    async def test_replacing_api_token_clears_old_verification_and_adult_status(self, config_service):
+        await config_service.save_api_token("old-token")
+        await config_service.set_api_token_verified(True)
+        await config_service.save_adult_status(False, "old token has no adult access")
+        await config_service.save_api_token("new-token")
+        assert await config_service.get_api_token() == "new-token"
+        assert await config_service.get_api_token_verification() == (None, None)
+        assert await config_service.get_adult_status() == (None, None, None)
+
+    @pytest.mark.asyncio
     async def test_has_cookie(self, config_service):
         """Test has_cookie check."""
         assert not await config_service.has_cookie()

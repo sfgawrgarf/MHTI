@@ -37,7 +37,7 @@ class ConfigRepository(BaseRepository):
 
     async def set_value(
         self, key: str, value: str, encrypted: bool, updated_at: str,
-        *, migration_marker: str | None = None,
+        *, migration_marker: str | None = None, clear_keys: tuple[str, ...] = (),
     ) -> None:
         async with self._connect() as db:
             await db.execute(
@@ -51,6 +51,8 @@ class ConfigRepository(BaseRepository):
                 """,
                 (key, value, 1 if encrypted else 0, updated_at),
             )
+            for stale_key in clear_keys:
+                await db.execute("DELETE FROM config WHERE key = ?", (stale_key,))
             if migration_marker:
                 await db.execute(
                     "INSERT OR IGNORE INTO config (key, value) VALUES (?, '1')",

@@ -262,7 +262,10 @@ class ManualJobRepository(BaseRepository):
             # In the old release SUCCESS meant dispatch finished, even when
             # children were still running. Repair those rows from real results.
             if dispatched is None and job['status'] == 'success' and job['total_count']:
-                dispatched = job['total_count']
+                # Old dispatch skips had no history record. Only count durable
+                # child outcomes as dispatched, so the missing files stay skips.
+                # The old stored success/skip counters may have drifted on retry.
+                dispatched = min(job['total_count'], sum(counts.values()))
             if dispatched is not None:
                 skipped += max(0, job['total_count'] - dispatched)
             cursor = await db.execute(
