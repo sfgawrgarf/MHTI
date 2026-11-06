@@ -1,0 +1,502 @@
+path_at_c096c5c,physical_lines,category,review_method,scope_limit
+.dockerignore,60,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+.github/codeql/extensions/path-security.model.yml,25,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+.github/codeql/extensions/qlpack.yml,7,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+.github/dependabot.yml,93,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+.github/workflows/ci.yml,193,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+.github/workflows/codeql.yml,64,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+.github/workflows/dependency-review.yml,28,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+.github/workflows/release.yml,457,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+.gitignore,176,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+CHANGELOG.md,444,项目文档,需求、既有修复、部署和版本约束背景核对,不是可执行代码语义覆盖
+Caddyfile,61,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+Dockerfile,93,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+LICENSE,21,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+README.md,810,项目文档,需求、既有修复、部署和版本约束背景核对,不是可执行代码语义覆盖
+RELEASING.md,105,项目文档,需求、既有修复、部署和版本约束背景核对,不是可执行代码语义覆盖
+SECURITY.md,22,项目文档,需求、既有修复、部署和版本约束背景核对,不是可执行代码语义覆盖
+THIRD_PARTY_NOTICES.md,7,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+UPSTREAM_REFACTOR_MIGRATION.md,105,项目文档,需求、既有修复、部署和版本约束背景核对,不是可执行代码语义覆盖
+data/.gitkeep,2,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+docker-compose.dev.yml,11,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+docker-compose.yml,50,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+docs/comprehensive-audit-fixes.md,27,项目文档,需求、既有修复、部署和版本约束背景核对,不是可执行代码语义覆盖
+docs/main-audit-remediation.md,31,项目文档,需求、既有修复、部署和版本约束背景核对,不是可执行代码语义覆盖
+docs/post-merge-recovery-remediation.md,177,项目文档,需求、既有修复、部署和版本约束背景核对,不是可执行代码语义覆盖
+licenses/MHTI-upstream/LICENSE,202,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+licenses/MHTI-upstream/NOTICE,7,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+pyproject.toml,56,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+requirements-ci.txt,8,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+requirements.lock,2231,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+requirements.txt,20,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+run_server.py,86,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+scripts/reconcile_scrape_job_states.py,68,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+server/__init__.py,4,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/deps.py,134,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/middleware.py,177,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/ai.py,159,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/auth.py,326,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/config.py,461,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/emby.py,80,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/files.py,138,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/frontend_config.py,23,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/history.py,1058,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/images.py,55,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/job_runtime.py,22,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/logs.py,225,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/manual_job.py,89,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/nfo.py,65,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/parser.py,53,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/rename.py,68,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/scheduler.py,92,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/scrape_job.py,97,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/scraped_files.py,83,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/scraper.py,136,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/subtitles.py,97,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/templates.py,64,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/tmdb.py,127,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/watcher.py,120,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/api/v1/websocket.py,304,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/ai_provider_service.py,134,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/correction_service.py,102,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/file_io.py,106,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/file_recovery.py,253,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/history_actions.py,756,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/history_files.py,407,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/history_service.py,673,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/job_monitor_service.py,81,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/library.py,79,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/manual_job_service.py,733,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/media_alias_service.py,274,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/media_identity_service.py,162,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/organize_filters.py,97,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/recognition.py,101,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/rescrape_source.py,218,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scheduler_service.py,231,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scrape_job_service.py,1425,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraped_file_service.py,172,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/__init__.py,5,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/config_resolver.py,204,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/media_pipeline.py,289,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/metadata_resolver.py,176,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/output_transaction.py,49,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/output_writer.py,435,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/p115_storage_provider.py,330,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/preview.py,52,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/scraping/service.py,1767,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/source_cleanup.py,24,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/undo_store.py,45,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/watcher_service.py,1262,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/application/watching.py,141,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/bootstrap.py,414,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/common/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/common/exceptions.py,398,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/common/file_cancellation.py,17,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/common/http.py,51,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/common/limits.py,21,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/common/path_security.py,172,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/common/service_names.py,30,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/artifacts/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/artifacts/image_service.py,412,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/artifacts/nfo_service.py,355,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/artifacts/rename_service.py,440,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/artifacts/subtitle_service.py,381,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/identity/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/identity/auth_config_service.py,195,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/identity/auth_service.py,423,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/identity/session_service.py,439,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/integration/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/integration/emby_service.py,393,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/integration/p115_service.py,1256,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/media/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/media/file_service.py,530,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/media/fingerprint_service.py,75,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/metadata/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/metadata/tmdb_service.py,761,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/parser_service.py,82,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/parsers/__init__.py,28,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/parsers/base.py,59,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/parsers/cleaner.py,408,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/parsers/episode_chinese.py,93,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/parsers/episode_japanese.py,281,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/parsers/episode_standard.py,86,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/parsing/parsers/series_name.py,254,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/system/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/system/config_service.py,492,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/system/log_service.py,279,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/domain/system/template_service.py,229,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/config.py,89,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/csv_security.py,16,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/db/__init__.py,35,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/db/compatibility.py,213,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/db/connection.py,275,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/db/schema.py,549,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/di.py,194,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/file_journal.py,393,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/file_operations.py,80,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/http.py,43,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/log_handler.py,236,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/log_security.py,62,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/manual_outcomes.py,66,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/realtime.py,404,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/__init__.py,31,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/auth_config_repository.py,48,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/auth_repository.py,200,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/base.py,64,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/config_repository.py,144,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/history_repository.py,624,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/log_repository.py,161,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/manual_job_repository.py,445,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/scheduler_repository.py,135,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/scrape_job_repository.py,550,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/scraped_file_repository.py,199,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/session_repository.py,260,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/template_repository.py,36,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/repositories/watcher_repository.py,177,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/infrastructure/security.py,53,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/main.py,432,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/__init__.py,1,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/ai.py,120,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/auth.py,176,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/cloud_115.py,115,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/config.py,165,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/download.py,42,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/emby.py,130,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/file.py,73,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/history.py,231,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/image.py,82,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/job_runtime.py,34,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/log.py,107,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/manual_job.py,289,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/nfo.py,101,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/organize.py,36,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/parser.py,42,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/rename.py,62,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/scheduler.py,67,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/scrape_job.py,140,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/scraped_file.py,30,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/scraper.py,160,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/storage.py,184,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/subtitle.py,106,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/system.py,12,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/template.py,49,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/tmdb.py,79,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/models/watcher.py,221,后端,业务行为、模型、调用链、异常/事务边界检查,模块级审查；不等于所有时序/输入穷举
+server/tests/__init__.py,1,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/__init__.py,1,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_auth_password.py,55,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_config.py,540,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_cors.py,36,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_files.py,498,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_history.py,903,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_images.py,207,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_job_status_codes.py,91,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_nfo.py,149,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_parser.py,126,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_rename.py,223,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_security_hardening.py,333,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_subtitles.py,171,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_templates.py,130,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_tmdb.py,276,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_watcher_config_sync.py,267,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_watcher_path_security.py,111,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_websocket.py,59,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/api/test_websocket_timeout.py,79,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/__init__.py,0,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_ai_provider_service.py,161,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_audit_remediation.py,438,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_commit_cleanup.py,193,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_copy_trial.py,146,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_file_operation_recovery.py,370,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_history_ops.py,525,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_main_audit_20261023.py,166,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_manual_job_progress.py,214,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_manual_job_service.py,328,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_match_resolved.py,207,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_organize_filters.py,40,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_p115_storage_provider.py,273,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_post87_audit.py,264,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_recognition.py,40,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_recovery_boundaries.py,224,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_recovery_regressions.py,210,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_rescrape_source.py,706,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_review_api_security.py,167,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_review_task_monitor.py,216,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_scheduler_service.py,170,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_scraper_config_resolver.py,141,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_scraper_service.py,566,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_search_fallback.py,67,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_timeout_records.py,341,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/application/test_watcher_service.py,246,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/conftest.py,178,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/__init__.py,0,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_auth_service.py,522,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_config_service.py,308,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_emby_service.py,323,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_file_service.py,327,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_image_service.py,385,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_nfo_service.py,291,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_p115_service.py,1804,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_parser_service.py,674,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_password_upgrade.py,90,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_rename_service.py,922,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_session_device.py,80,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_session_security.py,40,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_subtitle_service.py,325,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_template_service.py,210,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_timeout_migration.py,38,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/domain/test_tmdb_service.py,589,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/models/test_storage_capabilities.py,242,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/test_architecture.py,156,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/test_audit_file_operations.py,145,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/test_http_client.py,59,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/test_main_lifecycle.py,23,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/test_repository_security_config.py,28,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/test_security_boundaries.py,136,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+server/tests/test_worker_log_handler.py,47,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+start.sh,65,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+test/.gitkeep,0,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+tracked_py.txt,0,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+web/.env.development,8,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+web/.env.production,4,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+web/.gitignore,24,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+web/README.md,5,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+web/eslint.config.js,43,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+web/index.html,13,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+web/package-lock.json,4261,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+web/package.json,44,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+web/public/vite.svg,1,资源/其他文档,目录清点与用途分类,不宣称运行行为或许可证法律审查
+web/src/App.vue,35,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/components/history/ManualMatchPanel.vue,237,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/components/history/SeasonEpisodePicker.vue,200,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/components/history/conflict-state.test.ts,63,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+web/src/components/history/conflict-state.ts,48,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/components/settings/AiSettings.vue,130,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/config/constants.ts,22,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/layouts/AppLayout.vue,128,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/layouts/AppTopBar.vue,296,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/layouts/AppUserMenu.vue,138,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/layouts/CommandPalette.vue,378,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/layouts/MobileTabBar.vue,126,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/layouts/types.ts,16,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/main.ts,31,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/api.ts,155,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/components/AdminConfigDrawer.vue,287,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/components/LoginFormPanel.vue,185,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/components/LoginHistoryTab.vue,38,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/components/ProfileHeaderTab.vue,180,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/components/SecurityPasswordTab.vue,87,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/components/SessionsTab.vue,137,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/hooks/useAuthSessions.ts,77,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/hooks/useLogin.ts,138,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/hooks/useLoginHistory.ts,134,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/hooks/usePasswordForm.ts,66,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/hooks/useProfileHeader.ts,170,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/index.ts,19,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/routes.ts,37,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/utils.ts,34,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/views/LoginPage.vue,251,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/auth/views/SecurityPage.vue,232,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/api.test.ts,18,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+web/src/modules/history/api.ts,160,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/ConflictBody.vue,294,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/ConflictOptionGroup.vue,141,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/ConflictStepHeader.vue,50,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/DetailHeader.vue,147,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/EmbyConflictPanel.vue,87,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/HistoryBatchBar.vue,93,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/HistoryRecordCard.vue,208,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/HistoryTable.vue,255,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/HistoryToolbar.vue,143,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/ManualMatchFlow.vue,210,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/RecordActions.vue,82,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/RecordDetailSections.vue,290,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/RecordFilesModal.vue,326,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/RecordLogCard.vue,300,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/RecordMainCard.vue,299,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/RescapeModal.vue,234,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/RescapeSearchResults.vue,127,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/ResolveConflictModal.vue,299,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/RetryConfirmPanel.vue,101,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/SearchResultList.vue,177,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/SeasonEpisodePicker.vue,233,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/TmdbSeriesSearchPanel.vue,127,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/components/UndoBar.vue,75,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useConflictRecordData.ts,88,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useConflictSubmit.ts,138,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useConflictTitle.ts,63,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useHistoryBatchRetry.ts,126,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useHistoryElapsed.ts,45,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useHistoryList.ts,139,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useHistoryRealtime.ts,86,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useHistoryRecordActions.ts,94,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useHistoryRecordDetail.ts,213,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useHistorySelection.ts,62,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useRetryMatch.ts,66,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useTmdbDisplay.ts,22,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useTmdbSearch.ts,53,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/hooks/useTmdbSeriesSelect.ts,189,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/index.ts,7,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/routes.ts,29,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/types.ts,214,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/utils.ts,129,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/views/HistoryDetailPage.vue,232,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/history/views/HistoryPage.vue,388,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/home/components/HomeMetrics.vue,142,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/home/components/HomeRecentTasks.vue,228,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/home/components/HomeSkeleton.vue,138,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/home/components/TmdbSetupBanner.vue,210,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/home/hooks/useHomeStats.ts,68,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/home/index.ts,6,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/home/routes.ts,23,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/home/views/HomePage.vue,134,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/api.ts,76,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/components/FileBreadcrumb.vue,167,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/components/FileMobileCard.vue,132,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/components/FilesTable.vue,97,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/components/FilesToolbar.vue,99,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/components/ScanResultTable.vue,102,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/hooks/directoryListingCache.ts,79,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/hooks/useDirectoryBrowser.ts,301,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/hooks/useFileColumns.ts,92,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/hooks/useFileScan.ts,92,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/index.ts,6,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/routes.ts,29,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/types.ts,51,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/utils.ts,68,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/views/FileScanPage.vue,270,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/library/views/FilesPage.vue,254,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/api.ts,117,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/AdvancedSettingsModal.vue,194,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/JobMobileCard.vue,193,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/JobRuntimeCard.vue,127,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/JobTable.vue,179,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/ManualJobCreateModal.vue,187,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/ProgressCell.vue,206,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/TaskWizard.vue,271,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/advanced/DownloadTab.vue,53,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/advanced/GlobalSwitchRow.vue,42,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/advanced/MetadataTab.vue,53,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/advanced/NamingTab.vue,60,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/advanced/OrganizeTab.vue,137,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/manual/ManualJobFooter.vue,55,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/manual/OrganizeSettingSection.vue,115,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/manual/PathSettingSection.vue,175,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/wizard/OptionsStep.vue,100,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/wizard/PathSelectStep.vue,265,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/wizard/PreviewFileList.vue,157,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/wizard/PreviewStep.vue,84,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/components/wizard/PreviewSummaryCard.vue,138,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/constants.ts,82,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/hooks/useManualJobForm.ts,192,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/hooks/useManualJobList.ts,167,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/hooks/useTaskWizard.ts,167,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/hooks/useWatcherConfig.ts,51,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/index.ts,15,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/routes.ts,23,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/types.ts,219,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/scrape/views/ScanPage.vue,216,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/api.ts,77,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/AiSettings.vue,168,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/Cloud115AccountCard.vue,268,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/Cloud115QrModal.vue,197,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/Cloud115Settings.vue,206,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/DownloadSettings.vue,171,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/EmbySettings.vue,278,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/LanguageSettings.vue,68,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/LogConfigModal.vue,253,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/LogFilterBar.vue,125,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/LogMetricsStrip.vue,157,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/LogRecordsCard.vue,297,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/LogSettings.vue,219,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/NfoSettings.vue,178,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/OrganizeSettings.vue,153,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/PerformanceSettings.vue,83,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/ProxySettings.vue,224,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/SettingsField.vue,109,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/SettingsGroup.vue,53,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/SettingsPanes.vue,78,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/SettingsSection.vue,162,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/SystemSettings.vue,90,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/TemplateSettings.vue,192,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/TmdbSetupWizard.vue,263,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/TmdbTokenCard.vue,124,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/WatcherSettings.vue,238,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/tmdb/SetupCompleteStep.vue,44,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/tmdb/TmdbStatusCard.vue,142,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/tmdb/TmdbWizardFooter.vue,69,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/tmdb/TokenGuideStep.vue,179,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/components/tmdb/TokenVerifyStep.vue,123,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/constants.ts,69,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/hooks/useLogConfig.ts,47,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/hooks/useSettingsForm.ts,69,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/hooks/useSystemConfig.ts,52,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/hooks/useTmdbToken.ts,184,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/index.ts,10,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/routes.ts,23,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/types.ts,128,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/modules/settings/views/SettingsPage.vue,280,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/router/guards.ts,42,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/router/icons.ts,32,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/router/index.ts,13,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/router/menu.ts,87,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/router/shell.ts,42,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/router/types.ts,42,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/api/client.test.ts,224,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+web/src/shared/api/client.ts,258,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/api/config.ts,247,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/api/fs.ts,39,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/api/logs.ts,123,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/api/tmdb.ts,35,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/api/watcher.ts,71,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/AnimatedNumber.vue,72,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/BarChart.vue,132,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/EmptyState.vue,112,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/PageContainer.vue,127,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/PageSkeleton.vue,84,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/RingChart.vue,156,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/Skeleton.vue,86,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/TouchCard.vue,113,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/skeleton/CardsSkeleton.vue,44,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/skeleton/DetailSkeleton.vue,81,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/skeleton/FormSkeleton.vue,50,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/skeleton/GridSkeleton.vue,41,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/skeleton/ListSkeleton.vue,48,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/base/skeleton/TableSkeleton.vue,97,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/business/FolderBrowser.vue,273,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/business/FolderBrowserModal.vue,200,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/business/FolderBrowserPanel.vue,296,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/business/LogViewer.vue,327,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/components/business/StatusBadge.vue,202,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/composables/useFolderBrowser.ts,166,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/composables/useLogFeed.ts,150,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/composables/useMobileLayout.ts,217,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/composables/useTheme.ts,37,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/composables/useTouchGesture.ts,160,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/composables/useWebSocket.ts,420,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/composables/wsThrottle.ts,136,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/composables/wsTypes.ts,54,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/styles/design-tokens.css,257,主题/样式,结构及消费入口核对,未执行浏览器视觉回归
+web/src/shared/styles/global.css,255,主题/样式,结构及消费入口核对,未执行浏览器视觉回归
+web/src/shared/styles/themeOverrides.ts,432,主题/样式,结构及消费入口核对,未执行浏览器视觉回归
+web/src/shared/styles/themeTokens.ts,172,主题/样式,结构及消费入口核对,未执行浏览器视觉回归
+web/src/shared/types/common.ts,466,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/utils/async.ts,162,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/utils/format.ts,136,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/utils/index.ts,40,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/shared/utils/validation.ts,125,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/stores/auth.ts,299,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/stores/authTokens.ts,152,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/stores/main-audit-20261023.test.ts,75,既有测试,完整 Actions 执行；相关用例与 fixture 定向阅读,非全部测试实现逐行审阅
+web/src/stores/theme.ts,39,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/src/vite-env.d.ts,98,前端,脚本、类型/API 对照及动态模板/事件绑定检查,省略纯样式；非浏览器完整 E2E
+web/tsconfig.app.json,20,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+web/tsconfig.json,7,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+web/tsconfig.node.json,26,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
+web/vite.config.ts,44,部署/工具/依赖,配置、入口、安全边界与 Actions 门禁核对,锁文件借助 CI 审计；非第三方逐包源码审计
