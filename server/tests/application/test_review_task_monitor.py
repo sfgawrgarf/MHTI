@@ -11,7 +11,7 @@ from server.api.v1.history import _build_scrape_request
 from server.application.history_actions import HistoryScrapeActions
 from server.application.media_identity_service import MediaIdentityService
 from server.application.watcher_service import P115EventStrategy
-from server.infrastructure.db import db_connection
+from server.infrastructure.db import configure_connection
 from server.models.history import HistoryConflictType, TaskStatus
 from server.models.manual_job import ManualJobStatus
 from server.models.organize import OrganizeMode
@@ -122,7 +122,9 @@ async def test_watcher_dedup_requires_a_surviving_output(audit_env, monkeypatch,
 
     @asynccontextmanager
     async def context():
-        async with db_connection(env.db) as db:
+        async with aiosqlite.connect(env.db) as db:
+            await configure_connection(db)
+            db.row_factory = aiosqlite.Row
             yield db
 
     monkeypatch.setattr('server.application.media_identity_service.db_context', context)
