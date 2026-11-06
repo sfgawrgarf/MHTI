@@ -16,6 +16,13 @@ from server.application.watcher_service import P115EventStrategy
 from server.models.storage import StorageLocator, StorageProvider
 from server.models.watcher import WatchedFolder, WatcherMode
 from server.tests.domain.test_p115_service import build_fake_p115_module
+from server.tests.application.test_scraper_service import FakeTMDB, _build_service, _patch_tail
+from server.domain.parsing.parser_service import ParserService
+from server.domain.integration.emby_service import EmbyService
+from server.models.emby import ConflictType, EmbyConfig, EmbyConfigRequest
+from server.models.organize import OrganizeMode
+from server.models.scraper import ScrapeRequest, ScrapeStatus
+from server.models.tmdb import TMDBSearchResult
 
 
 def test_browse_survives_a_broken_symlink(tmp_path):
@@ -132,3 +139,34 @@ async def test_unresolved_115_copy_never_renames_the_source(config_service, monk
     except ValueError:
         pass
     client.fs_rename.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_emby_check_blocks_automatic_publication(temp_db, tmp_path, monkeypatch):
+    source = tmp_path / 'Test.Show.S01E01.mp4'
+    source.write_bytes(b'video')
+    target = tmp_path / 'library'
+    service = _build_service(temp_db, FakeTMDB(search_results=[
+        TMDBSearchResult(id=123, name='Test Show', adult=True),
+    ]), parser=ParserService())
+    _patch_tail(monkeypatch, service, emby_conflict=ConflictType.CHECK_FAILED)
+    result = await service.scrape_file(ScrapeRequest(
+        file_path=str(source), output_dir=str(target), auto_select=True, link_mode=OrganizeMode.COPY,
+    ))
+    assert result.status != ScrapeStatus.SUCCESS
+    assert not list(target.rglob('*.mp4')), 'failed preflight was treated as no conflict'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['save', 'test'])
+async def test_emby_saved_secret_is_bound_to_its_origin(config_service, operation):
+    service = EmbyService(config_service)
+    await service.save_config(EmbyConfig(server_url='https://old.example', api_key='private-old-key'))
+    request = EmbyConfigRequest(enabled=True, server_url='https://new.example',
+                                api_key='' if operation == 'save' else '__USE_SAVED__')
+    try:
+        config = await (service.build_config_from_request(request) if operation == 'save'
+                        else service.build_test_config(request))
+    except (ValueError, RuntimeError):
+        return
+    assert config.api_key != 'private-old-key', 'saved credential was assigned to a different origin'
