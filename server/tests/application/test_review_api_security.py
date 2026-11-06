@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import FastAPI
+from sse_starlette.sse import AppStatus
 
 from server.api.deps import AuthContext, get_history_service, get_scraper_service, require_auth
 from server.api.v1 import history as history_api, scraper as scraper_api
@@ -63,6 +64,10 @@ async def test_real_config_gate_rejects_missing_or_invalid_token(temp_db, valid)
 @pytest.mark.asyncio
 @pytest.mark.parametrize('closure', ['revoke', 'expire'])
 async def test_history_sse_closes_and_does_not_send_after_session_ends(monkeypatch, closure):
+    # sse-starlette keeps this process-wide event; each pytest case has its
+    # own event loop, unlike the single-loop production process.
+    monkeypatch.setattr(AppStatus, 'should_exit_event', None)
+    monkeypatch.setattr(AppStatus, 'should_exit', False)
     app = FastAPI()
     app.include_router(history_api.router)
     auth = AuthContext(username='admin', session_id='stream-session')
@@ -120,7 +125,7 @@ async def test_history_sse_closes_and_does_not_send_after_session_ends(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('phase', ['verify', 'adult'])
+@pytest.mark.parametrize('phase', ['verify', 'adult', 'save_adult'])
 @pytest.mark.parametrize('replacement', ['replace', 'delete', 'same_token'])
 async def test_late_tmdb_probe_cannot_write_into_new_credential_generation(
     temp_db, monkeypatch, phase, replacement,
@@ -136,8 +141,10 @@ async def test_late_tmdb_probe_cannot_write_into_new_credential_generation(
         return (False, 'old result')
 
     monkeypatch.setattr(tmdb, 'verify_api_token', delayed if phase == 'verify' else AsyncMock(return_value=(True, None)))
-    monkeypatch.setattr(tmdb, 'check_adult_access', delayed if phase == 'adult' else AsyncMock(return_value=(False, 'old result')))
-    task = asyncio.create_task(tmdb.refresh_token_status())
+    monkeypatch.setattr(tmdb, 'check_adult_access', delayed if phase != 'verify' else AsyncMock(return_value=(False, 'old result')))
+    task = asyncio.create_task(
+        tmdb.save_and_verify_api_token('token-A') if phase == 'save_adult' else tmdb.refresh_token_status()
+    )
     try:
         await asyncio.wait_for(entered.wait(), 2)
         if replacement == 'delete':

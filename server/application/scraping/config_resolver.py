@@ -157,13 +157,6 @@ class ScraperConfigResolver:
         Returns:
             (is_ready, error_message) 元组。
         """
-        # Check Cookie
-        cookie_status = await self.tmdb_service.get_cookie_status()
-        if not cookie_status.is_configured:
-            return False, "请先配置 TMDB Cookie"
-        if cookie_status.is_valid is False:
-            return False, "TMDB Cookie 已失效，请更新"
-
         # Check API Token
         token_status = await self.tmdb_service.get_api_token_status()
         if not token_status.is_configured:
@@ -177,20 +170,13 @@ class ScraperConfigResolver:
         """确保必要配置已就绪。
 
         Raises:
-            TMDBNotConfiguredError: Cookie 或 API Token 未配置。
-            TMDBInvalidCredentialsError: Cookie 或 API Token 已失效。
+            TMDBNotConfiguredError: API Token 未配置。
+            TMDBInvalidCredentialsError: API Token 已失效。
         """
         from server.common.exceptions import (
             TMDBNotConfiguredError,
             TMDBInvalidCredentialsError,
         )
-
-        # Check Cookie
-        cookie_status = await self.tmdb_service.get_cookie_status()
-        if not cookie_status.is_configured:
-            raise TMDBNotConfiguredError("Cookie")
-        if cookie_status.is_valid is False:
-            raise TMDBInvalidCredentialsError("Cookie")
 
         # Check API Token
         token_status = await self.tmdb_service.get_api_token_status()

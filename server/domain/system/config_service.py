@@ -189,16 +189,27 @@ class ConfigService:
             return LanguageConfig()
 
     # API Token 相关方法
-    async def save_api_token(self, token: str) -> None:
+    async def save_api_token(self, token: str) -> str:
         """Save TMDB API token (encrypted)."""
         # A previous token's negative probe must not block a replacement when
         # the new probe is unavailable. Replace credentials and clear cached
         # verification results in the same transaction.
+        revision = encrypt(token)
         await self._repo.set_value(
-            API_TOKEN_KEY, encrypt(token), True, datetime.now().isoformat(),
+            API_TOKEN_KEY, revision, True, datetime.now().isoformat(),
             clear_keys=(API_TOKEN_VERIFIED_KEY, API_TOKEN_VERIFIED_AT_KEY,
                         ADULT_ENABLED_KEY, ADULT_MESSAGE_KEY, ADULT_CHECKED_AT_KEY),
         )
+        # Randomized ciphertext identifies this exact save, including a re-save
+        # of the same plaintext. Keep it internal and never log or expose it.
+        return revision
+
+    async def get_api_token_snapshot(self) -> tuple[str | None, str | None]:
+        row = await self._repo.get_value(API_TOKEN_KEY)
+        if row is None:
+            return None, None
+        value, encrypted = row
+        return (decrypt(value) if encrypted else value), value
 
     async def get_api_token(self) -> str | None:
         """Get TMDB API token (decrypted)."""
@@ -206,23 +217,22 @@ class ConfigService:
 
     async def delete_api_token(self) -> bool:
         """Delete the stored TMDB API token and related data."""
-        deleted = await self.delete(API_TOKEN_KEY)
-        await self.delete(API_TOKEN_VERIFIED_KEY)
-        await self.delete(API_TOKEN_VERIFIED_AT_KEY)
-        # R18 结论跟着 Token 走：换 Token 后旧结论可能不成立
-        await self.delete(ADULT_ENABLED_KEY)
-        await self.delete(ADULT_MESSAGE_KEY)
-        await self.delete(ADULT_CHECKED_AT_KEY)
-        return deleted
+        return await self._repo.delete_values((
+            API_TOKEN_KEY, API_TOKEN_VERIFIED_KEY, API_TOKEN_VERIFIED_AT_KEY,
+            ADULT_ENABLED_KEY, ADULT_MESSAGE_KEY, ADULT_CHECKED_AT_KEY,
+        ))
 
     async def has_api_token(self) -> bool:
         """Check if API token is configured."""
         return await self.exists(API_TOKEN_KEY)
 
-    async def set_api_token_verified(self, is_valid: bool) -> None:
+    async def set_api_token_verified(self, is_valid: bool, *, expected_revision: str | None = None) -> bool:
         """Set API token verification status."""
-        await self.set(API_TOKEN_VERIFIED_KEY, "1" if is_valid else "0")
-        await self.set(API_TOKEN_VERIFIED_AT_KEY, datetime.now().isoformat())
+        now = datetime.now().isoformat()
+        return await self._repo.set_values(
+            {API_TOKEN_VERIFIED_KEY: "1" if is_valid else "0", API_TOKEN_VERIFIED_AT_KEY: now}, now,
+            expected=(API_TOKEN_KEY, expected_revision) if expected_revision is not None else None,
+        )
 
     async def get_api_token_verification(self) -> tuple[bool | None, datetime | None]:
         """Get API token verification status and timestamp."""
@@ -242,12 +252,14 @@ class ConfigService:
 
         return is_valid, verified_at
 
-    async def save_adult_status(self, enabled: bool | None, message: str) -> None:
+    async def save_adult_status(self, enabled: bool | None, message: str, *, expected_revision: str | None = None) -> bool:
         """保存 R18 探测结论（None 表示无法判定，同样落库以免每次都重新探测）。"""
         stored = "unknown" if enabled is None else ("1" if enabled else "0")
-        await self.set(ADULT_ENABLED_KEY, stored)
-        await self.set(ADULT_MESSAGE_KEY, message)
-        await self.set(ADULT_CHECKED_AT_KEY, datetime.now().isoformat())
+        now = datetime.now().isoformat()
+        return await self._repo.set_values(
+            {ADULT_ENABLED_KEY: stored, ADULT_MESSAGE_KEY: message, ADULT_CHECKED_AT_KEY: now}, now,
+            expected=(API_TOKEN_KEY, expected_revision) if expected_revision is not None else None,
+        )
 
     async def get_adult_status(self) -> tuple[bool | None, str | None, datetime | None]:
         """读 R18 探测结论：无记录时 enabled 为 None、时间也为 None（区分「未检测」与「检测后无法判定」）。"""

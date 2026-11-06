@@ -33,11 +33,7 @@ class FakeConfigService:
 
 class FakeTMDBService:
     def __init__(self) -> None:
-        self.cookie_status = SimpleNamespace(is_configured=True, is_valid=True)
         self.token_status = SimpleNamespace(is_configured=True, is_valid=True)
-
-    async def get_cookie_status(self):
-        return self.cookie_status
 
     async def get_api_token_status(self):
         return self.token_status
@@ -121,21 +117,10 @@ async def test_effective_nfo_config_preserves_global_field_switches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_config_checks_and_exceptions_cover_cookie_and_token_states() -> None:
+async def test_config_checks_and_exceptions_cover_token_states() -> None:
     tmdb = FakeTMDBService()
     resolver = ScraperConfigResolver(FakeConfigService(), tmdb)
 
-    tmdb.cookie_status = SimpleNamespace(is_configured=False, is_valid=None)
-    assert await resolver.check_config() == (False, "请先配置 TMDB Cookie")
-    with pytest.raises(TMDBNotConfiguredError):
-        await resolver.ensure_config_ready()
-
-    tmdb.cookie_status = SimpleNamespace(is_configured=True, is_valid=False)
-    assert await resolver.check_config() == (False, "TMDB Cookie 已失效，请更新")
-    with pytest.raises(TMDBInvalidCredentialsError):
-        await resolver.ensure_config_ready()
-
-    tmdb.cookie_status = SimpleNamespace(is_configured=True, is_valid=True)
     tmdb.token_status = SimpleNamespace(is_configured=False, is_valid=None)
     assert await resolver.check_config() == (False, "请先配置 TMDB API Token")
     with pytest.raises(TMDBNotConfiguredError):
