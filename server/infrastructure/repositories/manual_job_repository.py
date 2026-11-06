@@ -7,6 +7,7 @@ from datetime import datetime
 import aiosqlite
 
 from server.infrastructure.repositories.base import BaseRepository
+from server.infrastructure.manual_outcomes import CURRENT_HISTORY_PREDICATE, ensure_manual_outcomes_schema
 from server.models.manual_job import ManualJobCreate, ManualJobStatus
 
 _MANUAL_JOBS_DDL = """
@@ -44,10 +45,12 @@ class ManualJobRepository(BaseRepository):
 
     async def _ensure_custom_schema(self, db: aiosqlite.Connection) -> None:
         await db.execute(_MANUAL_JOBS_DDL)
+        await ensure_manual_outcomes_schema(db)
 
     async def ensure_schema(self) -> None:
         """兼容旧数据库：补齐缺失列（幂等）。"""
         async with self._connect() as db:
+            await ensure_manual_outcomes_schema(db)
             async with db.execute("PRAGMA table_info(manual_jobs)") as cursor:
                 columns = {row[1] for row in await cursor.fetchall()}
             if "schedule_key" not in columns:
@@ -219,8 +222,9 @@ class ManualJobRepository(BaseRepository):
             "SELECT file_path FROM scrape_jobs WHERE source = 'manual' AND source_id = ? "
             "AND replaces_job_id IS NULL AND operation != 'rematch' "
             "UNION SELECT folder_path FROM history_records WHERE manual_job_id = ? "
-            "AND scrape_job_id IS NULL AND status IN ('skipped', 'deleted')",
-            (job_id, job_id),
+            "AND scrape_job_id IS NULL AND status IN ('skipped', 'deleted') "
+            "UNION SELECT file_path FROM manual_job_outcomes WHERE manual_job_id = ? AND counted = 1",
+            (job_id, job_id, job_id),
         )
         return {str(row[0]) for row in rows}
 
@@ -238,12 +242,16 @@ class ManualJobRepository(BaseRepository):
                 await db.rollback()
                 return
             cursor = await db.execute(
-                """
+                f"""
                 SELECT status, COUNT(*) FROM (
                     SELECT h.status FROM history_records h
                     LEFT JOIN scrape_jobs j ON j.id = h.scrape_job_id
-                    WHERE h.manual_job_id = ? AND h.total_files > 0 AND h.status != 'replaced'
-                      AND (COALESCE(j.operation, '') != 'rematch' OR h.status = 'success')
+                    LEFT JOIN manual_job_outcomes a ON a.history_record_id = h.id
+                    WHERE h.manual_job_id = ? AND {CURRENT_HISTORY_PREDICATE}
+                    UNION ALL
+                    SELECT a.status FROM manual_job_outcomes a
+                    WHERE a.manual_job_id = ? AND a.counted = 1
+                      AND NOT EXISTS (SELECT 1 FROM history_records h WHERE h.id = a.history_record_id)
                     UNION ALL
                     SELECT j.status FROM scrape_jobs j
                     WHERE j.source = 'manual' AND j.source_id = ?
@@ -251,8 +259,9 @@ class ManualJobRepository(BaseRepository):
                       AND j.replaced_by_job_id IS NULL
                       AND NOT EXISTS (SELECT 1 FROM history_records h
                                       WHERE h.scrape_job_id = j.id OR h.id = j.continuation_history_id)
+                      AND NOT EXISTS (SELECT 1 FROM manual_job_outcomes a WHERE a.scrape_job_id = j.id AND a.counted = 1)
                 ) GROUP BY status
-                """, (job_id, job_id),
+                """, (job_id, job_id, job_id),
             )
             counts = {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
             success = counts.get('success', 0)
@@ -337,6 +346,7 @@ class ManualJobRepository(BaseRepository):
 
         placeholders = ",".join("?" * len(ids))
         async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
                 f"""
                 SELECT COUNT(*) FROM manual_jobs
@@ -359,6 +369,9 @@ class ManualJobRepository(BaseRepository):
                     "手动任务或其刮削子任务仍在处理中，请先取消"
                 )
             # 级联删除该手动任务投递的刮削任务，避免留下孤立队列记录。
+            await db.execute(
+                f"DELETE FROM manual_job_outcomes WHERE manual_job_id IN ({placeholders})", ids,
+            )
             await db.execute(
                 f"DELETE FROM scrape_jobs WHERE source = 'manual' AND source_id IN ({placeholders})",
                 ids,

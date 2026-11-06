@@ -295,7 +295,7 @@ class P115EventStrategy(WatchStrategy):
     # 表示文件新增类的行为类型（与 115 life_list 实际返回值对齐）
     NEW_FILE_BEHAVIORS = {
         "upload_file", "copy_file", "move_file",
-        "receive", "recv", "receive_file",
+        "receive", "recv", "receive_file", "receive_files",
         "offline_download",
     }
 

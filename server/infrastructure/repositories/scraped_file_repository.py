@@ -179,8 +179,21 @@ class ScrapedFileRepository(BaseRepository):
             return 0
 
         placeholders = ",".join("?" * len(paths))
-        return await self._execute(
-            f"DELETE FROM scraped_files WHERE source_path IN ({placeholders})"
-            f" OR target_path IN ({placeholders})",
-            tuple(paths) + tuple(paths),
-        )
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                f"DELETE FROM scraped_files WHERE source_path IN ({placeholders})"
+                f" OR target_path IN ({placeholders})",
+                tuple(paths) + tuple(paths),
+            )
+            deleted = cursor.rowcount
+            cursor = await db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_versions'"
+            )
+            if await cursor.fetchone() is not None:
+                await db.execute(
+                    f"DELETE FROM media_versions WHERE target_path IN ({placeholders})",
+                    tuple(paths),
+                )
+            await db.commit()
+            return deleted

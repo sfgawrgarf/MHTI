@@ -1,4 +1,4 @@
 # MHTI - Server Package
 """MHTI backend package."""
 
-__version__ = "2.1.10"
+__version__ = "2.1.11"

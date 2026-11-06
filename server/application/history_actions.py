@@ -280,6 +280,12 @@ class HistoryScrapeActions:
             from server.models.organize import OrganizeMode
             scrape_request.link_mode = OrganizeMode.COPY
         locators = await self.restore_locators(record)
+        if not correcting:
+            # folder_path is a display value ("source => output") after a
+            # successful organize or partial publication. Resolve the actual
+            # owned input without clearing any competing conflict target.
+            input_ = await self._resolver().resolve(record, remote=bool(locators.get("file_locator")))
+            scrape_request.file_path = input_.path
         output_dir = scrape_request.output_dir or str(Path(scrape_request.file_path).parent)
         job = await self._scrape_job_service.create_job(
             ScrapeJobCreate(

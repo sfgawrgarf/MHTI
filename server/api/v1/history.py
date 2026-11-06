@@ -12,7 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from server.application.history_actions import HistoryScrapeActions
 from server.application.history_files import HistoryFileService
-from server.api.deps import require_auth
+from server.api.deps import AuthContext, require_auth
 from server.api.deps import (
     get_config_service,
     get_history_service,
@@ -303,6 +303,7 @@ async def get_record(
 async def stream_logs(
     record_id: str,
     history_service: HistoryService = Depends(get_history_service),
+    auth: AuthContext = Depends(require_auth),
 ):
     """SSE 端点：实时推送刮削日志"""
     # 验证记录存在
@@ -311,8 +312,19 @@ async def stream_logs(
         raise HTTPException(status_code=404, detail="Record not found")
 
     async def event_generator():
+        from server.domain.identity.session_service import session_service
+        from server.infrastructure.realtime import get_ws_manager
+
+        manager = get_ws_manager()
         queue = await history_service.subscribe_logs(record_id)
+        revoked = manager.register_session_stream(auth.session_id)
+        revoke_task = asyncio.create_task(revoked.wait())
+        log_task = None
         try:
+            # Close the race between initial request authentication and stream
+            # registration. Periodic checks also enforce natural expiry.
+            if not await session_service.is_session_active(auth.session_id) or revoked.is_set():
+                return
             # 先发送当前日志
             if record.scrape_logs:
                 yield {
@@ -325,8 +337,15 @@ async def stream_logs(
 
             # 持续监听更新
             while True:
-                try:
-                    logs = await asyncio.wait_for(queue.get(), timeout=30.0)
+                log_task = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait(
+                    (log_task, revoke_task), timeout=30.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not await session_service.is_session_active(auth.session_id) or revoked.is_set():
+                    return
+                if log_task in done:
+                    logs = log_task.result()
                     yield {
                         "event": "logs",
                         "data": json.dumps(
@@ -334,13 +353,20 @@ async def stream_logs(
                             ensure_ascii=False
                         ),
                     }
-                except asyncio.TimeoutError:
+                else:
+                    log_task.cancel()
+                    await asyncio.gather(log_task, return_exceptions=True)
                     # 发送心跳保持连接
                     yield {"event": "ping", "data": ""}
         except asyncio.CancelledError:
             pass
         finally:
+            manager.unregister_session_stream(auth.session_id, revoked)
             history_service.unsubscribe_logs(record_id, queue)
+            for task in (log_task, revoke_task):
+                if task is not None:
+                    task.cancel()
+            await asyncio.gather(*(task for task in (log_task, revoke_task) if task is not None), return_exceptions=True)
 
     return EventSourceResponse(event_generator())
 

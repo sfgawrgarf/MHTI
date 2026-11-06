@@ -106,6 +106,50 @@ async def test_recovery_attempts_count_one_logical_child(audit_env, monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_clearing_pending_conflict_settles_parent_and_removes_ledger_with_parent(audit_env, monkeypatch):
+    env = audit_env
+    service, parent = await batch(env, monkeypatch)
+    job = await child(env, parent)
+    record = await outcome(env, parent, job, TaskStatus.PENDING_ACTION)
+    await env.jobs.update_job(job.id, status=ScrapeJobStatus.PENDING_ACTION, history_record_id=record.id)
+    await env.history.clear_records()
+    current = await service.get_job(parent.id)
+    assert current.status == ManualJobStatus.SUCCESS and current.skip_count == 1
+    assert await service._repo.get_dispatched_paths(parent.id) == {str(env.source)}
+    assert await service._repo.delete_jobs([parent.id]) == 1
+    async with aiosqlite.connect(env.db) as db:
+        assert (await (await db.execute('SELECT COUNT(*) FROM manual_job_outcomes')).fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_clear_keeps_latest_failed_correction_excluded(audit_env, monkeypatch):
+    env = audit_env
+    service, parent = await batch(env, monkeypatch)
+    original = await child(env, parent)
+    record = await outcome(env, parent, original, TaskStatus.SUCCESS)
+    await env.jobs.update_job(original.id, status=ScrapeJobStatus.SUCCESS, history_record_id=record.id)
+    correction = await child(env, parent, operation='rematch', replaces_job_id=original.id,
+                             correction_history_id=record.id)
+    old = await outcome(env, parent, correction, TaskStatus.FAILED)
+    latest = await outcome(env, parent, correction, TaskStatus.FAILED)
+    await env.jobs.update_job(correction.id, status=ScrapeJobStatus.FAILED, history_record_id=latest.id)
+    async with aiosqlite.connect(env.db) as db:
+        await db.execute('UPDATE history_records SET executed_at = ? WHERE id = ?',
+                         ((datetime.now() - timedelta(days=3)).isoformat(), old.id))
+        await db.commit()
+    await env.history.clear_records(1)
+    assert await env.jobs.get_job(correction.id) is not None
+    current = await service.get_job(parent.id)
+    assert current.success_count == 1 and current.error_count == 0
+    await env.history.clear_records()
+    for restore in [False, True]:
+        if restore:
+            assert (await env.history.undo_last()).undone
+        current = await service.get_job(parent.id)
+        assert current.success_count == 1 and current.error_count == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('deletion', ['api', 'external', 'keep'])
 async def test_watcher_dedup_requires_a_surviving_output(audit_env, monkeypatch, deletion):
     env = audit_env

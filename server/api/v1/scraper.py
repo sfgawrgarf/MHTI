@@ -26,7 +26,7 @@ async def get_scraper_status(
     scraper_service: ScraperService = Depends(get_scraper_service),
 ) -> dict:
     """
-    Check if scraper is ready (Cookie and API Token configured).
+    Check if the API-only scraper has a configured, valid API token.
 
     Returns:
         Status dict with ready flag and message.
@@ -80,8 +80,8 @@ async def scrape_file(
         ScrapeResult with operation status.
 
     Raises:
-        TMDBNotConfiguredError: Cookie 或 API Token 未配置 (400)
-        TMDBInvalidCredentialsError: Cookie 或 API Token 已失效 (401)
+        TMDBNotConfiguredError: API Token 未配置
+        TMDBInvalidCredentialsError: API Token 已失效
     """
     await scraper_service.ensure_config_ready()
     return await scraper_service.scrape_file(request)
@@ -127,8 +127,8 @@ async def batch_scrape(
         BatchScrapeResponse with all results.
 
     Raises:
-        TMDBNotConfiguredError: Cookie 或 API Token 未配置 (400)
-        TMDBInvalidCredentialsError: Cookie 或 API Token 已失效 (401)
+        TMDBNotConfiguredError: API Token 未配置
+        TMDBInvalidCredentialsError: API Token 已失效
     """
     if not request.dry_run:
         await scraper_service.ensure_config_ready()

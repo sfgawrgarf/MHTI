@@ -2,6 +2,8 @@
 
 import aiosqlite
 
+from server.infrastructure.manual_outcomes import ensure_manual_outcomes_schema
+
 
 MANUAL_JOB_COLUMNS = (
     ("schedule_key", "TEXT"),
@@ -112,6 +114,7 @@ async def create_all_tables(db: aiosqlite.Connection) -> None:
     await _create_core_tables(db)
     await _create_auth_tables(db)
     await _create_job_tables(db)
+    await ensure_manual_outcomes_schema(db)
     await _create_watcher_tables(db)
     await _create_log_tables(db)
     await _create_media_identity_tables(db)
