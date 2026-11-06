@@ -31,6 +31,17 @@ from server.application.media_identity_service import MediaIdentityService
 
 logger = logging.getLogger(__name__)
 
+
+def _has_surviving_output(paths: list[str]) -> bool:
+    for path in paths:
+        try:
+            validate_media_path(path, must_exist=True, require_file=True)
+        except (PathSecurityError, OSError):
+            continue
+        return True
+    return False
+
+
 # 超时兜底步骤名：写进刮削日志时间轴的最后一步
 TIMEOUT_STEP_NAME = "任务超时"
 
@@ -267,7 +278,8 @@ class ScrapeJobService:
                     fingerprint = await run_file_io(
                         MediaIdentityService.fingerprint, job.file_path
                     )
-                    if await self._repo.has_media_version(fingerprint):
+                    targets = await self._repo.list_media_version_targets(fingerprint)
+                    if await run_file_io(_has_surviving_output, targets):
                         logger.info(f"文件已有媒体版本记录，跳过监控重复任务: {job.file_path}")
                         return None
 

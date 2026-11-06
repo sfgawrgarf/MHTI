@@ -178,6 +178,20 @@ class ScrapeJobRepository(BaseRepository):
             return False
         return row is not None
 
+    async def list_media_version_targets(self, source_fingerprint: str) -> list[str]:
+        """Return registered outputs; the application checks their availability."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_versions'"
+            )
+            if await cursor.fetchone() is None:
+                return []
+            cursor = await db.execute(
+                "SELECT target_path FROM media_versions WHERE source_fingerprint = ?",
+                (source_fingerprint,),
+            )
+            return [str(row[0]) for row in await cursor.fetchall() if row[0]]
+
     async def has_skipped_history(
         self, file_path: str, file_fingerprint: str | None
     ) -> bool:

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import aiosqlite
 
 from server.infrastructure.repositories.base import BaseRepository
+from server.infrastructure.manual_outcomes import archive_manual_outcomes
 from server.models.history import HistoryConflictType, HistoryRecordCreate, TaskStatus
 
 _HISTORY_RECORDS_DDL = """
@@ -499,6 +500,7 @@ class HistoryRepository(BaseRepository):
     async def clear_records(self, before_days: int | None = None) -> int:
         """清空历史记录并级联删除关联的 scrape_jobs。"""
         async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
             if before_days is not None:
                 cutoff = (datetime.now() - timedelta(days=before_days)).isoformat()
                 cursor = await db.execute(
@@ -519,15 +521,22 @@ class HistoryRepository(BaseRepository):
                     raise ValueError(
                         f"待清理记录中有 {active_count} 条记录仍在处理，请先取消任务"
                     )
+                await archive_manual_outcomes(db, cutoff)
                 # 先删除关联的 scrape_jobs
                 await db.execute(
-                    """DELETE FROM scrape_jobs WHERE id IN (
+                    """DELETE FROM scrape_jobs AS j WHERE (id IN (
                         SELECT scrape_job_id FROM history_records
                         WHERE executed_at < ? AND scrape_job_id IS NOT NULL
                     ) OR continuation_history_id IN (
                         SELECT id FROM history_records WHERE executed_at < ?
+                    )) AND NOT EXISTS (
+                        SELECT 1 FROM history_records retained
+                        WHERE retained.executed_at >= ?
+                          AND (retained.scrape_job_id = j.id
+                               OR retained.id = j.history_record_id
+                               OR retained.id = j.continuation_history_id)
                     )""",
-                    (cutoff, cutoff),
+                    (cutoff, cutoff, cutoff),
                 )
                 cursor = await db.execute(
                     "DELETE FROM history_records WHERE executed_at < ?",
@@ -550,6 +559,7 @@ class HistoryRepository(BaseRepository):
                     raise ValueError(
                         f"记录中有 {active_count} 条记录仍在处理，请先取消任务"
                     )
+                await archive_manual_outcomes(db)
                 # 先删除关联的 scrape_jobs
                 await db.execute(
                     """DELETE FROM scrape_jobs WHERE id IN (
