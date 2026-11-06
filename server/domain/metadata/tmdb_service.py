@@ -349,13 +349,14 @@ class TMDBService:
             )
 
         # 验证成功，保存 token
-        await self.config_service.save_api_token(token.strip())
-        await self.config_service.set_api_token_verified(True)
+        revision = await self.config_service.save_api_token(token.strip())
+        if not await self.config_service.set_api_token_verified(True, expected_revision=revision):
+            return await self.get_api_token_status()
 
         # R18 探测是附加诊断；Token 保存不能因为网络或探测失败而回滚。
         try:
             enabled, adult_message = await self.check_adult_access()
-            await self.config_service.save_adult_status(enabled, adult_message)
+            await self.config_service.save_adult_status(enabled, adult_message, expected_revision=revision)
         except Exception:
             pass
 
@@ -436,19 +437,20 @@ class TMDBService:
         设置页的「重新检测」走这里：之前它只是重新读一遍数据库里的旧状态（不会真的打
         TMDB），所以 Token 在 TMDB 那边被删掉后仍然显示「已配置且有效」。
         """
-        token = await self._get_api_token()
+        token, revision = await self.config_service.get_api_token_snapshot()
         if not token:
             return ApiTokenStatus(is_configured=False)
 
         is_valid, error = await self.verify_api_token(token)
-        await self.config_service.set_api_token_verified(bool(is_valid))
+        if not await self.config_service.set_api_token_verified(bool(is_valid), expected_revision=revision):
+            return await self.get_api_token_status()
 
         if not is_valid:
             # Token 失效时不动旧的 R18 结论：失效不是 R18 状态变化
             return await self.get_api_token_status()
 
         enabled, message = await self.check_adult_access()
-        await self.config_service.save_adult_status(enabled, message)
+        await self.config_service.save_adult_status(enabled, message, expected_revision=revision)
         return await self.get_api_token_status()
 
     # ========== API-based Methods ==========

@@ -87,6 +87,40 @@ class ConfigRepository(BaseRepository):
             await db.execute("INSERT INTO config (key, value) VALUES (?, '1')", (marker,))
             await db.commit()
 
+    async def set_values(
+        self, values: dict[str, str], updated_at: str,
+        *, expected: tuple[str, str] | None = None,
+    ) -> bool:
+        """Commit one status snapshot only for its original credential row."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if expected is not None:
+                cursor = await db.execute("SELECT value FROM config WHERE key = ?", (expected[0],))
+                row = await cursor.fetchone()
+                if row is None or row[0] != expected[1]:
+                    await db.rollback()
+                    return False
+            await db.executemany(
+                "INSERT INTO config (key, value, encrypted, updated_at) VALUES (?, ?, 0, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, encrypted = 0, "
+                "updated_at = excluded.updated_at",
+                [(key, value, updated_at) for key, value in values.items()],
+            )
+            await db.commit()
+            return True
+
+    async def delete_values(self, keys: tuple[str, ...]) -> bool:
+        """Remove credentials and derived state atomically; report the first key."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            existed = False
+            for index, key in enumerate(keys):
+                cursor = await db.execute("DELETE FROM config WHERE key = ?", (key,))
+                if index == 0:
+                    existed = cursor.rowcount > 0
+            await db.commit()
+            return existed
+
     async def delete_value(self, key: str) -> bool:
         return await self._execute("DELETE FROM config WHERE key = ?", (key,)) > 0
 

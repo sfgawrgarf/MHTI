@@ -36,6 +36,19 @@ class ConnectionManager:
         self._send_locks: dict[str, asyncio.Lock] = {}
         self._send_timeout = send_timeout
         self._max_subscriptions_per_client = max_subscriptions_per_client
+        self._session_streams: dict[str, set[asyncio.Event]] = {}
+
+    def register_session_stream(self, session_id: str) -> asyncio.Event:
+        revoked = asyncio.Event()
+        self._session_streams.setdefault(session_id, set()).add(revoked)
+        return revoked
+
+    def unregister_session_stream(self, session_id: str, revoked: asyncio.Event) -> None:
+        streams = self._session_streams.get(session_id)
+        if streams is not None:
+            streams.discard(revoked)
+            if not streams:
+                self._session_streams.pop(session_id, None)
 
     async def connect(
         self,
@@ -181,7 +194,9 @@ class ConnectionManager:
         code: int = 4401,
         reason: str = "Session revoked",
     ) -> int:
-        """立即关闭由指定会话认证的所有 WebSocket。"""
+        """Revoke SSE streams immediately, then close session WebSockets."""
+        for revoked in self._session_streams.pop(session_id, set()):
+            revoked.set()
         client_ids = [
             client_id
             for client_id, active_session in self.client_sessions.items()
