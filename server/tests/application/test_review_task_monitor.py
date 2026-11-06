@@ -1,6 +1,5 @@
 """Cross-boundary regression cases from the post-release main review."""
 
-import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
