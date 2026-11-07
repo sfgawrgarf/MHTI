@@ -4,7 +4,7 @@
 
 本清单对应 [原始完整审查报告](full-main-audit-20261107.md) 的全部 F01–F24。原报告保留基线事实，本文件记录修复后的行为与验收证据。
 
-状态：**全部实现已完成，等待最终 CI 验收；尚未合并或发布。**
+状态：**F01–F24 已全部修复，代码复审和全量 CI 验收通过。** 合并与发布执行记录见 [PR #101](https://github.com/sfgawrgarf/MHTI/pull/101) 和 [v2.1.12 Release](https://github.com/sfgawrgarf/MHTI/releases/tag/v2.1.12)。
 
 ## 完整闭环清单
 
@@ -38,11 +38,19 @@
 ## 验证记录
 
 - 原审查的 19 个失败用例完整保留；字幕并发门控从旧 shutil.move 调整为新的原子发布入口，保留成功数量和内容不丢失断言。
-- 后端第一轮修复中新增 16 个缺陷用例全部转绿；旧 Emby 测试更新为正确的错误传播契约。
-- 后续云端后端检查已达到 **1025 passed**，再补上注册竞态、日志并发和多容器元数据等边界后继续全量验收。
+- 后端新增的缺陷复现及补充边界用例全部转绿；旧 Emby 测试更新为正确的错误传播契约。
+- 全量结果：**后端 1029 passed，前端 34 passed，覆盖率 84.49%**。相对原有 999/24，新增后端 30 个、前端 10 个测试情形，包括注册竞态、日志并发、多容器元数据、重刮输入归属和消息缓冲等边界。
 - 前端增加实际 Vue 组件的自定义 renderer 测试；测试模式使用与生产 SPA 相同的客户端模板编译，不以 SSR 环境替代交互验证。
 - 全部安装、测试和构建均在 GitHub Actions；本地仅做编辑、AST 语法和 Git 静态检查。
-- 最终 CI、CodeQL、依赖审查、Docker 和合并后 main 的结果将在验收完成后填入。
+- 实质代码提交为 `545d3edea5bdb405ad741f199620bfc7c9f1a5f0`；后续只更新本验收文档，末端提交在合并前仍需通过仓库必需检查。
+
+| 云端检查 | 结果与证据 |
+| --- | --- |
+| 前端类型、lint、34 个测试、生产构建及依赖审计 | [全部通过](https://github.com/sfgawrgarf/MHTI/actions/runs/42324501758/job/128256537461) |
+| 后端静态检查、依赖审计、1029 个测试及覆盖率门槛 | [全部通过](https://github.com/sfgawrgarf/MHTI/actions/runs/42324501758/job/128256537743) |
+| Docker 最终镜像构建、HTTP/就绪探针、实际 Compose 健康检查 | [全部通过](https://github.com/sfgawrgarf/MHTI/actions/runs/42324501758/job/128257008496) |
+| CodeQL | [通过](https://github.com/sfgawrgarf/MHTI/actions/runs/42324501812) |
+| Dependency Review | [通过](https://github.com/sfgawrgarf/MHTI/actions/runs/42324501716) |
 
 ## 兼容与发布条件
 
