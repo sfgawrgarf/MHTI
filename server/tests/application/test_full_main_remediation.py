@@ -208,3 +208,54 @@ async def test_saved_log_config_changes_real_output_handlers(audit_env, tmp_path
         assert 'console only' not in (tmp_path / 'app.log').read_text()
     finally:
         file.close()
+
+
+@pytest.mark.asyncio
+async def test_log_config_saves_cannot_apply_runtime_out_of_order(audit_env, monkeypatch):
+    service = LogService()
+    service._repo = LogRepository(audit_env.db)
+    applied = []
+    await service.bind_runtime_configuration(lambda config: applied.append(config.log_level))
+    persist = service._repo.update_config_row
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def gated(config):
+        await persist(config)
+        if config.log_level == LogLevel.DEBUG:
+            entered.set()
+            await release.wait()
+
+    monkeypatch.setattr(service._repo, 'update_config_row', gated)
+    first = asyncio.create_task(service.update_config(LogConfigUpdate(log_level=LogLevel.DEBUG)))
+    second = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        second = asyncio.create_task(service.update_config(LogConfigUpdate(log_level=LogLevel.ERROR)))
+        try:
+            await asyncio.wait_for(asyncio.shield(second), 0.1)
+        except TimeoutError:
+            pass
+        release.set()
+        await asyncio.gather(first, second)
+        assert (await service.get_config()).log_level == applied[-1] == LogLevel.ERROR
+    finally:
+        release.set()
+        await asyncio.gather(*(task for task in (first, second) if task), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_other_video_container_keeps_shared_episode_metadata(audit_env):
+    env = audit_env
+    season = env.output / 'Show' / 'Season 1'
+    season.mkdir(parents=True)
+    first, second = season / 'episode.mkv', season / 'episode.mp4'
+    first.write_bytes(b'old container')
+    second.write_bytes(b'new container')
+    metadata = env.metadata / 'Show' / 'Season 1' / 'episode.nfo'
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text('metadata used by the new container')
+    record = await record_for(env, f'{env.source} => {first}')
+    await env.files.delete_files(record.id, 'organized')
+    assert not first.exists()
+    assert second.exists()
+    assert metadata.read_text() == 'metadata used by the new container'

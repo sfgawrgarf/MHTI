@@ -297,7 +297,7 @@ class EmbyService:
             item_name = item.get("Name", "")
 
             # 优先匹配 TMDB ID
-            if tmdb_id and provider_ids.get("Tmdb") == str(tmdb_id):
+            if tmdb_id and str(provider_ids.get("Tmdb")) == str(tmdb_id):
                 logger.info(f"Emby 匹配到剧集 (TMDB ID): {item_name}")
                 return EmbySeriesMatch(
                     id=item["Id"],

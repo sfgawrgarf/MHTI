@@ -36,11 +36,13 @@ class LogService:
         self._running = False
         self._repo = LogRepository()
         self._runtime_configure: Callable[[LogConfig], None] | None = None
+        self._config_lock = asyncio.Lock()
         self._retention_checked_at = 0.0
 
     async def bind_runtime_configuration(self, configure: Callable[[LogConfig], None]) -> None:
-        configure(await self.get_config())
-        self._runtime_configure = configure
+        async with self._config_lock:
+            configure(await self.get_config())
+            self._runtime_configure = configure
 
     async def start(self) -> None:
         """启动日志服务（启动定时刷新任务）。"""
@@ -205,6 +207,10 @@ class LogService:
         return LogConfig()
 
     async def update_config(self, update: LogConfigUpdate) -> LogConfig:
+        async with self._config_lock:
+            return await self._update_config(update)
+
+    async def _update_config(self, update: LogConfigUpdate) -> LogConfig:
         """更新日志配置。"""
         # 获取当前配置
         current = await self.get_config()

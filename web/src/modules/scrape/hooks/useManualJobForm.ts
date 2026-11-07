@@ -140,14 +140,19 @@ export function useManualJobForm(options: {
       if (folder && !options.selectedFiles?.()?.length) {
         // 使用监控目录路径作为扫描路径
         formData.value.scan_path = folder.path
+        scanLocator.value = folder.provider === '115' ? {
+          provider: '115', path: folder.path, file_id: folder.file_id, is_dir: true,
+        } : null
       }
       // 使用全局配置填充整理目录和元数据目录
       const config = globalOrganizeConfig.value
       if (config.organize_dir) {
         formData.value.target_folder = config.organize_dir
+        targetLocator.value = null
       }
       if (config.metadata_dir) {
         formData.value.metadata_dir = config.metadata_dir
+        metadataLocator.value = null
       }
       // 设置整理模式
       formData.value.link_mode = ORGANIZE_MODE_TO_LINK_MODE[config.organize_mode] || LinkMode.MOVE

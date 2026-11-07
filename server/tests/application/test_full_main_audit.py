@@ -17,7 +17,7 @@ from server.domain.identity.auth_service import AuthService
 from server.domain.identity.session_service import SessionService
 from server.domain.integration.emby_service import EmbyService
 from server.infrastructure.db import configure_connection
-from server.models.auth import AuthConfig, LoginRequest
+from server.models.auth import AuthConfig, LoginRequest, RegisterRequest
 from server.models.emby import EmbyConfig, ConflictCheckRequest, ConflictType
 from server.models.history import TaskStatus
 from server.models.manual_job import ManualJobStatus
@@ -27,7 +27,8 @@ from server.tests.application.test_manual_job_progress import batch
 
 
 @pytest.mark.asyncio
-async def test_password_change_rejects_login_validated_before_change(audit_env, monkeypatch):
+@pytest.mark.parametrize('operation', ['login', 'register'])
+async def test_password_change_rejects_login_validated_before_change(audit_env, monkeypatch, operation):
     env = audit_env
     auth = AuthService()
     auth._config_cache = AuthConfig(jwt_secret='isolated-audit-secret-at-least-thirty-two-bytes')
@@ -51,13 +52,16 @@ async def test_password_change_rejects_login_validated_before_change(audit_env, 
     monkeypatch.setattr(sessions, 'record_login', AsyncMock())
     monkeypatch.setattr(auth_api, 'auth_service', auth)
     monkeypatch.setattr(auth_api, 'session_service', sessions)
+    if operation == 'login':
+        await auth.register_admin('admin', 'old-password')
     async with aiosqlite.connect(env.db) as db:
-        cursor = await db.execute('INSERT INTO admin (username,password_hash) VALUES (?,?)',
-                                  ('admin', auth._format_password_hash('old-password')))
-        await db.execute(
-            "INSERT INTO sessions (id,user_id,refresh_token_hash,expires_at) VALUES ('current',?,'current-hash','2099-01-01T00:00:00+00:00')",
-            (cursor.lastrowid,),
-        )
+        if operation == 'login':
+            cursor = await db.execute('SELECT id FROM admin WHERE username = ?', ('admin',))
+            user_id = (await cursor.fetchone())[0]
+            await db.execute(
+                "INSERT INTO sessions (id,user_id,refresh_token_hash,expires_at) VALUES ('current',?,'current-hash','2099-01-01T00:00:00+00:00')",
+                (user_id,),
+            )
         await db.commit()
     verified, release = asyncio.Event(), asyncio.Event()
     create = sessions.create_session
@@ -69,7 +73,8 @@ async def test_password_change_rejects_login_validated_before_change(audit_env, 
 
     monkeypatch.setattr(sessions, 'create_session', delayed_create)
     request = Request({'type': 'http', 'headers': [], 'client': ('127.0.0.1', 1234)})
-    pending = asyncio.create_task(auth_api.login(request, LoginRequest(username='admin', password='old-password')))
+    pending = asyncio.create_task(auth_api.login(request, LoginRequest(username='admin', password='old-password'))
+                                  if operation == 'login' else auth_api.register(request, RegisterRequest(username='admin', password='old-password')))
     try:
         await asyncio.wait_for(verified.wait(), 5)
         changed, _ = await auth.change_password('admin', 'old-password', 'new-password', except_session_id='current')

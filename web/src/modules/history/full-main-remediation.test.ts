@@ -1,4 +1,3 @@
-// @vitest-environment ./src/test-renderer-environment.ts
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createRenderer, defineComponent, h, nextTick, reactive, ref, type Component } from 'vue'
 import type { HistoryRecord } from './types'
@@ -182,4 +181,34 @@ it('submits the selected file set with its IDs through the real task form', asyn
   await form.handleSubmit()
   expect(mocks.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ selected_files: selected,
     scan_locator: expect.objectContaining({ file_id: '10' }) }))
+})
+
+it('delivers history events without retaining an unconsumed history payload queue', async () => {
+  const browser = { location: { protocol: 'https:', host: 'test.example' },
+    __WS_STATE__: undefined as undefined | { historyUpdates?: { value?: unknown[] } } }
+  let socket: Socket | undefined
+  class Socket {
+    static OPEN = 1
+    static CONNECTING = 0
+    readyState = 0
+    onmessage?: (event: { data: string }) => void
+    close = vi.fn()
+    constructor(_url: string) { socket = this }
+  }
+  vi.stubGlobal('window', browser)
+  vi.stubGlobal('localStorage', { getItem: () => 'test-token' })
+  vi.stubGlobal('WebSocket', Socket)
+  const { useWebSocket } = await import('@/shared/composables/useWebSocket')
+  let ws!: ReturnType<typeof useWebSocket>
+  mount(defineComponent({ setup: () => { ws = useWebSocket(); return () => null } }))
+  const handler = vi.fn()
+  ws.registerHandler(handler)
+  ws.connect()
+  for (let index = 0; index < 1000; index++) {
+    socket?.onmessage?.({ data: JSON.stringify({ type: 'history_created', payload: { id: `record-${index}` } }) })
+  }
+  expect(handler).toHaveBeenCalledTimes(1000)
+  expect(browser.__WS_STATE__?.historyUpdates?.value?.length ?? 0).toBe(0)
+  ws.unregisterHandler(handler)
+  ws.disconnect()
 })

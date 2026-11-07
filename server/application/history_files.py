@@ -29,6 +29,7 @@ from server.common.path_security import (
     PathSecurityError, validate_media_file_entry, validate_media_path,
 )
 from server.domain.system.config_service import ConfigService
+from server.domain.media.file_service import SUPPORTED_VIDEO_EXTENSIONS
 from server.models.history import (
     HistoryFileDeleteResponse,
     HistoryFileDeleteResult,
@@ -187,6 +188,12 @@ class HistoryFileService:
         series_dir = metadata_root / series_name
         season_dir = series_dir / season_name
         episode_files = self._episode_metadata(target, season_dir)
+        if target.parent.is_dir() and any(
+            sibling != target and sibling.stem == target.stem and sibling.is_file()
+            and sibling.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+            for sibling in target.parent.iterdir()
+        ):
+            episode_files = []  # Another container/version still uses these NFO/images.
         files = list(episode_files)
         if include_shared or self._is_single_episode_season(target, episode_files, season_dir):
             files.extend(self._season_metadata(season_dir))
