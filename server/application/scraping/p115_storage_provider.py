@@ -204,6 +204,7 @@ class P115StorageProvider:
         # 避免把同名旧文件误改名。
         new_id = self._extract_response_id(resp).get("id")
         if not new_id or new_id == file_id:
+            new_id = None
             for attempt in range(3):
                 try:
                     after_ids = await self._find_file_ids_in_dir(
@@ -217,7 +218,7 @@ class P115StorageProvider:
                     await asyncio.sleep(0.05)
                     continue
 
-                candidates = after_ids - before_ids
+                candidates = after_ids - before_ids - {file_id}
                 if len(candidates) == 1:
                     new_id = candidates.pop()
                     break

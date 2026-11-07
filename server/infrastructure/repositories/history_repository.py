@@ -497,12 +497,32 @@ class HistoryRepository(BaseRepository):
             await db.commit()
             return cursor.rowcount > 0
 
-    async def clear_records(self, before_days: int | None = None) -> int:
+    async def clear_records(self, before_days: int | None = None, *, snapshot: dict | None = None) -> int:
         """清空历史记录并级联删除关联的 scrape_jobs。"""
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
+            cutoff = (datetime.now() - timedelta(days=before_days)).isoformat() if before_days is not None else None
+            if snapshot is not None:
+                cursor = await db.execute("SELECT * FROM history_records WHERE (? IS NULL OR executed_at < ?)", (cutoff, cutoff))
+                snapshot["records"] = [dict(row) for row in await cursor.fetchall()]
+                cursor = await db.execute(
+                    "SELECT * FROM scraped_files WHERE history_record_id IN "
+                    "(SELECT id FROM history_records WHERE (? IS NULL OR executed_at < ?))", (cutoff, cutoff),
+                )
+                snapshot["files"] = [dict(row) for row in await cursor.fetchall()]
+                cursor = await db.execute(
+                    """SELECT * FROM scrape_jobs j WHERE (id IN (
+                        SELECT scrape_job_id FROM history_records WHERE (? IS NULL OR executed_at < ?)
+                    ) OR continuation_history_id IN (
+                        SELECT id FROM history_records WHERE (? IS NULL OR executed_at < ?)
+                    )) AND (? IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM history_records retained WHERE retained.executed_at >= ?
+                        AND (retained.scrape_job_id = j.id OR retained.id = j.history_record_id
+                             OR retained.id = j.continuation_history_id)
+                    ))""", (cutoff,) * 6,
+                )
+                snapshot["jobs"] = [dict(row) for row in await cursor.fetchall()]
             if before_days is not None:
-                cutoff = (datetime.now() - timedelta(days=before_days)).isoformat()
                 cursor = await db.execute(
                     """
                     SELECT COUNT(DISTINCT h.id) FROM history_records h
@@ -571,6 +591,30 @@ class HistoryRepository(BaseRepository):
                 cursor = await db.execute("DELETE FROM history_records")
             await db.commit()
             return cursor.rowcount
+
+    async def restore_snapshot(self, records: list[dict], files: list[dict], jobs: list[dict]) -> None:
+        """Restore complete context atomically, preserving any newer conflicting data."""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                for table, rows in (("scrape_jobs", jobs), ("history_records", records), ("scraped_files", files)):
+                    for row in rows:
+                        cursor = await db.execute(f"SELECT * FROM {table} WHERE id = ?", (row["id"],))
+                        current = await cursor.fetchone()
+                        if current is not None:
+                            if dict(current) == row:
+                                continue
+                            if table != "history_records" or current["status"] != "deleted" or current["scrape_job_id"] != row.get("scrape_job_id"):
+                                raise ValueError("记录已被新的操作修改，无法安全撤销")
+                            assignments = ",".join(f"{column} = ?" for column in row if column != "id")
+                            await db.execute(f"UPDATE {table} SET {assignments} WHERE id = ?",
+                                             tuple(value for column, value in row.items() if column != "id") + (row["id"],))
+                        else:
+                            await db.execute(f"INSERT INTO {table} ({','.join(row)}) VALUES ({','.join('?' for _ in row)})", tuple(row.values()))
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def update_scrape_logs_json(self, record_id: str, scrape_logs_json: str) -> None:
         await self._execute(

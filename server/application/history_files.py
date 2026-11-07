@@ -109,6 +109,11 @@ class HistoryFileService:
                 if target_path:
                     self._append(entries, seen, target_path, HistoryFileRole.ORGANIZED, roots)
 
+        for entry in entries:
+            if entry.deletable and not await self._scraped_file_service.can_delete_target(record_id, entry.path):
+                entry.deletable = False
+                entry.reason = "该路径已被其他发布替换，不能由旧记录删除"
+
         # 元数据（nfo / 图片）：产物视频所在系列与季的目录名在元数据目录下是同构的
         target_entry = next(
             (entry for entry in entries if entry.role == HistoryFileRole.ORGANIZED), None
@@ -342,6 +347,7 @@ class HistoryFileService:
 
         results: list[HistoryFileDeleteResult] = []
         removed_paths: list[str] = []
+        product = next((entry.path for entry in listing.files if entry.role == HistoryFileRole.ORGANIZED), None)
 
         for entry in listing.files:
             if entry.role not in roles:
@@ -357,6 +363,11 @@ class HistoryFileService:
                 )
                 continue
             try:
+                ownership_path = product if entry.role == HistoryFileRole.METADATA else entry.path
+                if ownership_path and not await self._scraped_file_service.can_delete_target(
+                    record_id, ownership_path, allow_missing=ownership_path in removed_paths,
+                ):
+                    raise OSError("产物归属已变更，已保留文件")
                 safe_path = validate_media_file_entry(entry.path)
                 safe_path.unlink()
             except (OSError, PathSecurityError) as exc:  # 权限、占用、路径失效等

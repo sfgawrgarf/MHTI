@@ -3,12 +3,41 @@
 from __future__ import annotations
 
 import aiosqlite
+import json
+from pathlib import Path
 
 from server.infrastructure.repositories.base import BaseRepository
+from server.infrastructure.file_journal import signature
 
 
 class ScrapedFileRepository(BaseRepository):
     """已刮削文件记录表访问。"""
+
+    async def _ensure_custom_schema(self, db: aiosqlite.Connection) -> None:
+        columns = {row[1] for row in await (await db.execute("PRAGMA table_info(scraped_files)")).fetchall()}
+        if columns and "target_signature" not in columns:
+            await db.execute("ALTER TABLE scraped_files ADD COLUMN target_signature TEXT")
+
+    @staticmethod
+    def _target_signature(path: str | None) -> str | None:
+        try:
+            value = signature(Path(path)) if path else None
+        except OSError:
+            value = None
+        return json.dumps(value, sort_keys=True) if value else None
+
+    async def can_delete_target(self, history_record_id: str, path: str, *, allow_missing: bool = False) -> bool:
+        row = await self._fetch_one(
+            "SELECT history_record_id, target_signature FROM scraped_files WHERE target_path = ? "
+            "ORDER BY scraped_at DESC, rowid DESC LIMIT 1", (path,),
+        )
+        if row is None:
+            return True  # Legacy records still use the path-security boundary.
+        if row["history_record_id"] != history_record_id:
+            return False
+        current = self._target_signature(path)
+        return (not row["target_signature"] or current == row["target_signature"]
+                or (allow_missing and current is None))
 
     async def upsert_record(
         self,
@@ -35,17 +64,17 @@ class ScrapedFileRepository(BaseRepository):
             await db.execute(
                 f"""
                 INSERT OR REPLACE INTO scraped_files
-                (id, source_path, target_path, file_size, tmdb_id, season, episode, title, scraped_at, history_record_id)
+                (id, source_path, target_path, file_size, tmdb_id, season, episode, title, scraped_at, history_record_id, target_signature)
                 SELECT
                     COALESCE((SELECT id FROM scraped_files WHERE source_path = ?), ?),
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 {ownership}
                 """,
                 (
                     source_path, record_id,
                     source_path, target_path, file_size,
                     tmdb_id, season, episode, title,
-                    scraped_at, history_record_id,
+                    scraped_at, history_record_id, self._target_signature(target_path),
                 ) + ownership_params,
             )
             await db.commit()
@@ -80,7 +109,7 @@ class ScrapedFileRepository(BaseRepository):
                 UPDATE scraped_files SET
                     source_path = COALESCE(NULLIF(?, ''), source_path),
                     target_path = ?, file_size = ?, tmdb_id = ?,
-                    season = ?, episode = ?, title = ?, scraped_at = ?
+                    season = ?, episode = ?, title = ?, scraped_at = ?, target_signature = ?
                 WHERE id = (
                     SELECT id FROM scraped_files
                     WHERE history_record_id = ?
@@ -90,7 +119,7 @@ class ScrapedFileRepository(BaseRepository):
                 """,
                 (
                     source_path or "", target_path, file_size, tmdb_id,
-                    season, episode, title, scraped_at,
+                    season, episode, title, scraped_at, self._target_signature(target_path),
                     history_record_id,
                 ) + ownership_params,
             )

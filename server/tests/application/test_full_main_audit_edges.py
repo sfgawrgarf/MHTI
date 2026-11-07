@@ -39,13 +39,13 @@ def test_concurrent_subtitle_rename_preserves_both_contents(tmp_path, monkeypatc
     first.write_bytes(b'first subtitle')
     second.write_bytes(b'second subtitle')
     barrier = Barrier(2)
-    original = module.shutil.move
+    original = module.publish_file
 
     def concurrent_move(*args, **kwargs):
         barrier.wait(timeout=5)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(module.shutil, 'move', concurrent_move)
+    monkeypatch.setattr(module, 'publish_file', concurrent_move)
     with ThreadPoolExecutor(max_workers=2) as pool:
         pending = [pool.submit(SubtitleService().rename_subtitle, str(path), 'same', False)
                    for path in (first, second)]

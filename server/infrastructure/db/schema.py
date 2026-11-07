@@ -427,6 +427,8 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_scraped_files_source ON scraped_files(source_path)"
     )
+    await _add_missing_columns(db, "scraped_files", (("target_signature", "TEXT"),))
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_scraped_files_target ON scraped_files(target_path)")
 
 
 async def _create_watcher_tables(db: aiosqlite.Connection) -> None:

@@ -97,7 +97,8 @@ async def login(request: Request, data: LoginRequest) -> TokenResponse:
         )
 
     # Verify credentials
-    if not await auth_service.verify_credentials(data.username, data.password):
+    credential_stamp = await auth_service.verify_credential_stamp(data.username, data.password)
+    if credential_stamp is None:
         remaining_attempts = await auth_service.record_failed_attempt(
             data.username, client_ip
         )
@@ -129,13 +130,18 @@ async def login(request: Request, data: LoginRequest) -> TokenResponse:
     if not user_id:
         raise HTTPException(status_code=500, detail="用户不存在")
 
-    session_id, refresh_token = await session_service.create_session(
-        user_id=user_id,
-        expire_option=data.expire_option,
-        ip_address=client_ip,
-        user_agent=user_agent,
-        device_name=data.device_name,
-    )
+    try:
+        session_id, refresh_token = await session_service.create_session(
+            user_id=user_id,
+            expire_option=data.expire_option,
+            ip_address=client_ip,
+            user_agent=user_agent,
+            device_name=data.device_name,
+            credential_stamp=credential_stamp,
+            expected_username=data.username,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     access_token, expires_in = auth_service.create_access_token(data.username, session_id)
     refresh_expires_in = auth_service.get_refresh_expire_seconds(data.expire_option)

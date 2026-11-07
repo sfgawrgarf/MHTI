@@ -477,6 +477,24 @@ class ConfigService:
         """Save 115 cloud configuration."""
         await self.set(CLOUD_115_CONFIG_KEY, config.model_dump_json(), encrypted=True)
 
+    async def begin_115_login(self, *, clear_config: bool = False) -> str:
+        import uuid
+        generation = uuid.uuid4().hex
+        await self._repo.reset_prefix("cloud_115_qr_payload:", "cloud_115_login_generation", generation,
+                                      delete_keys=(CLOUD_115_CONFIG_KEY,) if clear_config else ())
+        return generation
+
+    async def save_115_qr_if_current(self, generation: str, key: str, payload: str) -> bool:
+        return await self._repo.set_values({key: encrypt(payload)}, datetime.now().isoformat(),
+                                          expected=("cloud_115_login_generation", generation), encrypted=True)
+
+    async def complete_115_login(self, key: str, stamp: str | None, config: Cloud115Config) -> bool:
+        if stamp is None:
+            return False
+        return await self._repo.set_values({CLOUD_115_CONFIG_KEY: encrypt(config.model_dump_json())},
+                                          datetime.now().isoformat(), expected=(key, stamp),
+                                          encrypted=True, consume_keys=(key,))
+
     async def get_115_config(self) -> Cloud115Config:
         """Get 115 cloud configuration."""
         value = await self.get(CLOUD_115_CONFIG_KEY, encrypted=True)

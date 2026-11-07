@@ -22,6 +22,7 @@ class UndoSnapshot:
     message: str  # 给用户看的一句话（例如「已删除 3 条记录」）
     records: list[dict] = field(default_factory=list)  # history_records 整行快照
     files: list[dict] = field(default_factory=list)  # 关联 scraped_files 整行快照
+    jobs: list[dict] = field(default_factory=list)  # 清空时删除的任务及 locator/高级配置
 
 
 class UndoStore:

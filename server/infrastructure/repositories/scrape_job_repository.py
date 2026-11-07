@@ -201,6 +201,8 @@ class ScrapeJobRepository(BaseRepository):
                 """
                 SELECT 1 FROM history_records
                 WHERE status IN ('skipped', 'deleted')
+                  AND COALESCE(json_extract(CASE WHEN json_valid(conflict_data) THEN conflict_data ELSE '{}' END,
+                                            '$.skip_reason'), '') != 'automatic_duplicate'
                   AND (
                       (? IS NOT NULL AND file_fingerprint = ?)
                       OR folder_path = ?

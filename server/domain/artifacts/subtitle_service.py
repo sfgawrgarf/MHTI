@@ -1,7 +1,6 @@
 """Subtitle service for processing subtitle files."""
 
 import re
-import shutil
 from pathlib import Path
 from server.common.file_cancellation import check_file_cancelled
 
@@ -21,6 +20,8 @@ from server.models.subtitle import (
     SubtitleScanResponse,
     VideoSubtitleAssociation,
 )
+from server.infrastructure.file_operations import publish_file
+from server.models.organize import OrganizeMode
 
 # Supported subtitle extensions
 SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".sup"}
@@ -243,7 +244,7 @@ class SubtitleService:
             )
 
         try:
-            shutil.move(str(source), str(dest))
+            publish_file(source, dest, OrganizeMode.MOVE)
             return SubtitleRenameResult(
                 source_path=subtitle_path,
                 dest_path=str(dest),

@@ -4,6 +4,7 @@ import logging
 import time
 
 import httpx
+from server.common.credential_scope import same_credential_scope
 
 from server.infrastructure.log_security import safe_log_value
 from server.models.emby import (
@@ -55,6 +56,8 @@ class EmbyService:
         api_key = request.api_key
         if not api_key:
             saved_config = await self.get_config()
+            if saved_config.api_key and not same_credential_scope(saved_config.server_url, request.server_url):
+                raise ValueError("服务器地址已变更，请重新输入 API 密钥")
             api_key = saved_config.api_key
 
         return EmbyConfig(
@@ -72,6 +75,8 @@ class EmbyService:
         api_key = request.api_key
         if api_key == "__USE_SAVED__":
             saved_config = await self.get_config()
+            if saved_config.api_key and not same_credential_scope(saved_config.server_url, request.server_url):
+                raise ValueError("服务器地址已变更，请重新输入 API 密钥")
             api_key = saved_config.api_key
 
         return EmbyConfig(
@@ -199,7 +204,7 @@ class EmbyService:
                 return libraries
         except Exception as e:
             logger.warning(f"获取媒体库列表失败: {e}")
-            return []
+            raise
 
     async def check_conflict(self, request: ConflictCheckRequest) -> ConflictCheckResult:
         """检查 Emby 中是否存在冲突"""
@@ -303,6 +308,9 @@ class EmbyService:
                 )
 
         # 第二轮：名称精确匹配
+        if tmdb_id:
+            items = [item for item in items if not item.get("ProviderIds", {}).get("Tmdb")
+                     or str(item["ProviderIds"]["Tmdb"]) == str(tmdb_id)]
         for item in items:
             provider_ids = item.get("ProviderIds", {})
             item_name = item.get("Name", "")

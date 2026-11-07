@@ -303,6 +303,7 @@ class P115EventStrategy(WatchStrategy):
         super().__init__(folder, on_file_detected)
         self._scan_task: asyncio.Task | None = None
         self._last_update_time: int = 0  # 已处理的最大 update_time（去重）
+        self._boundary_events: set[str] = set()
         self._client: Any = None
         self.detected_meta: dict[str, dict] = {}
         # 监控目录及其所有子目录的 id 集合（用于 parent_id 匹配）
@@ -354,6 +355,7 @@ class P115EventStrategy(WatchStrategy):
         events = self._extract_events(resp)
         if events:
             self._last_update_time = max(e["update_time"] for e in events)
+            self._boundary_events = {self._event_key(e) for e in events if e.get("update_time", 0) == self._last_update_time}
 
     async def _collect_dir_ids(self) -> None:
         """递归收集监控目录及其所有子目录的 id。"""
@@ -424,6 +426,11 @@ class P115EventStrategy(WatchStrategy):
         data = resp.get("data") or {}
         return data.get("list") or []
 
+    @staticmethod
+    def _event_key(event: dict) -> str:
+        import json
+        return json.dumps(event, sort_keys=True, ensure_ascii=False, default=str)
+
     async def _event_loop(self) -> None:
         """定时拉取生活事件，找新增视频文件。"""
         while self._running:
@@ -444,11 +451,17 @@ class P115EventStrategy(WatchStrategy):
                     await self._collect_dir_ids()
 
                 new_max_time = self._last_update_time
+                boundary_events = set(self._boundary_events)
                 for event in events:
                     evt_time = event.get("update_time", 0)
-                    if evt_time <= self._last_update_time:
+                    event_key = self._event_key(event)
+                    if evt_time < self._last_update_time or (evt_time == self._last_update_time and event_key in self._boundary_events):
                         continue  # 已处理
-                    new_max_time = max(new_max_time, evt_time)
+                    if evt_time > new_max_time:
+                        new_max_time = evt_time
+                        boundary_events = set()
+                    if evt_time == new_max_time:
+                        boundary_events.add(event_key)
 
                     behavior = event.get("behavior_type", "")
                     if behavior not in self.NEW_FILE_BEHAVIORS:
@@ -458,6 +471,7 @@ class P115EventStrategy(WatchStrategy):
                         self._process_event_item(item)
 
                 self._last_update_time = new_max_time
+                self._boundary_events = boundary_events
 
                 # 定期刷新子目录 id 集合（每 10 轮刷新一次）
                 if self._loop_count % 10 == 0:

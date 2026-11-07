@@ -213,6 +213,7 @@ class ManualJobService:
                 status=TaskStatus.SKIPPED, source=TaskSource.MANUAL,
                 total_files=1, success_count=0, failed_count=0, duration_seconds=0,
                 error_message=_SKIP_REASON, manual_job_id=job_id,
+                conflict_data={"skip_reason": "automatic_duplicate"},
             ))
         except Exception:
             logger.exception("手动任务 #%s 跳过记录写入失败", job_id)

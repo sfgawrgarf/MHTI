@@ -144,6 +144,10 @@ class AuthService:
 
     async def verify_credentials(self, username: str, password: str) -> bool:
         """Verify username and password from database."""
+        return await self.verify_credential_stamp(username, password) is not None
+
+    async def verify_credential_stamp(self, username: str, password: str) -> str | None:
+        """Return the exact verified credential, for transactional session creation."""
         manager = await get_db_manager()
         async with manager.get_connection() as db:
             cursor = await db.execute(
@@ -151,7 +155,7 @@ class AuthService:
             )
             row = await cursor.fetchone()
         if row is None or not await asyncio.to_thread(self._verify_password, password, row[0]):
-            return False
+            return None
         parsed = self._parse_password_hash(row[0])
         if parsed is not None and (parsed[0] < self._PBKDF2_ITERATIONS or row[0].count("$") == 1):
             upgraded = await asyncio.to_thread(self._format_password_hash, password)
@@ -167,10 +171,11 @@ class AuthService:
                         "SELECT password_hash FROM admin WHERE username = ?", (username,),
                     )
                     current = await cursor.fetchone()
-                    return bool(current and await asyncio.to_thread(
-                        self._verify_password, password, current[0],
-                    ))
-        return True
+                    if current and await asyncio.to_thread(self._verify_password, password, current[0]):
+                        return str(current[0])
+                    return None
+            return upgraded
+        return str(row[0])
 
     async def get_user_id(self, username: str) -> int | None:
         """Get user ID by username."""

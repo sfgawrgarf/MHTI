@@ -346,9 +346,8 @@ class HistoryService:
         await self._ensure_db()
 
         # 与 clear_records 的筛选条件一致，保证快照就是即将被删掉的那些行
-        rows = await self._repo.list_rows_raw(before_days)
-
-        count = await self._repo.clear_records(before_days)
+        snapshot: dict = {}
+        count = await self._repo.clear_records(before_days, snapshot=snapshot)
 
         # 发送 WebSocket 通知
         if count > 0:
@@ -356,8 +355,9 @@ class HistoryService:
                 UndoSnapshot(
                     kind="record_clear",
                     message=f"已清空 {count} 条记录",
-                    records=rows,
-                    files=await self._snapshot_files([row["id"] for row in rows]),
+                    records=snapshot["records"],
+                    files=snapshot["files"],
+                    jobs=snapshot["jobs"],
                 )
             )
             notifier = get_notifier()
@@ -381,14 +381,13 @@ class HistoryService:
         """
         await self._ensure_db()
 
-        snapshot = self._undo.pop()
+        snapshot = self._undo.peek()
         if snapshot is None:
             return UndoResponse(success=False, undone=False, message="没有可撤销的操作")
 
-        for row in snapshot.files:
-            await self._scraped_repo.restore_row(row)
-        for row in snapshot.records:
-            await self._repo.restore_row(row)
+        await self._repo.restore_snapshot(snapshot.records, snapshot.files, snapshot.jobs)
+        if self._undo.peek() is snapshot:
+            self._undo.pop()
 
         notifier = get_notifier()
         await notifier.notify_history_restored(len(snapshot.records))
