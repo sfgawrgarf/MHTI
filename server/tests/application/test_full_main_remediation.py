@@ -15,6 +15,7 @@ from server.application import manual_job_service as manual_module
 from server.application.manual_job_service import ManualJobService
 from server.domain.system.log_service import LogService
 from server.infrastructure.log_configuration import LoggingRuntime
+from server.infrastructure.file_operations import publish_file
 from server.infrastructure.repositories.log_repository import LogRepository
 from server.models.ai import AIConfig, AIConfigUpdate
 from server.models.file import ScannedFile
@@ -43,6 +44,42 @@ async def test_unregistered_replacement_is_preserved(audit_env):
     assert not next(entry for entry in listing.files if entry.path == str(target)).deletable
     await env.files.delete_files(record.id, 'organized')
     assert target.read_bytes() == b'new publication before its database registration'
+
+
+@pytest.mark.asyncio
+async def test_replacement_during_deletion_ownership_check_is_preserved(audit_env, monkeypatch):
+    env = audit_env
+    target = env.output / 'episode.mkv'
+    target.parent.mkdir()
+    target.write_bytes(b'old publication')
+    record = await record_for(env, f'{env.source} => {target}')
+    await env.scraped.register_output(history_record_id=record.id, source_path=str(env.source),
+                                     target_path=str(target), tmdb_id=1, season=1, episode=1, title='Show')
+    entered, release = asyncio.Event(), asyncio.Event()
+    check = env.scraped.can_delete_target
+    checks = 0
+
+    async def delayed(record_id, path, **kwargs):
+        nonlocal checks
+        result = await check(record_id, path, **kwargs)
+        if path == str(target):
+            checks += 1
+            if checks == 2:
+                entered.set()
+                await release.wait()
+        return result
+
+    monkeypatch.setattr(env.scraped, 'can_delete_target', delayed)
+    deletion = asyncio.create_task(env.files.delete_files(record.id, 'organized'))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await asyncio.to_thread(publish_file, env.source, target, OrganizeMode.COPY, overwrite=True)
+        release.set()
+        await deletion
+        assert target.read_bytes() == env.source.read_bytes()
+    finally:
+        release.set()
+        await asyncio.gather(deletion, return_exceptions=True)
 
 
 @pytest.mark.asyncio

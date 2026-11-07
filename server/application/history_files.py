@@ -36,6 +36,8 @@ from server.models.history import (
     HistoryFileListResponse,
     HistoryFileRole,
 )
+from server.infrastructure.file_journal import signature
+from server.infrastructure.file_operations import path_operation_lock
 
 logger = logging.getLogger(__name__)
 
@@ -363,13 +365,17 @@ class HistoryFileService:
                 )
                 continue
             try:
+                safe_path = validate_media_file_entry(entry.path)
+                expected_signature = signature(safe_path)
                 ownership_path = product if entry.role == HistoryFileRole.METADATA else entry.path
                 if ownership_path and not await self._scraped_file_service.can_delete_target(
                     record_id, ownership_path, allow_missing=ownership_path in removed_paths,
                 ):
                     raise OSError("产物归属已变更，已保留文件")
-                safe_path = validate_media_file_entry(entry.path)
-                safe_path.unlink()
+                with path_operation_lock(safe_path):
+                    if signature(safe_path) != expected_signature:
+                        raise OSError("文件已被新的发布替换，已保留文件")
+                    safe_path.unlink()
             except (OSError, PathSecurityError) as exc:  # 权限、占用、路径失效等
                 logger.warning("删除文件失败 %s: %s", entry.path, exc)
                 results.append(

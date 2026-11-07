@@ -1,3 +1,4 @@
+// @vitest-environment ./src/test-renderer-environment.ts
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createRenderer, defineComponent, h, nextTick, reactive, ref, type Component } from 'vue'
 import type { HistoryRecord } from './types'

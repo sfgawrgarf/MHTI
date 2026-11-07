@@ -11,6 +11,7 @@ from weakref import WeakKeyDictionary
 from server.common.path_security import PathSecurityError, validate_media_path
 from server.infrastructure.db import DATABASE_PATH
 from server.infrastructure.repositories.manual_job_repository import ManualJobRepository
+from server.models.file import ScannedFile
 from server.models.manual_job import (
     JobSource,
     LinkMode,
@@ -484,7 +485,6 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
     from server.domain.media.file_service import FileService
     from server.domain.system.config_service import ConfigService, ORGANIZE_CONFIG_KEY
     from server.application.scrape_job_service import ScrapeJobService
-    from server.models.file import ScannedFile
     from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
 
     if not await service.claim_job(job_id):
