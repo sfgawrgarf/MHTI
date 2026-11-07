@@ -186,14 +186,14 @@ it('submits the selected file set with its IDs through the real task form', asyn
 it('delivers history events without retaining an unconsumed history payload queue', async () => {
   const browser = { location: { protocol: 'https:', host: 'test.example' },
     __WS_STATE__: undefined as undefined | { historyUpdates?: { value?: unknown[] } } }
-  let socket: Socket | undefined
   class Socket {
+    static instances: Socket[] = []
     static OPEN = 1
     static CONNECTING = 0
     readyState = 0
     onmessage?: (event: { data: string }) => void
     close = vi.fn()
-    constructor(_url: string) { socket = this }
+    constructor(_url: string) { Socket.instances.push(this) }
   }
   vi.stubGlobal('window', browser)
   vi.stubGlobal('localStorage', { getItem: () => 'test-token' })
@@ -205,7 +205,7 @@ it('delivers history events without retaining an unconsumed history payload queu
   ws.registerHandler(handler)
   ws.connect()
   for (let index = 0; index < 1000; index++) {
-    socket?.onmessage?.({ data: JSON.stringify({ type: 'history_created', payload: { id: `record-${index}` } }) })
+    Socket.instances[0]?.onmessage?.({ data: JSON.stringify({ type: 'history_created', payload: { id: `record-${index}` } }) })
   }
   expect(handler).toHaveBeenCalledTimes(1000)
   expect(browser.__WS_STATE__?.historyUpdates?.value?.length ?? 0).toBe(0)

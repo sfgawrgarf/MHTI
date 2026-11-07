@@ -31,7 +31,8 @@ from fastapi import HTTPException
 
 from server.common.path_security import PathSecurityError, validate_media_path
 from server.models.storage import is_p115_virtual_path
-from server.infrastructure.file_journal import operation_kind
+from server.infrastructure.file_journal import operation_kind, signature
+from server.infrastructure.file_operations import path_operation_lock
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,8 @@ class RescrapeInput:
 
     staged_from: str | None = None
     """产物让位前的原始路径；None 表示没有让位动作（源文件输入 / 云端 / 让位失败）。"""
+    history_record_id: str | None = None
+    expected_signature: dict | None = None
 
 
 class RescrapeSource:
@@ -72,9 +75,11 @@ class RescrapeSource:
         """挑出本次要跑的输入文件；源文件与产物都不存在时报 400。"""
         candidates = await self._candidates(record)
         for path, from_product in candidates:
+            if not await self._scraped_file_service.can_delete_target(record.id, path):
+                continue
             if _is_remote_path(path):
                 if remote:
-                    return RescrapeInput(path=path, from_product=from_product)
+                    return RescrapeInput(path=path, from_product=from_product, history_record_id=record.id)
                 continue
             try:
                 safe_path = validate_media_path(
@@ -84,7 +89,10 @@ class RescrapeSource:
                 )
             except PathSecurityError:
                 continue
-            return RescrapeInput(path=str(safe_path), from_product=from_product)
+            if str(safe_path) != path and not await self._scraped_file_service.can_delete_target(record.id, str(safe_path)):
+                continue
+            return RescrapeInput(path=str(safe_path), from_product=from_product,
+                                 history_record_id=record.id, expected_signature=signature(safe_path))
 
         raise HTTPException(status_code=400, detail="源文件与产物都不存在，无法重刮")
 
@@ -134,11 +142,15 @@ class RescrapeSource:
         staged = original.with_name(
             f"{original.stem}{_STAGE_SUFFIX}-{uuid.uuid4().hex}{original.suffix}"
         )
+        if input_.history_record_id is not None and not await self._scraped_file_service.can_delete_target(input_.history_record_id, input_.path):
+            raise HTTPException(status_code=409, detail="该产物已由其他记录替换，无法作为旧记录输入")
         try:
             from server.infrastructure.file_operations import publish_file
             from server.models.organize import OrganizeMode
 
-            with operation_kind("stage"):
+            with path_operation_lock(original), operation_kind("stage"):
+                if input_.expected_signature is not None and signature(original) != input_.expected_signature:
+                    raise HTTPException(status_code=409, detail="重刮输入已被替换，请重新加载记录")
                 publish_file(original, staged, OrganizeMode.MOVE)
         except (OSError, PathSecurityError) as exc:
             # 让位失败不阻断重刮：最坏情况是整理步骤报「目标文件已存在」，

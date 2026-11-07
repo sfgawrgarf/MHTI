@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from server.api.v1.ai import save_ai_config
 from server.application import manual_job_service as manual_module
 from server.application.manual_job_service import ManualJobService
+from server.application.history_actions import HistoryScrapeActions
 from server.domain.system.log_service import LogService
 from server.infrastructure.log_configuration import LoggingRuntime
 from server.infrastructure.file_operations import publish_file
@@ -44,6 +45,28 @@ async def test_unregistered_replacement_is_preserved(audit_env):
     assert not next(entry for entry in listing.files if entry.path == str(target)).deletable
     await env.files.delete_files(record.id, 'organized')
     assert target.read_bytes() == b'new publication before its database registration'
+
+
+@pytest.mark.asyncio
+async def test_obsolete_record_cannot_use_new_owners_media_as_fallback(audit_env):
+    env = audit_env
+    target = env.output / 'episode.mkv'
+    target.parent.mkdir()
+    target.write_bytes(b'first publication')
+    first = await record_for(env, f'{env.source} => {target}')
+    await env.scraped.register_output(history_record_id=first.id, source_path=str(env.source),
+                                     target_path=str(target), tmdb_id=1, season=1, episode=1, title='Show')
+    new_source = env.source.with_name('new.mkv')
+    new_source.write_bytes(b'new owner')
+    second = await record_for(env, f'{new_source} => {target}')
+    target.write_bytes(b'new owner')
+    await env.scraped.register_output(history_record_id=second.id, source_path=str(new_source),
+                                     target_path=str(target), tmdb_id=1, season=1, episode=1, title='Show')
+    env.source.unlink()
+    with pytest.raises(HTTPException) as caught:
+        await HistoryScrapeActions(env.history, env.jobs, env.scraped, env.files).prepare_input(first)
+    assert caught.value.status_code in (400, 409)
+    assert target.read_bytes() == b'new owner'
 
 
 @pytest.mark.asyncio
