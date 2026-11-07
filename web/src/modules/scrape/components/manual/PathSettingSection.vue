@@ -14,6 +14,7 @@ import FolderBrowserModal from '@/shared/components/business/FolderBrowserModal.
 
 const props = defineProps<{
   scanPath: string
+  lockScanPath?: boolean
   targetFolder: string
   metadataDir: string
   scanLocator: StorageLocator | null
@@ -82,17 +83,18 @@ const handleConfirmLocator = (locator: StorageLocator) => {
       <div class="path-input">
         <NInput
           :value="props.scanPath"
+          :disabled="lockScanPath"
           placeholder="请输入视频目录或文件路径"
           @update:value="emit('update:scanPath', $event)"
         />
-        <NButton @click="openBrowser('scan')" aria-label="选择刮削路径">
+        <NButton :disabled="lockScanPath" @click="openBrowser('scan')" aria-label="选择刮削路径">
           <template #icon>
             <NIcon :component="FolderOutline" />
           </template>
         </NButton>
       </div>
       <template #feedback>
-        <span class="form-hint">指定目录时会扫描目录内全部视频文件</span>
+        <span class="form-hint">{{ lockScanPath ? '仅处理上方列出的所选文件' : '指定目录时会扫描目录内全部视频文件' }}</span>
       </template>
     </NFormItem>
 

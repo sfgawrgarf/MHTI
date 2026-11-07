@@ -66,6 +66,14 @@ async def list_records(
     return HistoryListResponse(records=records, total=total)
 
 
+@router.get("/summary")
+async def history_summary(
+    timezone_offset: int = Query(0, ge=-840, le=840),
+    history_service: HistoryService = Depends(get_history_service),
+) -> dict:
+    return await history_service.summary(timezone_offset)
+
+
 @router.post("", response_model=HistoryRecord)
 async def create_record(
     record: HistoryRecordCreate,
@@ -84,7 +92,10 @@ async def undo_last(
     物理删除的文件不在这里——磁盘上已经没有了，撤销无从谈起。
     放在 /{record_id} 之前声明，避免被详情路由吃掉。
     """
-    return await history_service.undo_last()
+    try:
+        return await history_service.undo_last()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/export")

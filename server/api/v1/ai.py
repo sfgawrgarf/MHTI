@@ -12,6 +12,7 @@ from server.api.deps import (
     require_auth,
 )
 from server.application.ai_provider_service import AIProviderError, AIProviderService
+from server.common.credential_scope import same_credential_scope
 from server.application.media_identity_service import MediaIdentityService
 from server.domain.metadata.tmdb_service import TMDBService
 from server.domain.parsing.parser_service import ParserService
@@ -68,6 +69,8 @@ async def save_ai_config(
     provider: AIProviderService = Depends(get_ai_provider),
 ) -> AIConfigResponse:
     old = await provider.get_config()
+    if request.api_key is None and old.api_key and not same_credential_scope(old.base_url, request.base_url):
+        raise HTTPException(status_code=422, detail="AI 服务地址已变更，请重新输入 API 密钥")
     config = AIConfig(
         **request.model_dump(exclude={"api_key"}),
         api_key=request.api_key if request.api_key is not None else old.api_key,

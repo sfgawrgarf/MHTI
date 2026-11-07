@@ -13,7 +13,7 @@
  * 避免用户以为「点了就全删了」。
  */
 import { computed, ref, watch } from 'vue'
-import { NButton, NIcon, NModal, NRadio, NRadioGroup, NSpin } from 'naive-ui'
+import { NButton, NIcon, NModal, NRadio, NRadioGroup, NSpin, useMessage } from 'naive-ui'
 import { AlertCircleOutline, CloseOutline } from '@vicons/ionicons5'
 import { historyApi } from '@/modules/history/api'
 import type {
@@ -36,21 +36,31 @@ const emit = defineEmits<{
 }>()
 
 const loading = ref(false)
+const message = useMessage()
 const deleting = ref(false)
 const listing = ref<HistoryFileListResponse | null>(null)
 const scope = ref<HistoryFileScope>('all')
 
 watch(
   () => [props.show, props.record?.id] as const,
-  async ([show]) => {
-    if (!show || !props.record) return
+  async ([show, recordId], _previous, onCleanup) => {
+    let invalidated = false
+    onCleanup(() => { invalidated = true })
+    listing.value = null
+    if (!show || !recordId) { loading.value = false; return }
     loading.value = true
     listing.value = null
     try {
-      listing.value = await historyApi.listRecordFiles(props.record.id)
-      scope.value = 'all'
+      const response = await historyApi.listRecordFiles(recordId)
+      if (!invalidated && props.show && props.record?.id === recordId && response.record_id === recordId) {
+        listing.value = response
+        scope.value = 'all'
+      }
+    } catch (error) {
+      if (!invalidated) message.error('加载文件列表失败，请重试')
+      console.error(error)
     } finally {
-      loading.value = false
+      if (!invalidated) loading.value = false
     }
   },
   { immediate: true }
@@ -94,17 +104,24 @@ function roleLabel(role: HistoryFileEntry['role']): string {
 }
 
 async function handleDelete() {
-  if (!props.record || targets.value.length === 0 || deleting.value) return
+  if (!props.show || !props.record || loading.value || listing.value?.record_id !== props.record.id || targets.value.length === 0 || deleting.value) return
+  const recordId = props.record.id
+  const displayed = listing.value
   deleting.value = true
   try {
-    const response = await historyApi.deleteRecordFiles(props.record.id, scope.value)
+    const response = await historyApi.deleteRecordFiles(recordId, scope.value)
+    if (!props.show || props.record?.id !== recordId || listing.value !== displayed) return
     emit('deleted', response)
     if (response.deleted > 0) {
       emit('update:show', false)
     } else {
       // 一个都没删掉：留在弹窗里，让用户看到逐条原因
-      listing.value = await historyApi.listRecordFiles(props.record.id)
+      const refreshed = await historyApi.listRecordFiles(recordId)
+      if (props.show && props.record?.id === recordId && listing.value === displayed && refreshed.record_id === recordId) listing.value = refreshed
     }
+  } catch (error) {
+    message.error('删除失败，请刷新文件列表后重试')
+    console.error(error)
   } finally {
     deleting.value = false
   }
@@ -164,7 +181,7 @@ async function handleDelete() {
           <NButton @click="emit('update:show', false)">取消</NButton>
           <NButton
             type="error"
-            :disabled="targets.length === 0"
+            :disabled="loading || targets.length === 0 || listing?.record_id !== record?.id"
             :loading="deleting"
             @click="handleDelete"
           >

@@ -22,6 +22,7 @@ const emit = defineEmits<{
   openCommand: []
   /** 请求打开账户配置抽屉 */
   openAccount: []
+  logout: []
 }>()
 
 const route = useRoute()
@@ -96,7 +97,7 @@ const themeLabel = computed(() => (isDark.value ? '切换到亮色模式' : '切
 
         <span class="tool-divider" aria-hidden="true" />
 
-        <AppUserMenu @open-account="emit('openAccount')" />
+        <AppUserMenu @open-account="emit('openAccount')" @logout="emit('logout')" />
       </div>
     </div>
   </header>

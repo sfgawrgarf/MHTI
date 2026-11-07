@@ -1383,8 +1383,17 @@ class ScraperService:
                 )
             except Exception as e:
                 logger.warning(f"Emby 冲突检查异常: {e}")
-                conflict_result = ConflictCheckResult(conflict_type=ConflictType.NO_CONFLICT)
+                conflict_result = ConflictCheckResult(conflict_type=ConflictType.CHECK_FAILED, message="Emby 检查失败，请确认连接后重试")
 
+        if conflict_result.conflict_type == ConflictType.CHECK_FAILED:
+            emby_step.logs.append(ScrapeLogEntry(message=conflict_result.message or "Emby 检查失败", level=ScrapeLogLevel.WARNING))
+            emby_step.completed = False
+            await notify_log_update()
+            result.status = ScrapeStatus.EMBY_CONFLICT
+            result.message = conflict_result.message or "Emby 检查失败，请重试或明确选择强制继续"
+            result.emby_conflict = conflict_result
+            result.scrape_logs = scrape_logs
+            return result
         if conflict_result.conflict_type == ConflictType.EPISODE_EXISTS:
             emby_step.logs.append(ScrapeLogEntry(
                 message=conflict_result.message or "Emby 中已存在该集",

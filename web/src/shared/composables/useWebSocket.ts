@@ -6,7 +6,6 @@ import { STORAGE_KEYS } from '@/config/constants'
 import type {
   JobProgress,
   NeedActionInfo,
-  HistoryUpdate,
   WSMessage,
   MessageHandler,
 } from './wsTypes'
@@ -32,7 +31,6 @@ interface WebSocketGlobalState {
   jobProgress: Map<string, JobProgress>
   pendingActions: Map<string, NeedActionInfo>
   handlers: Set<MessageHandler>
-  historyUpdates: ReturnType<typeof ref<HistoryUpdate[]>>
 }
 
 declare global {
@@ -53,7 +51,6 @@ function getGlobalState(): WebSocketGlobalState {
       jobProgress: reactive(new Map()),
       pendingActions: reactive(new Map()),
       handlers: new Set(),
-      historyUpdates: ref([]),
     }
   }
   return window.__WS_STATE__
@@ -217,23 +214,6 @@ function handleMessage(msg: WSMessage): void {
       }
       break
 
-    // 历史记录相关消息
-    case 'history_created':
-      state.historyUpdates.value?.push({ type: 'created', record: payload })
-      break
-
-    case 'history_updated':
-      state.historyUpdates.value?.push({ type: 'updated', id: payload.id, updates: payload })
-      break
-
-    case 'history_deleted':
-      state.historyUpdates.value?.push({ type: 'deleted', id: payload.id })
-      break
-
-    case 'history_cleared':
-      state.historyUpdates.value?.push({ type: 'cleared', count: payload.count })
-      break
-
     // 历史记录详情页实时更新（由注册的 handler 处理，这里只做日志）
     case 'history_detail_update':
       console.log('[WS] 收到历史记录详情更新')
@@ -377,27 +357,12 @@ export function useWebSocket() {
     return state.pendingActions.get(jobId)
   }
 
-  // 消费历史记录更新
-  const consumeHistoryUpdates = (): HistoryUpdate[] => {
-    const updates = [...(state.historyUpdates.value ?? [])]
-    state.historyUpdates.value = []
-    return updates
-  }
-
-  // 清空历史记录更新
-  const clearHistoryUpdates = () => {
-    if (state.historyUpdates.value) {
-      state.historyUpdates.value = []
-    }
-  }
-
   return {
     // 状态
     isConnected: state.isConnected,
     clientId: computed(() => state.clientId),
     jobProgress: state.jobProgress,
     pendingActions: state.pendingActions,
-    historyUpdates: state.historyUpdates,
 
     // 方法
     connect,
@@ -414,7 +379,5 @@ export function useWebSocket() {
     // 辅助方法
     getJobProgress,
     getPendingAction,
-    consumeHistoryUpdates,
-    clearHistoryUpdates,
   }
 }

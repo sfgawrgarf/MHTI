@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { historyApi } from '@/modules/history/api'
@@ -21,7 +21,10 @@ export function useHistoryList() {
   const page = ref(1)
   const pageSize = ref(20)
   const search = ref('')
-  const statusFilter = ref<TaskStatus | null>(null)
+  const validStatuses: TaskStatus[] = ['success', 'failed', 'timeout', 'cancelled', 'skipped', 'deleted', 'replaced', 'pending_action', 'running']
+  const parseStatus = (value: unknown): TaskStatus | null => validStatuses.includes(value as TaskStatus) ? value as TaskStatus : null
+  const statusFilter = ref<TaskStatus | null>(parseStatus(route.query.status))
+  let loadGeneration = 0
 
   // 从 URL 获取 manual_job_id
   const manualJobId = computed(() => {
@@ -31,6 +34,7 @@ export function useHistoryList() {
 
   // 加载历史记录
   const loadRecords = async () => {
+    const generation = ++loadGeneration
     loading.value = true
     try {
       const response = await historyApi.listRecords({
@@ -40,13 +44,15 @@ export function useHistoryList() {
         search: search.value || undefined,
         status: statusFilter.value,
       })
+      if (generation !== loadGeneration) return
       records.value = response.records
       total.value = response.total
     } catch (error) {
+      if (generation !== loadGeneration) return
       message.error('加载失败')
       console.error(error)
     } finally {
-      loading.value = false
+      if (generation === loadGeneration) loading.value = false
     }
   }
 
@@ -58,10 +64,13 @@ export function useHistoryList() {
 
   // 状态筛选
   const handleStatusChange = (value: string) => {
-    statusFilter.value = value === 'all' ? null : (value as TaskStatus)
+    router.replace({ query: { ...route.query, status: value === 'all' ? undefined : value } })
+  }
+  watch(() => route.query.status, value => {
+    statusFilter.value = parseStatus(value)
     page.value = 1
     loadRecords()
-  }
+  })
 
   // 分页
   const handlePageChange = (p: number) => {

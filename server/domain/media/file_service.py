@@ -435,7 +435,7 @@ class FileService:
                             mtime=mtime,
                         )
                     )
-                except PermissionError:
+                except (PermissionError, FileNotFoundError, NotADirectoryError):
                     continue
 
             total = len(all_entries)

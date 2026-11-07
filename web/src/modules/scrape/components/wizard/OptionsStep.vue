@@ -20,7 +20,7 @@ import OrganizeSettingSection from '@/modules/scrape/components/manual/OrganizeS
 defineProps<{
   linkMode: LinkMode
   deleteEmptyParent: boolean
-  configReuseId: number | null
+  configReuseId: string | null
   configReuseOptions: SelectMixedOption[]
   involvesP115: boolean
   allowLocalOutput: boolean
@@ -31,7 +31,7 @@ defineProps<{
 const emit = defineEmits<{
   'update:linkMode': [value: LinkMode]
   'update:deleteEmptyParent': [value: boolean]
-  'update:configReuseId': [value: number]
+  'update:configReuseId': [value: string]
   'update:allowLocalOutput': [value: boolean]
   /** 打开高级设置弹窗（父组件持有弹窗实例） */
   openAdvanced: []

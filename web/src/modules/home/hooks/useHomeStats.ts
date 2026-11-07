@@ -6,51 +6,34 @@ export function useHomeStats() {
   const records = ref<HistoryRecord[]>([])
   const totalTasks = ref(0)
 
-  const successCount = computed(() =>
-    records.value.filter(r => r.status === 'success').length
-  )
-
-  const failedCount = computed(() =>
-    records.value.filter(r => r.status === 'failed').length
-  )
-
+  const successCount = ref(0)
+  const failedCount = ref(0)
   const recentTasks = computed(() => records.value.slice(0, 10))
-
-  // 近7天每日任务统计
-  const weeklyStats = computed(() => {
-    const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-    const result: { label: string; value: number }[] = []
-    const now = new Date()
-
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date(now)
-      date.setDate(date.getDate() - i)
-      const dayStart = new Date(date.setHours(0, 0, 0, 0))
-      const dayEnd = new Date(date.setHours(23, 59, 59, 999))
-
-      const count = records.value.filter(r => {
-        const execTime = new Date(r.executed_at)
-        return execTime >= dayStart && execTime <= dayEnd
-      }).length
-
-      result.push({
-        label: i === 0 ? '今天' : (days[dayStart.getDay()] ?? ''),
-        value: count
-      })
-    }
-    return result
-  })
+  const weeklyStats = ref<{ label: string; value: number }[]>([])
+  let generation = 0
 
   async function refresh() {
+    const request = ++generation
     loading.value = true
     try {
-      const historyRes = await historyApi.listRecords({ page_size: 50 })
+      const [historyRes, summary] = await Promise.all([
+        historyApi.listRecords({ page_size: 10 }),
+        historyApi.getSummary(-new Date().getTimezoneOffset()),
+      ])
+      if (request !== generation) return
       records.value = historyRes.records
-      totalTasks.value = historyRes.total
+      totalTasks.value = summary.total
+      successCount.value = summary.success
+      failedCount.value = summary.failed
+      const labels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+      weeklyStats.value = summary.weekly.map((day, index) => ({
+        label: index === summary.weekly.length - 1 ? '今天' : labels[new Date(`${day.date}T12:00:00`).getDay()]!,
+        value: day.count,
+      }))
     } catch (e) {
       console.error('Failed to load home stats:', e)
     } finally {
-      loading.value = false
+      if (request === generation) loading.value = false
     }
   }
 

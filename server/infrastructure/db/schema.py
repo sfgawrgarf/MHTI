@@ -15,6 +15,8 @@ MANUAL_JOB_COLUMNS = (
     ("metadata_locator", "TEXT"),
     ("allow_local_output", "INTEGER DEFAULT 0"),
     ("dispatched_count", "INTEGER"),
+    ("config_reuse_key", "TEXT"),
+    ("selected_files", "TEXT"),
 )
 
 SCRAPE_JOB_COLUMNS = (
@@ -427,6 +429,8 @@ async def _create_job_tables(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_scraped_files_source ON scraped_files(source_path)"
     )
+    await _add_missing_columns(db, "scraped_files", (("target_signature", "TEXT"),))
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_scraped_files_target ON scraped_files(target_path)")
 
 
 async def _create_watcher_tables(db: aiosqlite.Connection) -> None:

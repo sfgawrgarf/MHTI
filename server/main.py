@@ -243,6 +243,9 @@ async def lifespan(app: FastAPI):
         install_safe_log_filter(db_log_handler)
         logging.getLogger().addHandler(db_log_handler)
         db_log_handler.start()
+        from server.infrastructure.log_configuration import LoggingRuntime
+        runtime = LoggingRuntime(logging.getLogger(), file_handler, db_log_handler)
+        await log_service.bind_runtime_configuration(runtime.apply)
 
         logger.info("Log service started")
 

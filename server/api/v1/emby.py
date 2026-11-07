@@ -1,6 +1,6 @@
 """Emby configuration API routes."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from server.api.deps import require_auth
 from server.api.deps import get_emby_service
@@ -46,7 +46,10 @@ async def save_emby_config(
     service: EmbyService = Depends(get_emby_service),
 ) -> EmbyConfigResponse:
     """保存 Emby 配置"""
-    config = await service.build_config_from_request(request)
+    try:
+        config = await service.build_config_from_request(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     await service.save_config(config)
     return _to_response(config)
 
@@ -66,7 +69,10 @@ async def test_emby_connection(
 ) -> EmbyTestResponse:
     """测试 Emby 连接，可传入配置或使用已保存的配置"""
     if request:
-        config = await service.build_test_config(request)
+        try:
+            config = await service.build_test_config(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return await service.test_connection_with_config(config)
     return await service.test_connection()
 

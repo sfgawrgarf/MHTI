@@ -413,8 +413,7 @@ class P115Service:
 
     async def clear_login_state(self) -> None:
         """Clear persisted 115 login config and any pending QR sessions."""
-        await self.config_service.delete_115_config()
-        await self._delete_all_qr_payloads()
+        await self.config_service.begin_115_login(clear_config=True)
 
     async def start_qr_login(self, app: str) -> Cloud115QrSession:
         """Start a QR login session.
@@ -423,9 +422,9 @@ class P115Service:
         关掉弹窗的会话行没有其它回收时机（115 也不会主动叫我们删）。
         """
         normalized_app = self._normalize_app(app)
+        generation = await self.config_service.begin_115_login()
         p115_module, _ = await _load_p115client()
         await self.cleanup_expired_qr_payloads()
-        await self._delete_all_qr_payloads()
         token_response = await self._call_login_api(
             p115_module.P115Client.login_qrcode_token,
             app=normalized_app,
@@ -433,11 +432,14 @@ class P115Service:
         token_data = token_response["data"]
         uid = token_data["uid"]
         qrcode_url = token_data.get("qrcode") or f"https://115.com/scan/dg-{uid}"
-        await self._save_qr_payload(uid, token_data, normalized_app)
+        payload = {**token_data, "app": normalized_app}
+        if not await self.config_service.save_115_qr_if_current(generation, self._qr_payload_key(uid), json.dumps(payload)):
+            raise ConfigurationError("二维码会话已被退出或新的登录请求作废，请重新扫码")
         return Cloud115QrSession(uid=uid, qrcode_url=qrcode_url, app=normalized_app)
 
     async def poll_qr_login(self, uid: str, app: str) -> Cloud115QrStatus:
         """Poll QR login status and persist cookies after success."""
+        stamp = await self.config_service.get(self._qr_payload_key(uid))
         token_payload = await self._get_qr_payload(uid)
         normalized_app = self._resolve_qr_app(token_payload, app)
         if not self._has_complete_qr_payload(token_payload):
@@ -514,7 +516,8 @@ class P115Service:
                 is_logged_in=False,
             )
 
-        await self.config_service.save_115_config(
+        saved = await self.config_service.complete_115_login(
+            self._qr_payload_key(uid), stamp,
             Cloud115Config(
                 enabled=True,
                 app=normalized_app,
@@ -523,7 +526,9 @@ class P115Service:
                 updated_at=datetime.now(),
             )
         )
-        await self._delete_qr_payload(uid)
+        if not saved:
+            return Cloud115QrStatus(uid=uid, app=normalized_app, status="expired",
+                                    message="二维码会话已失效，请重新扫码", is_logged_in=False)
 
         return Cloud115QrStatus(
             uid=uid,

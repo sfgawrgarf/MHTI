@@ -7,10 +7,35 @@ import ctypes
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from contextlib import contextmanager
+from threading import Lock, RLock
+from weakref import WeakValueDictionary
 
 from server.infrastructure import file_journal
 from server.models.organize import OrganizeMode
 from server.common.file_cancellation import check_file_cancelled
+
+
+class _PathLock:
+    def __init__(self):
+        self.lock = RLock()
+
+
+_path_locks: WeakValueDictionary[str, _PathLock] = WeakValueDictionary()
+_path_locks_guard = Lock()
+
+
+@contextmanager
+def path_operation_lock(path: Path):
+    """Serialize only short publication/deletion steps, never large copies or awaits."""
+    key = os.path.normcase(os.path.abspath(path))
+    with _path_locks_guard:
+        holder = _path_locks.get(key)
+        if holder is None:
+            holder = _PathLock()
+            _path_locks[key] = holder
+    with holder.lock:
+        yield
 
 
 def _publish_no_replace(staged: Path, destination: Path) -> None:
@@ -69,11 +94,12 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
             shutil.copy2(source, staged)
         file_journal.prepared(receipt, staged)
         check_file_cancelled()
-        if overwrite:
-            os.replace(staged, destination)
-        else:
-            # Atomic no-clobber publication, including concurrent writers.
-            _publish_no_replace(staged, destination)
+        with path_operation_lock(destination):
+            if overwrite:
+                os.replace(staged, destination)
+            else:
+                # Atomic no-clobber publication, including concurrent writers.
+                _publish_no_replace(staged, destination)
         file_journal.published(receipt)
         if mode == OrganizeMode.MOVE:
             source.unlink()

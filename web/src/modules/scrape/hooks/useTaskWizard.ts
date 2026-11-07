@@ -44,13 +44,14 @@ export function useTaskWizard(options: {
     handleClose: closeForm,
     handleSubmit: submitForm,
     handleAdvancedSettingsConfirm,
-  } = useManualJobForm(options)
+  } = useManualJobForm({ ...options, onClose: () => { resetWizardState(); options.onClose() } })
 
   // 向导状态
   const currentStep = ref(1)
   const previewLoading = ref(false)
   const previewFiles = ref<DirectoryEntry[]>([])
   const previewTotal = ref(0)
+  let previewGeneration = 0
 
   // 步骤配置
   const steps = [
@@ -72,10 +73,12 @@ export function useTaskWizard(options: {
     if (!formData.value.scan_path) return
 
     previewLoading.value = true
+    const generation = ++previewGeneration
     try {
       const provider = scanLocator.value?.provider
       const fileId = scanLocator.value?.file_id
       const response = await fsApi.browse(formData.value.scan_path, 1, 10, provider, fileId)
+      if (generation !== previewGeneration || !options.show()) return
       // 过滤出视频文件
       previewFiles.value = response.entries.filter((entry) => {
         if (entry.is_dir) return true
@@ -84,16 +87,19 @@ export function useTaskWizard(options: {
       })
       previewTotal.value = response.total
     } catch (error) {
+      if (generation !== previewGeneration) return
       console.error('加载预览失败:', error)
       previewFiles.value = []
       previewTotal.value = 0
     } finally {
-      previewLoading.value = false
+      if (generation === previewGeneration) previewLoading.value = false
     }
   }
 
   /** 向导自身状态复位（表单与 locator 由 useManualJobForm 复位） */
   const resetWizardState = () => {
+    previewGeneration++
+    previewLoading.value = false
     currentStep.value = 1
     previewFiles.value = []
     previewTotal.value = 0
@@ -125,6 +131,7 @@ export function useTaskWizard(options: {
 
   // 监听弹窗打开，刷新监控目录与全局配置
   watch(options.show, async (newVal) => {
+    resetWizardState()
     if (newVal) {
       await Promise.all([loadWatchedFolders(), loadGlobalConfig()])
     }

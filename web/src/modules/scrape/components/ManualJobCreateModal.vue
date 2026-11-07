@@ -5,6 +5,7 @@ import { CloseOutline } from '@vicons/ionicons5'
 import { useManualJobForm } from '@/modules/scrape/hooks/useManualJobForm'
 import { LINK_MODE_OPTIONS_BASIC } from '@/modules/scrape/constants'
 import type { StorageLocator } from '@/shared/types/common'
+import type { ScannedFile } from '@/modules/library/types'
 import PathSettingSection from '@/modules/scrape/components/manual/PathSettingSection.vue'
 import OrganizeSettingSection from '@/modules/scrape/components/manual/OrganizeSettingSection.vue'
 import ManualJobFooter from '@/modules/scrape/components/manual/ManualJobFooter.vue'
@@ -14,6 +15,7 @@ const props = defineProps<{
   show: boolean
   initialScanPath?: string
   initialScanLocator?: StorageLocator | null
+  selectedFiles?: ScannedFile[]
 }>()
 
 const emit = defineEmits<{
@@ -45,6 +47,7 @@ const {
   show: () => props.show,
   initialScanPath: () => props.initialScanPath,
   initialScanLocator: () => props.initialScanLocator,
+  selectedFiles: () => props.selectedFiles,
   onSuccess: () => emit('success'),
   onClose: () => emit('update:show', false),
 })
@@ -85,11 +88,13 @@ onMounted(() => {
 
       <!-- 内容 -->
       <div class="modal-body">
-        <p class="modal-desc">手动任务会在后台根据创建顺序依次执行</p>
+        <p class="modal-desc">{{ selectedFiles?.length ? `仅处理已选的 ${selectedFiles.length} 个文件` : '手动任务会在后台根据创建顺序依次执行' }}</p>
+        <ul v-if="selectedFiles?.length"><li v-for="file in selectedFiles" :key="file.path">{{ file.path }}</li></ul>
 
         <NForm :model="formData" label-placement="top" class="create-form">
           <!-- 路径设置 -->
           <PathSettingSection
+            :lock-scan-path="!!selectedFiles?.length"
             v-model:scan-path="formData.scan_path"
             v-model:target-folder="formData.target_folder"
             v-model:metadata-dir="formData.metadata_dir"

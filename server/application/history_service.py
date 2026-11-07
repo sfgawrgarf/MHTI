@@ -5,7 +5,7 @@ import csv
 import io
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -163,6 +163,18 @@ class HistoryService:
         await notifier.notify_history_created(result.model_dump(mode="json"))
 
         return result
+
+    async def summary(self, offset_minutes: int = 0) -> dict:
+        await self._ensure_db()
+        today = datetime.now(timezone(timedelta(minutes=offset_minutes))).date()
+        start = today - timedelta(days=6)
+        local_offset = datetime.now().astimezone().utcoffset() or timedelta()
+        raw = await self._repo.summary(start.isoformat(), today.isoformat(), offset_minutes,
+                                       int(local_offset.total_seconds() / 60))
+        return {"total": raw["total"], "success": raw["success"], "failed": raw["failed"],
+                "weekly": [{"date": (start + timedelta(days=index)).isoformat(),
+                            "count": raw["days"].get((start + timedelta(days=index)).isoformat(), 0)}
+                           for index in range(7)]}
 
     async def list_records(
         self,
@@ -346,9 +358,8 @@ class HistoryService:
         await self._ensure_db()
 
         # 与 clear_records 的筛选条件一致，保证快照就是即将被删掉的那些行
-        rows = await self._repo.list_rows_raw(before_days)
-
-        count = await self._repo.clear_records(before_days)
+        snapshot: dict = {}
+        count = await self._repo.clear_records(before_days, snapshot=snapshot)
 
         # 发送 WebSocket 通知
         if count > 0:
@@ -356,8 +367,9 @@ class HistoryService:
                 UndoSnapshot(
                     kind="record_clear",
                     message=f"已清空 {count} 条记录",
-                    records=rows,
-                    files=await self._snapshot_files([row["id"] for row in rows]),
+                    records=snapshot["records"],
+                    files=snapshot["files"],
+                    jobs=snapshot["jobs"],
                 )
             )
             notifier = get_notifier()
@@ -381,14 +393,13 @@ class HistoryService:
         """
         await self._ensure_db()
 
-        snapshot = self._undo.pop()
+        snapshot = self._undo.peek()
         if snapshot is None:
             return UndoResponse(success=False, undone=False, message="没有可撤销的操作")
 
-        for row in snapshot.files:
-            await self._scraped_repo.restore_row(row)
-        for row in snapshot.records:
-            await self._repo.restore_row(row)
+        await self._repo.restore_snapshot(snapshot.records, snapshot.files, snapshot.jobs)
+        if self._undo.peek() is snapshot:
+            self._undo.pop()
 
         notifier = get_notifier()
         await notifier.notify_history_restored(len(snapshot.records))

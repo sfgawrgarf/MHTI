@@ -8,7 +8,7 @@
  * - 蓝底 NAlert 的「在哪创建密钥」改成常驻 hint；
  * - 媒体库勾选从 NSpace 改为响应式 grid，库多时不会挤成一行。
  */
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { NButton, NCheckbox, NCheckboxGroup, NIcon, NInput, NInputNumber, NSwitch } from 'naive-ui'
 import { CheckmarkCircleOutline, CloseCircleOutline } from '@vicons/ionicons5'
 import { embyApi } from '@/modules/settings/api'
@@ -28,6 +28,7 @@ const checkBeforeScrape = ref(true)
 const timeout = ref(10)
 
 const hasApiKey = ref(false)
+const savedServerUrl = ref('')
 const connectionStatus = ref<'unknown' | 'success' | 'failed'>('unknown')
 const serverName = ref('')
 const serverVersion = ref('')
@@ -66,6 +67,7 @@ const load = async () => {
   const config: EmbyConfig = await embyApi.getConfig()
   enabled.value = config.enabled
   serverUrl.value = config.server_url
+  savedServerUrl.value = config.server_url
   hasApiKey.value = config.has_api_key
   userId.value = config.user_id
   libraryIds.value = config.library_ids
@@ -84,6 +86,7 @@ const save = async () => {
     check_before_scrape: checkBeforeScrape.value,
     timeout: timeout.value,
   })
+  savedServerUrl.value = serverUrl.value
   if (apiKey.value) {
     hasApiKey.value = true
     apiKey.value = ''
@@ -104,6 +107,10 @@ const validate = () => {
   }
   if (!apiKey.value && !hasApiKey.value) {
     warn('请输入 API 密钥')
+    return false
+  }
+  if (!apiKey.value && hasApiKey.value && serverUrl.value.replace(/\/+$/, '') !== savedServerUrl.value.replace(/\/+$/, '')) {
+    warn('服务器地址已变更，请重新输入 API 密钥')
     return false
   }
   return true
@@ -145,6 +152,13 @@ const testConnection = async () => {
 }
 
 onMounted(reload)
+watch(serverUrl, value => {
+  if (value !== savedServerUrl.value) {
+    libraries.value = []
+    libraryIds.value = []
+    connectionStatus.value = 'unknown'
+  }
+})
 </script>
 
 <template>

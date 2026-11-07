@@ -1,0 +1,279 @@
+{
+  "repository": "sfgawrgarf/MHTI",
+  "review_date": "2026-11-07",
+  "date_timezone": "Asia/Shanghai",
+  "baseline_sha": "c096c5c94a1590e085761d944f4bf1952fc64fe6",
+  "test_head_sha": "e76627d72af531f14c3dcf0bc8f09ad907caa2e5",
+  "production_changes": 0,
+  "findings": {
+    "total": 24,
+    "P1": 3,
+    "P2": 19,
+    "P3": 2,
+    "with_ci_reproduction": 16,
+    "static_call_chain_only": 8
+  },
+  "ci": {
+    "run_id": 42264670700,
+    "url": "https://github.com/sfgawrgarf/MHTI/actions/runs/42264670700",
+    "conclusion": "expected_failure_on_new_regressions",
+    "backend": {
+      "job_id": 128053341709,
+      "baseline_passed": 999,
+      "new_failed": 16,
+      "coverage_percent": 84.49,
+      "coverage_threshold_percent": 77,
+      "warnings": 2,
+      "static_check": "success",
+      "dependency_audit": "success",
+      "failures": [
+        "FAILED server/tests/application/test_full_main_audit.py::test_password_change_rejects_login_validated_before_change",
+        "FAILED server/tests/application/test_full_main_audit.py::test_obsolete_record_cannot_delete_new_owner_output[delete]",
+        "FAILED server/tests/application/test_full_main_audit.py::test_obsolete_record_cannot_delete_new_owner_output[reorganize_cleanup]",
+        "FAILED server/tests/application/test_full_main_audit.py::test_undo_clear_restores_usable_job_context[failed-retry]",
+        "FAILED server/tests/application/test_full_main_audit.py::test_undo_clear_restores_usable_job_context[success-reorganize]",
+        "FAILED server/tests/application/test_full_main_audit.py::test_automatic_duplicate_skip_does_not_ban_watcher_recovery",
+        "FAILED server/tests/application/test_full_main_audit.py::test_emby_connection_test_rejects_invalid_api_key",
+        "FAILED server/tests/application/test_full_main_audit.py::test_emby_known_different_tmdb_id_is_not_the_same_series",
+        "FAILED server/tests/application/test_full_main_audit_edges.py::test_browse_survives_a_broken_symlink",
+        "FAILED server/tests/application/test_full_main_audit_edges.py::test_concurrent_subtitle_rename_preserves_both_contents",
+        "FAILED server/tests/application/test_full_main_audit_edges.py::test_logout_invalidates_an_inflight_115_qr_completion",
+        "FAILED server/tests/application/test_full_main_audit_edges.py::test_115_events_with_equal_timestamp_are_not_lost",
+        "FAILED server/tests/application/test_full_main_audit_edges.py::test_unresolved_115_copy_never_renames_the_source",
+        "FAILED server/tests/application/test_full_main_audit_edges.py::test_failed_emby_check_blocks_automatic_publication",
+        "FAILED server/tests/application/test_full_main_audit_edges.py::test_emby_saved_secret_is_bound_to_its_origin[save]",
+        "FAILED server/tests/application/test_full_main_audit_edges.py::test_emby_saved_secret_is_bound_to_its_origin[test]"
+      ]
+    },
+    "frontend": {
+      "job_id": 128053341392,
+      "baseline_passed": 24,
+      "new_failed": 3,
+      "typecheck": "success",
+      "lint": "success",
+      "production_build": "skipped_after_test_failure",
+      "dependency_audit": "skipped_after_test_failure",
+      "failures": [
+        " FAIL  src/modules/history/full-main-audit.test.ts > keeps another manual task out of a task-filtered history list",
+        " FAIL  src/modules/history/full-main-audit.test.ts > keeps hexadecimal watcher IDs distinct in configuration reuse",
+        " FAIL  src/modules/history/full-main-audit.test.ts > starts a new task wizard at path selection after a successful creation"
+      ]
+    },
+    "docker": {
+      "status": "skipped_after_test_failure"
+    },
+    "codeql": {
+      "run_id": 42264670698,
+      "conclusion": "success"
+    },
+    "dependency_review": {
+      "run_id": 42264670762,
+      "conclusion": "success"
+    }
+  },
+  "ci_findings": [
+    "F01",
+    "F02",
+    "F04",
+    "F05",
+    "F06",
+    "F07",
+    "F08",
+    "F09",
+    "F10",
+    "F11 (Emby save/test only)",
+    "F12",
+    "F13",
+    "F14",
+    "F15",
+    "F17",
+    "F18"
+  ],
+  "static_findings": [
+    "F03",
+    "F16",
+    "F19",
+    "F20",
+    "F21",
+    "F22",
+    "F23",
+    "F24"
+  ],
+  "limits": [
+    "No production changes or deployments",
+    "No live external service account validation",
+    "External HTTP and 115 response conditions stubbed",
+    "No browser E2E or visual/accessibility audit",
+    "No load or power-loss fault tests",
+    "AI origin-key behavior statically reviewed; CI covers Emby"
+  ],
+  "jobs": [
+    {
+      "id": 128053341392,
+      "name": "前端构建",
+      "status": "completed",
+      "conclusion": "failure",
+      "run_id": 42264670700,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "检出代码",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "设置 Node.js",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "安装依赖",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "类型检查",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "前端静态检查",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "前端单元测试",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 7
+        },
+        {
+          "name": "依赖安全审计",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 8
+        },
+        {
+          "name": "构建产物检查",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9
+        },
+        {
+          "name": "Post 设置 Node.js",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 17
+        },
+        {
+          "name": "Post 检出代码",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19
+        }
+      ]
+    },
+    {
+      "id": 128053341709,
+      "name": "后端测试",
+      "status": "completed",
+      "conclusion": "failure",
+      "run_id": 42264670700,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "检出代码",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "设置 Python",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "安装依赖",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "静态检查",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "依赖安全审计",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "运行测试",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 7
+        },
+        {
+          "name": "上传覆盖率报告",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Post 设置 Python",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 15
+        },
+        {
+          "name": "Post 检出代码",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17
+        }
+      ]
+    },
+    {
+      "id": 128054488666,
+      "name": "Docker 构建测试",
+      "status": "completed",
+      "conclusion": "skipped",
+      "run_id": 42264670700,
+      "logs_url": null,
+      "steps": null
+    }
+  ]
+}

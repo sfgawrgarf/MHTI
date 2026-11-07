@@ -90,6 +90,7 @@ class ConfigRepository(BaseRepository):
     async def set_values(
         self, values: dict[str, str], updated_at: str,
         *, expected: tuple[str, str] | None = None,
+        encrypted: bool = False, consume_keys: tuple[str, ...] = (),
     ) -> bool:
         """Commit one status snapshot only for its original credential row."""
         async with self._connect() as db:
@@ -101,13 +102,24 @@ class ConfigRepository(BaseRepository):
                     await db.rollback()
                     return False
             await db.executemany(
-                "INSERT INTO config (key, value, encrypted, updated_at) VALUES (?, ?, 0, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, encrypted = 0, "
+                "INSERT INTO config (key, value, encrypted, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, encrypted = excluded.encrypted, "
                 "updated_at = excluded.updated_at",
-                [(key, value, updated_at) for key, value in values.items()],
+                [(key, value, int(encrypted), updated_at) for key, value in values.items()],
             )
+            for key in consume_keys:
+                await db.execute("DELETE FROM config WHERE key = ?", (key,))
             await db.commit()
             return True
+
+    async def reset_prefix(self, prefix: str, marker: str, value: str, *, delete_keys: tuple[str, ...] = ()) -> None:
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("DELETE FROM config WHERE substr(key, 1, ?) = ?", (len(prefix), prefix))
+            for key in delete_keys:
+                await db.execute("DELETE FROM config WHERE key = ?", (key,))
+            await db.execute("INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (marker, value))
+            await db.commit()
 
     async def delete_values(self, keys: tuple[str, ...]) -> bool:
         """Remove credentials and derived state atomically; report the first key."""

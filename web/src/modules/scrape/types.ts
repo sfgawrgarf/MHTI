@@ -2,6 +2,7 @@
  * scrape 域类型（手动任务相关）
  */
 import type { StorageLocator } from '@/shared/types/common'
+import type { ScannedFile } from '@/modules/library/types'
 
 export type ManualJobStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
 export type ManualJobSource = 'manual' | 'watcher'
@@ -26,7 +27,7 @@ export interface ManualJob {
   allow_local_output: boolean
   link_mode: LinkMode
   delete_empty_parent: boolean
-  config_reuse_id: number | null
+  config_reuse_id: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -133,6 +134,7 @@ export interface ScrapeJobCancelResult {
 }
 
 export interface ManualJobCreate {
+  selected_files?: ScannedFile[] | null
   scan_path: string
   target_folder: string
   metadata_dir?: string
@@ -142,7 +144,7 @@ export interface ManualJobCreate {
   allow_local_output?: boolean
   link_mode?: LinkMode
   delete_empty_parent?: boolean
-  config_reuse_id?: number | null
+  config_reuse_id?: string | null
   source?: ManualJobSource
   advanced_settings?: ManualJobAdvancedSettings | null
 }

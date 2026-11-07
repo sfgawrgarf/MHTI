@@ -201,6 +201,9 @@ class ScrapeJobRepository(BaseRepository):
                 """
                 SELECT 1 FROM history_records
                 WHERE status IN ('skipped', 'deleted')
+                  AND NOT (status = 'skipped' AND COALESCE(error_message, '') = '已有处理中的刮削任务，本次未重复投递')
+                  AND (status != 'skipped' OR COALESCE(json_extract(CASE WHEN json_valid(conflict_data) THEN conflict_data ELSE '{}' END,
+                                            '$.skip_reason'), '') != 'automatic_duplicate')
                   AND (
                       (? IS NOT NULL AND file_fingerprint = ?)
                       OR folder_path = ?

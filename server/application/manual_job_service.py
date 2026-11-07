@@ -11,6 +11,7 @@ from weakref import WeakKeyDictionary
 from server.common.path_security import PathSecurityError, validate_media_path
 from server.infrastructure.db import DATABASE_PATH
 from server.infrastructure.repositories.manual_job_repository import ManualJobRepository
+from server.models.file import ScannedFile
 from server.models.manual_job import (
     JobSource,
     LinkMode,
@@ -151,6 +152,23 @@ class ManualJobService:
         )
         now = datetime.now()
 
+        if job.selected_files is not None:
+            import posixpath
+            selected = []
+            seen = set()
+            cloud = job.scan_locator is not None and job.scan_locator.provider == StorageProvider.P115
+            for item in job.selected_files:
+                path = posixpath.normpath(item.path) if cloud else str(validate_media_path(item.path, must_exist=True, require_file=True))
+                root = posixpath.normpath(job.scan_path) if cloud else str(Path(job.scan_path))
+                if (not path.startswith(root.rstrip("/") + "/") if cloud else not Path(path).is_relative_to(Path(root))):
+                    raise PathSecurityError("所选文件必须位于扫描目录内")
+                if cloud and not item.file_id:
+                    raise PathSecurityError("115 所选文件缺少 file_id")
+                if path not in seen:
+                    selected.append(item.model_copy(update={"path": path}))
+                    seen.add(path)
+            job = job.model_copy(update={"selected_files": selected})
+
         # 序列化高级设置
         advanced_settings_json = None
         if job.advanced_settings is not None:
@@ -180,6 +198,7 @@ class ManualJobService:
             link_mode=job.link_mode,
             delete_empty_parent=job.delete_empty_parent,
             config_reuse_id=job.config_reuse_id,
+            selected_files=job.selected_files,
             source=job.source,
             advanced_settings=job.advanced_settings,
             created_at=now,
@@ -213,6 +232,7 @@ class ManualJobService:
                 status=TaskStatus.SKIPPED, source=TaskSource.MANUAL,
                 total_files=1, success_count=0, failed_count=0, duration_seconds=0,
                 error_message=_SKIP_REASON, manual_job_id=job_id,
+                conflict_data={"skip_reason": "automatic_duplicate"},
             ))
         except Exception:
             logger.exception("手动任务 #%s 跳过记录写入失败", job_id)
@@ -401,7 +421,9 @@ class ManualJobService:
             allow_local_output=allow_local_output,
             link_mode=LinkMode(row["link_mode"]),
             delete_empty_parent=bool(row["delete_empty_parent"]),
-            config_reuse_id=row["config_reuse_id"],
+            config_reuse_id=(row["config_reuse_key"] if "config_reuse_key" in row.keys() and row["config_reuse_key"] is not None else row["config_reuse_id"]),
+            selected_files=([ScannedFile(**item) for item in json.loads(row["selected_files"])]
+                            if "selected_files" in row.keys() and row["selected_files"] is not None else None),
             source=JobSource(source_value),
             advanced_settings=advanced_settings,
             created_at=datetime.fromisoformat(row["created_at"]),
@@ -463,7 +485,6 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
     from server.domain.media.file_service import FileService
     from server.domain.system.config_service import ConfigService, ORGANIZE_CONFIG_KEY
     from server.application.scrape_job_service import ScrapeJobService
-    from server.models.file import ScannedFile
     from server.models.scrape_job import ScrapeJobCreate, ScrapeJobSource
 
     if not await service.claim_job(job_id):
@@ -501,7 +522,12 @@ async def _run_manual_job(service: ManualJobService, job_id: int) -> None:
                     await config_service.get_organize_config()
                 )
 
-        if is_p115_source:
+        if job.selected_files is not None:
+            scan_result = list(job.selected_files)
+            if not is_p115_source:
+                scan_result = [item.model_copy(update={"size": validate_media_path(item.path, must_exist=True, require_file=True).stat().st_size})
+                               for item in scan_result]
+        elif is_p115_source:
             scan_result = await file_service.scan_folder_async(
                 job.scan_locator.path or job.scan_path,
                 locator=job.scan_locator,

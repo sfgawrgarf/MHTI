@@ -131,6 +131,8 @@ class SessionService:
         ip_address: str | None = None,
         user_agent: str | None = None,
         device_name: str | None = None,
+        credential_stamp: str | None = None,
+        expected_username: str | None = None,
     ) -> tuple[str, str]:
         """
         Create a new session.
@@ -153,6 +155,13 @@ class SessionService:
         manager = await get_db_manager()
         async with manager.get_connection() as db:
             await db.execute("BEGIN IMMEDIATE")
+            if credential_stamp is not None:
+                cursor = await db.execute("SELECT password_hash, username FROM admin WHERE id = ?", (user_id,))
+                credential = await cursor.fetchone()
+                if (credential is None or credential[0] != credential_stamp
+                        or (expected_username is not None and credential[1] != expected_username)):
+                    await db.rollback()
+                    raise ValueError("登录凭据已变更，请重新登录")
             cursor = await db.execute(
                 """
                 SELECT id FROM sessions

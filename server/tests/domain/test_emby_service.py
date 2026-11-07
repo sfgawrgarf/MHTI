@@ -314,10 +314,9 @@ class TestEmbyGetLibraries:
 
     @pytest.mark.asyncio
     async def test_get_libraries_error_handling(self, emby_service):
-        """测试获取媒体库列表失败时返回空列表。"""
+        """受保护请求失败必须传播，不能伪装成空媒体库。"""
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=Exception("Network error"))
 
-        libraries = await emby_service._get_libraries(mock_client, user_id="")
-
-        assert libraries == []
+        with pytest.raises(Exception, match="Network error"):
+            await emby_service._get_libraries(mock_client, user_id="")

@@ -15,6 +15,10 @@ import type {
  * 历史记录相关 API
  */
 export const historyApi = {
+  async getSummary(timezoneOffset: number): Promise<{ total: number; success: number; failed: number; weekly: { date: string; count: number }[] }> {
+    const response = await api.get('/history/summary', { params: { timezone_offset: timezoneOffset } })
+    return response.data
+  },
   /**
    * 获取历史记录列表
    */

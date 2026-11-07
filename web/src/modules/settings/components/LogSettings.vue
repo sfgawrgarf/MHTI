@@ -70,10 +70,15 @@ const {
 
 /** 自动刷新开关（useLogFeed 已按 autoRefreshInterval 在挂载时启动定时拉取） */
 const autoRefresh = ref(true)
-watch(autoRefresh, (enabled) => (enabled ? startAutoRefresh() : stopAutoRefresh()))
+watch(autoRefresh, (enabled) => (enabled && config.value.realtime_enabled ? startAutoRefresh() : stopAutoRefresh()))
+watch(() => config.value.realtime_enabled, enabled => { autoRefresh.value = enabled }, { immediate: true })
 
 /** 清理 / 导出等操作的失败原因：显示在记录卡的操作错误条里 */
 const actionError = ref('')
+const toggleAutoRefresh = () => {
+  if (!config.value.realtime_enabled) { actionError.value = '请先在日志配置中开启自动刷新'; return }
+  autoRefresh.value = !autoRefresh.value
+}
 // 操作状态
 const clearing = ref(false)
 const exporting = ref(false)
@@ -198,7 +203,7 @@ onMounted(() => {
     @update:page-size="handlePageSizeChange"
     @filter-change="handleFilterChange"
     @clear-filters="clearFilters"
-    @toggle-auto-refresh="autoRefresh = !autoRefresh"
+    @toggle-auto-refresh="toggleAutoRefresh"
     @retry="refresh"
     @refresh="refresh"
     @cleanup="cleanupLogs"
