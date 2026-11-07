@@ -134,7 +134,7 @@ const ready = computed(() => !props.loading && !props.loadError)
           />
         </SettingsField>
 
-        <SettingsField label="实时推送" hint="开启后日志页可实时看到新记录" width="sm">
+        <SettingsField label="日志页自动刷新" hint="开启后日志页定时获取新记录" width="sm">
           <NSwitch
             :value="draft.realtime_enabled"
             :disabled="saving"

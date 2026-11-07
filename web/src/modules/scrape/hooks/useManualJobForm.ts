@@ -4,6 +4,7 @@ import { manualJobApi } from '@/modules/scrape/api'
 import { LinkMode } from '@/modules/scrape/types'
 import type { ManualJobAdvancedSettings } from '@/modules/scrape/types'
 import type { StorageLocator } from '@/shared/types/common'
+import type { ScannedFile } from '@/modules/library/types'
 import { ORGANIZE_MODE_TO_LINK_MODE } from '@/modules/scrape/constants'
 import { useWatcherConfig } from '@/modules/scrape/hooks/useWatcherConfig'
 
@@ -20,6 +21,7 @@ export function useManualJobForm(options: {
   initialScanPath: () => string | undefined
   /** 初始扫描 locator */
   initialScanLocator: () => StorageLocator | null | undefined
+  selectedFiles?: () => ScannedFile[] | undefined
   /** 提交成功回调（原 emit('success')） */
   onSuccess: () => void
   /** 关闭回调（原 emit('update:show', false)） */
@@ -39,7 +41,7 @@ export function useManualJobForm(options: {
     metadata_dir: string
     link_mode: LinkMode
     delete_empty_parent: boolean
-    config_reuse_id: number | null
+    config_reuse_id: string | null
   }
 
   const formData = ref<ManualJobFormData>({
@@ -66,8 +68,8 @@ export function useManualJobForm(options: {
   // 是否显示移动模式选项
   const showMoveOptions = computed(() => formData.value.link_mode === LinkMode.MOVE)
 
-  const handleConfigReuseChange = (value: number) => {
-    formData.value.config_reuse_id = value === 0 ? null : value
+  const handleConfigReuseChange = (value: string) => {
+    formData.value.config_reuse_id = value || null
   }
 
   // 重置表单
@@ -95,6 +97,7 @@ export function useManualJobForm(options: {
 
   // 提交表单
   const handleSubmit = async () => {
+    if (submitting.value) return
     if (!formData.value.scan_path.trim()) {
       message.warning('请输入刮削路径')
       return
@@ -118,6 +121,7 @@ export function useManualJobForm(options: {
         delete_empty_parent: formData.value.delete_empty_parent,
         config_reuse_id: formData.value.config_reuse_id,
         advanced_settings: advancedSettings.value,
+        selected_files: options.selectedFiles?.(),
       })
       options.onSuccess()
       handleClose()
@@ -132,8 +136,8 @@ export function useManualJobForm(options: {
   // 配置复用变化时自动填充全局配置
   watch(() => formData.value.config_reuse_id, (newVal) => {
     if (newVal !== null && globalOrganizeConfig.value) {
-      const folder = watchedFolders.value.find((f) => parseInt(f.id) === newVal)
-      if (folder) {
+      const folder = watchedFolders.value.find((f) => f.id === newVal)
+      if (folder && !options.selectedFiles?.()?.length) {
         // 使用监控目录路径作为扫描路径
         formData.value.scan_path = folder.path
       }

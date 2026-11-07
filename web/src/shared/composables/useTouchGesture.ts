@@ -27,6 +27,7 @@ export interface UseTouchGestureOptions {
 const TAP_DURATION = 300
 
 export function useTouchGesture(options: UseTouchGestureOptions) {
+  let lastTouchAt = Number.NEGATIVE_INFINITY
   // 触摸状态
   const isPressed = ref(false)
 
@@ -96,6 +97,7 @@ export function useTouchGesture(options: UseTouchGestureOptions) {
 
   // 触摸结束
   function handleTouchEnd(event: TouchEvent) {
+    lastTouchAt = Date.now()
     if (options.disabled()) return
 
     if (isPressed.value && options.clickable()) {
@@ -121,7 +123,10 @@ export function useTouchGesture(options: UseTouchGestureOptions) {
 
   // 鼠标点击（非触摸设备）
   function handleClick(event: MouseEvent) {
-    if (options.disabled() || options.isTouchDevice.value) return
+    if (options.disabled()) return
+    const pointer = event as MouseEvent & { pointerType?: string; sourceCapabilities?: { firesTouchEvents?: boolean } }
+    if (pointer.pointerType === 'touch' || pointer.sourceCapabilities?.firesTouchEvents ||
+        (!pointer.pointerType && event.detail !== 0 && Date.now() - lastTouchAt < 700)) return
     if (options.clickable()) {
       // 检查点击目标是否为交互元素，如果是则不触发卡片点击
       const target = event.target as HTMLElement
@@ -133,7 +138,7 @@ export function useTouchGesture(options: UseTouchGestureOptions) {
 
   // 鼠标按下（非触摸设备的视觉反馈）
   function handleMouseDown() {
-    if (options.disabled() || options.isTouchDevice.value) return
+    if (options.disabled()) return
     if (options.touchFeedback() && options.clickable()) {
       isPressed.value = true
     }

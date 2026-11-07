@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -33,6 +35,12 @@ class LogService:
         self._flush_task: asyncio.Task | None = None
         self._running = False
         self._repo = LogRepository()
+        self._runtime_configure: Callable[[LogConfig], None] | None = None
+        self._retention_checked_at = 0.0
+
+    async def bind_runtime_configuration(self, configure: Callable[[LogConfig], None]) -> None:
+        configure(await self.get_config())
+        self._runtime_configure = configure
 
     async def start(self) -> None:
         """启动日志服务（启动定时刷新任务）。"""
@@ -60,6 +68,12 @@ class LogService:
         while self._running:
             await asyncio.sleep(self._flush_interval)
             await self._flush()
+            if time.monotonic() - self._retention_checked_at >= 3600:
+                try:
+                    await self.cleanup_old_logs()
+                    self._retention_checked_at = time.monotonic()
+                except Exception:
+                    logger.exception("日志保留策略清理失败")
 
     async def _flush(self) -> None:
         """将缓冲的日志批量写入数据库。"""
@@ -209,6 +223,13 @@ class LogService:
 
         # 保存到数据库
         await self._repo.update_config_row(new_config)
+        if self._runtime_configure is not None:
+            try:
+                self._runtime_configure(new_config)
+            except Exception:
+                await self._repo.update_config_row(current)
+                self._runtime_configure(current)
+                raise
 
         return new_config
 

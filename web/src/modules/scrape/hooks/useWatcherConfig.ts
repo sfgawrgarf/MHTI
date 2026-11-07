@@ -32,11 +32,11 @@ export function useWatcherConfig() {
     }
   }
 
-  /** 配置复用下拉选项（0 = 不复用） */
+  /** 配置 ID 是不透明字符串，空串表示不复用。 */
   const configReuseOptions = computed(() => {
-    const options: Array<{ label: string; value: number }> = [{ label: '不复用', value: 0 }]
+    const options: Array<{ label: string; value: string }> = [{ label: '不复用', value: '' }]
     watchedFolders.value.forEach((folder) => {
-      options.push({ label: folder.path, value: parseInt(folder.id) })
+      options.push({ label: folder.path, value: folder.id })
     })
     return options
   })

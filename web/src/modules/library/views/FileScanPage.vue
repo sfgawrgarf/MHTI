@@ -16,6 +16,7 @@ const message = useMessage()
 const {
   loading,
   scanPath,
+  scanLocator,
   scannedFiles,
   total,
   page,
@@ -33,6 +34,7 @@ const showFolderBrowser = ref(false)
 // 创建任务弹窗
 const showCreateModal = ref(false)
 const createTaskPath = ref('')
+const selectedFiles = ref<ScannedFile[]>([])
 
 // 选择文件夹
 const handleFolderSelect = (path: string) => {
@@ -41,13 +43,18 @@ const handleFolderSelect = (path: string) => {
 }
 
 // 为单个文件创建任务（使用扫描路径）
-const createTaskForFile = (_file: ScannedFile) => {
+const createTaskForFile = (file: ScannedFile) => {
+  selectedFiles.value = [file]
   createTaskPath.value = scanPath.value
   showCreateModal.value = true
 }
 
 // 批量创建任务（使用扫描路径）
 const createTaskForSelected = () => {
+  const selection = scannedFiles.value.filter(file => checkedRowKeys.value.includes(file.path))
+  if (!selection.length) { message.warning('请先选择文件'); return }
+  if (selection.length > 1000) { message.warning('一次最多选择 1000 个文件'); return }
+  selectedFiles.value = selection
   createTaskPath.value = scanPath.value
   showCreateModal.value = true
 }
@@ -103,13 +110,13 @@ const handleCreateSuccess = () => {
           <span class="selected-count">已选中 {{ checkedRowKeys.length }} 个条目</span>
           <NButton
             type="primary"
-            :disabled="!scanPath"
+            :disabled="!scanPath || checkedRowKeys.length === 0"
             @click="createTaskForSelected"
           >
             <template #icon>
               <NIcon :component="AddOutline" />
             </template>
-            创建任务
+            为选中文件创建任务
           </NButton>
         </div>
       </div>
@@ -155,6 +162,8 @@ const handleCreateSuccess = () => {
     <ManualJobCreateModal
       v-model:show="showCreateModal"
       :initial-scan-path="createTaskPath"
+      :initial-scan-locator="scanLocator"
+      :selected-files="selectedFiles"
       @success="handleCreateSuccess"
     />
   </div>

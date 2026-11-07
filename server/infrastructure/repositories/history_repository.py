@@ -93,6 +93,24 @@ _MIGRATION_COLUMNS = [
 class HistoryRepository(BaseRepository):
     """刮削历史记录表访问。"""
 
+    async def summary(self, start: str, end: str, offset_minutes: int, server_offset_minutes: int) -> dict:
+        async with self._connect() as db:
+            await db.execute("BEGIN")
+            cursor = await db.execute("SELECT COUNT(*), COALESCE(SUM(status = 'success'), 0), COALESCE(SUM(status = 'failed'), 0) FROM history_records")
+            counts = await cursor.fetchone()
+            cursor = await db.execute(
+                """SELECT day, COUNT(*) FROM (
+                    SELECT date(julianday(executed_at) + ? / 1440.0 -
+                        CASE WHEN instr(substr(executed_at, 11), '+') > 0
+                                  OR instr(substr(executed_at, 11), '-') > 0
+                                  OR executed_at LIKE '%Z' THEN 0 ELSE ? / 1440.0 END) AS day
+                    FROM history_records
+                ) WHERE day >= ? AND day <= ? GROUP BY day""",
+                (offset_minutes, server_offset_minutes, start, end),
+            )
+            days = {row[0]: row[1] for row in await cursor.fetchall()}
+            return {"total": counts[0], "success": counts[1], "failed": counts[2], "days": days}
+
     async def _ensure_custom_schema(self, db: aiosqlite.Connection) -> None:
         await db.execute(_HISTORY_RECORDS_DDL)
         await db.commit()
@@ -612,6 +630,9 @@ class HistoryRepository(BaseRepository):
                         else:
                             await db.execute(f"INSERT INTO {table} ({','.join(row)}) VALUES ({','.join('?' for _ in row)})", tuple(row.values()))
                 await db.commit()
+            except aiosqlite.IntegrityError as exc:
+                await db.rollback()
+                raise ValueError("文件或任务已被新的记录占用，无法安全撤销") from exc
             except BaseException:
                 await db.rollback()
                 raise

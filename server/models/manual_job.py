@@ -4,7 +4,8 @@ from datetime import datetime
 from enum import Enum
 from string import Formatter
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from server.models.file import ScannedFile
 from server.models.storage import (
     StorageLocator,
     infer_directory_locator,
@@ -13,6 +14,10 @@ from server.models.storage import (
     validate_storage_capabilities,
 )
 from server.models.template import NamingTemplate
+
+
+def _reuse_key(value):
+    return None if value in (None, "", 0, "0") else str(value)
 
 
 class ManualJobStatus(str, Enum):
@@ -100,7 +105,9 @@ class ManualJob(BaseModel):
     allow_local_output: bool = False
     link_mode: LinkMode
     delete_empty_parent: bool = True
-    config_reuse_id: int | None = None
+    config_reuse_id: str | None = None
+    selected_files: list[ScannedFile] | None = None
+    _normalize_reuse = field_validator("config_reuse_id", mode="before")(_reuse_key)
     source: JobSource = JobSource.MANUAL  # 任务来源
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
     created_at: datetime
@@ -132,7 +139,9 @@ class ManualJobCreate(BaseModel):
     allow_local_output: bool = False
     link_mode: LinkMode = LinkMode.MOVE
     delete_empty_parent: bool = True
-    config_reuse_id: int | None = None
+    config_reuse_id: str | None = None
+    selected_files: list[ScannedFile] | None = Field(default=None, min_length=1, max_length=1000)
+    _normalize_reuse = field_validator("config_reuse_id", mode="before")(_reuse_key)
     source: JobSource = JobSource.MANUAL  # 任务来源
     advanced_settings: ManualJobAdvancedSettings | None = None  # 高级设置
 

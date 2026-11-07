@@ -15,6 +15,8 @@ MANUAL_JOB_COLUMNS = (
     ("metadata_locator", "TEXT"),
     ("allow_local_output", "INTEGER DEFAULT 0"),
     ("dispatched_count", "INTEGER"),
+    ("config_reuse_key", "TEXT"),
+    ("selected_files", "TEXT"),
 )
 
 SCRAPE_JOB_COLUMNS = (

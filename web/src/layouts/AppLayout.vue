@@ -83,6 +83,7 @@ const contentPadding = computed(() =>
     <AppTopBar
       @open-command="commandOpen = true"
       @open-account="accountDrawerOpen = true"
+      @logout="confirmLogout"
     />
 
     <main class="app-main" :style="{ padding: contentPadding }">

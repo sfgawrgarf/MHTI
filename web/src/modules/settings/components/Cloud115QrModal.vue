@@ -35,6 +35,8 @@ const qrStatusType = ref<'pending' | 'scanned' | 'success' | 'expired' | 'cancel
   'pending',
 )
 let pollTimer: ReturnType<typeof setTimeout> | null = null
+let qrGeneration = 0
+let disposed = false
 
 const visible = computed({
   get: () => props.session !== null,
@@ -75,12 +77,15 @@ const stopPolling = () => {
 
 const startPolling = (session: Cloud115QrSession) => {
   stopPolling()
+  const generation = qrGeneration
+  const current = () => !disposed && generation === qrGeneration && props.session?.uid === session.uid
   // 连续失败才提示：115 的状态接口是长轮询（一次挂约 30s），偶发一次失败不必打扰用户
   let failCount = 0
   const poll = async () => {
-    if (!props.session || props.session.uid !== session.uid) return
+    if (!current()) return
     try {
       const result = await configApi.poll115QrLogin(session.uid, session.app)
+      if (!current()) return
       failCount = 0
       qrStatusType.value = (result.status as typeof qrStatusType.value) || 'unknown'
       qrStatusText.value =
@@ -100,6 +105,7 @@ const startPolling = (session: Cloud115QrSession) => {
       }
       pollTimer = setTimeout(poll, 1500)
     } catch (error) {
+      if (!current()) return
       console.error('轮询登录状态失败:', error)
       // 轮询出错后稍后重试，避免无限报错；连续两次失败说明状态确实取不到，
       // 要让用户看得见，不能一直停在「等待扫码」上
@@ -118,14 +124,18 @@ const startPolling = (session: Cloud115QrSession) => {
 watch(
   () => props.session,
   async (session) => {
+    const generation = ++qrGeneration
     stopPolling()
     qrDataUrl.value = ''
     if (!session) return
     qrStatusType.value = 'pending'
     qrStatusText.value = '正在生成二维码…'
     try {
-      qrDataUrl.value = await generateQrImage(session.qrcode_url)
+      const image = await generateQrImage(session.qrcode_url)
+      if (disposed || generation !== qrGeneration) return
+      qrDataUrl.value = image
     } catch (error) {
+      if (disposed || generation !== qrGeneration) return
       // qrcode 包加载失败时降级：不展示图片，状态行仍在轮询
       console.warn('二维码渲染失败，降级为文本:', error)
       qrDataUrl.value = ''
@@ -136,7 +146,7 @@ watch(
   { immediate: true },
 )
 
-onBeforeUnmount(stopPolling)
+onBeforeUnmount(() => { disposed = true; qrGeneration++; stopPolling() })
 </script>
 
 <template>

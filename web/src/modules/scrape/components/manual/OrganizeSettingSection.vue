@@ -15,7 +15,7 @@ defineProps<{
   linkModeOptions: SelectMixedOption[]
   deleteEmptyParent: boolean
   showMoveOptions: boolean
-  configReuseId: number | null
+  configReuseId: string | null
   configReuseOptions: SelectMixedOption[]
   involvesP115: boolean
   allowLocalOutput: boolean
@@ -24,7 +24,7 @@ defineProps<{
 const emit = defineEmits<{
   'update:linkMode': [value: LinkMode]
   'update:deleteEmptyParent': [value: boolean]
-  'update:configReuseId': [value: number]
+  'update:configReuseId': [value: string]
   'update:allowLocalOutput': [value: boolean]
 }>()
 </script>
@@ -56,7 +56,7 @@ const emit = defineEmits<{
 
     <NFormItem label="配置复用">
       <NSelect
-        :value="configReuseId ?? 0"
+        :value="configReuseId ?? ''"
         :options="configReuseOptions"
         placeholder="从监控目录复制配置"
         @update:value="emit('update:configReuseId', $event)"

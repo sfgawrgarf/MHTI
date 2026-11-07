@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
 import aiosqlite
 
@@ -57,6 +58,9 @@ class ManualJobRepository(BaseRepository):
                 await db.execute("ALTER TABLE manual_jobs ADD COLUMN schedule_key TEXT")
             if "dispatched_count" not in columns:
                 await db.execute("ALTER TABLE manual_jobs ADD COLUMN dispatched_count INTEGER")
+            for column in ("config_reuse_key", "selected_files"):
+                if column not in columns:
+                    await db.execute(f"ALTER TABLE manual_jobs ADD COLUMN {column} TEXT")
             await db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_jobs_schedule_key "
                 "ON manual_jobs(schedule_key)"
@@ -107,9 +111,9 @@ class ManualJobRepository(BaseRepository):
                 """
                 INSERT INTO manual_jobs
                 (scan_path, target_folder, metadata_dir, link_mode, delete_empty_parent,
-                 config_reuse_id, source, advanced_settings, scan_locator, target_locator,
-                 metadata_locator, allow_local_output, created_at, status, schedule_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 config_reuse_key, source, advanced_settings, scan_locator, target_locator,
+                 metadata_locator, allow_local_output, created_at, status, schedule_key, selected_files)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(schedule_key) DO NOTHING
                 """,
                 (
@@ -128,6 +132,7 @@ class ManualJobRepository(BaseRepository):
                     created_at,
                     ManualJobStatus.PENDING.value,
                     data.schedule_key,
+                    json.dumps([file.model_dump() for file in data.selected_files]) if data.selected_files is not None else None,
                 ),
             )
             if cursor.rowcount == 0 and data.schedule_key:

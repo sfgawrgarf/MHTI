@@ -5,7 +5,7 @@ import csv
 import io
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -163,6 +163,18 @@ class HistoryService:
         await notifier.notify_history_created(result.model_dump(mode="json"))
 
         return result
+
+    async def summary(self, offset_minutes: int = 0) -> dict:
+        await self._ensure_db()
+        today = datetime.now(timezone(timedelta(minutes=offset_minutes))).date()
+        start = today - timedelta(days=6)
+        local_offset = datetime.now().astimezone().utcoffset() or timedelta()
+        raw = await self._repo.summary(start.isoformat(), today.isoformat(), offset_minutes,
+                                       int(local_offset.total_seconds() / 60))
+        return {"total": raw["total"], "success": raw["success"], "failed": raw["failed"],
+                "weekly": [{"date": (start + timedelta(days=index)).isoformat(),
+                            "count": raw["days"].get((start + timedelta(days=index)).isoformat(), 0)}
+                           for index in range(7)]}
 
     async def list_records(
         self,
