@@ -724,6 +724,19 @@ erDiagram
 | `DATA_DIR` | `/app/data` | 数据目录（SQLite 与日志） |
 | `TZ` | `Asia/Shanghai` | 时区 |
 | `APP_VERSION` | 代码内置版本 | 覆盖前端运行时展示的版本号 |
+| `MHTI_TMDB_API_BASE_URL` | `https://api.themoviedb.org/3` | TMDB 兼容 API 根地址，进程启动时读取；未设置或为空时使用官方地址 |
+
+无法直连官方 TMDB API 时，可在部署目录的 `.env` 中配置受信任的兼容代理：
+
+```dotenv
+MHTI_TMDB_API_BASE_URL=https://tmdb-proxy.example.com/3
+```
+
+请填写包含代理所需路径前缀（通常为 `/3`）的完整 API 根地址。首尾空白和末尾 `/` 会被移除；地址须使用 HTTP(S)，不能包含用户名密码、查询参数或片段。搜索、剧集与季详情、Token 验证均使用该地址，API 凭据也会发送至该地址。图片地址仍使用 `image.tmdb.org`，设置页的代理连通性测试仍检测 TMDB 官网。
+
+修改后执行 `docker compose up -d --force-recreate mhti`，让新环境变量进入容器；普通 `docker compose restart` 不会应用 Compose 中变更的环境变量。直接运行服务时则重启进程。
+
+刮削预览在文件名解析出年份时，按**剧集首播年份**查询并筛选候选；没有年份时保留原搜索行为。缺少首播日期的候选在有年份条件时会被排除，筛选为空时不会自动放宽条件。文件名若使用后续季的播出年份，可能无法命中原剧集。年份条件会传入 TMDB，兼容代理若忽略该条件，仍会校验返回候选，但不自动翻页。
 
 其余配置（TMDB Token、代理、整理与命名规则、监控、Emby、日志级别等）均在设置页维护，落库于 `config` / `log_config` 表。
 

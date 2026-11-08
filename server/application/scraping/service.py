@@ -934,7 +934,10 @@ class ScraperService:
         # Search TMDB if we have a title
         if parsed.series_name:
             try:
-                search_response = await self.tmdb_service.search_series_by_api(parsed.series_name)
+                search_response = await self.tmdb_service.search_series_by_api(
+                    parsed.series_name,
+                    first_air_date_year=parsed.year,
+                )
                 preview.search_results = search_response.results
             except (httpx.TimeoutException, httpx.RequestError):
                 pass

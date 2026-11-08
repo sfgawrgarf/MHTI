@@ -35,6 +35,7 @@ services:
       - DATA_DIR=/app/data
       - TZ=Asia/Shanghai
       - MHTI_ALLOWED_MEDIA_ROOTS=/media,/output
+      - MHTI_TMDB_API_BASE_URL=${MHTI_TMDB_API_BASE_URL:-https://api.themoviedb.org/3}
 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=5)"]
