@@ -34,19 +34,21 @@ class ScrapePreviewService:
         )
 
         # Parse filename
-        parsed = await self.parser_service.parse(path.name)
+        parsed = self.parser_service.parse(path.name, file_path)
 
         # Search TMDB
         search_results = []
         if parsed.series_name:
-            response = await self.tmdb_service.search_series(
+            response = await self.tmdb_service.search_series_by_api(
                 parsed.series_name,
-                year=parsed.year,
+                first_air_date_year=parsed.year,
             )
             search_results = response.results
 
         return ScrapePreview(
             file_path=file_path,
-            parsed_info=parsed,
+            parsed_title=parsed.series_name,
+            parsed_season=parsed.season,
+            parsed_episode=parsed.episode,
             search_results=search_results,
         )

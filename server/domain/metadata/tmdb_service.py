@@ -1,11 +1,13 @@
 """TMDB service for API-based metadata retrieval."""
 
 import asyncio
+import os
 import re
 import unicodedata
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
 from time import monotonic
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -30,8 +32,41 @@ from server.models.tmdb import (
 )
 from server.domain.system.config_service import ConfigService
 
+
+def _get_tmdb_api_base_url() -> str:
+    """Read a trusted deployment API root once, without accepting URL credentials."""
+    value = os.getenv("MHTI_TMDB_API_BASE_URL", "").strip()
+    if not value:
+        return "https://api.themoviedb.org/3"
+
+    error = (
+        "MHTI_TMDB_API_BASE_URL must be an HTTP(S) API root "
+        "without credentials, query or fragment"
+    )
+    try:
+        parts = urlsplit(value)
+        # Accessing port also validates malformed and out-of-range ports.
+        port = parts.port
+        if (
+            parts.scheme not in ("http", "https")
+            or not parts.hostname
+            or parts.username is not None
+            or parts.password is not None
+            or "?" in value
+            or "#" in value
+            or "\\" in value
+            or any(char.isspace() for char in value)
+            or port == 0
+        ):
+            raise ValueError(error)
+    except ValueError:
+        # Do not include a possibly credential-bearing input in startup errors.
+        raise ValueError(error) from None
+    return value.rstrip("/")
+
+
 TMDB_BASE_URL = "https://www.themoviedb.org"
-TMDB_API_BASE_URL = "https://api.themoviedb.org/3"
+TMDB_API_BASE_URL = _get_tmdb_api_base_url()
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
 TMDB_API_ENDPOINT_PATTERN = re.compile(
     r"\A(?:/search/tv|/tv/[1-9]\d*(?:/season/\d+)?)\Z"
@@ -164,7 +199,7 @@ class TMDBService:
                         retry_after = None
                         try:
                             # The endpoint is constrained to the TMDB route grammar
-                            # above and the origin is a compile-time constant.
+                            # above; the origin is trusted deployment configuration.
                             response = await client.get(
                                 url,
                                 headers=headers,
@@ -459,6 +494,8 @@ class TMDBService:
         self,
         query: str,
         language: str | None = None,
+        *,
+        first_air_date_year: int | None = None,
     ) -> TMDBSearchResponse:
         """
         Search TV series using TMDB API.
@@ -466,19 +503,28 @@ class TMDBService:
         Args:
             query: Search query string
             language: Language for results
+            first_air_date_year: Optional series premiere year, not a later season year
 
         Returns:
             TMDBSearchResponse with search results.
         """
         query = unicodedata.normalize("NFC", query).strip()
+        if first_air_date_year is not None and not 1000 <= first_air_date_year <= 9999:
+            raise ValueError("first_air_date_year must be between 1000 and 9999")
 
         if language is None:
             language = await self._get_language()
 
+        params: dict[str, str | int] = {
+            "query": query, "language": language, "include_adult": "true"
+        }
+        if first_air_date_year is not None:
+            params["first_air_date_year"] = first_air_date_year
+
         try:
             response = await self._make_api_request(
                 "/search/tv",
-                params={"query": query, "language": language, "include_adult": "true"},
+                params=params,
             )
 
             self._check_api_response(response)
@@ -495,6 +541,12 @@ class TMDBService:
                         first_air_date = date.fromisoformat(item["first_air_date"])
                     except ValueError:
                         pass
+
+                # Compatible proxies may ignore the upstream year parameter.
+                if first_air_date_year is not None and (
+                    first_air_date is None or first_air_date.year != first_air_date_year
+                ):
+                    continue
 
                 results.append(
                     TMDBSearchResult(

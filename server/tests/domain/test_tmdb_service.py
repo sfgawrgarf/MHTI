@@ -114,10 +114,13 @@ class TestTMDBServiceAPIToken:
 
     @pytest.mark.asyncio
     async def test_save_and_verify_mocked_success(self, tmdb_service):
-        """Test save with mocked successful verification."""
-        with patch.object(
-            tmdb_service, "verify_api_token", new_callable=AsyncMock
-        ) as mock_verify:
+        """Mock both verification and the follow-up probe; never contact TMDB."""
+        with (
+            patch.object(tmdb_service, "verify_api_token", new_callable=AsyncMock) as mock_verify,
+            patch.object(
+                tmdb_service, "check_adult_access", AsyncMock(return_value=(True, "enabled"))
+            ),
+        ):
             mock_verify.return_value = (True, None)
 
             status = await tmdb_service.save_and_verify_api_token("valid_token")
