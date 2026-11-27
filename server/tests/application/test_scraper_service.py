@@ -253,6 +253,7 @@ async def test_scrape_by_id_file_conflict_reports_dest(temp_db: Path, tmp_path: 
             season=1,
             episode=1,
             year=2024,
+            episode_title="Episode 1",
             output_dir=str(out_dir),
             link_mode=OrganizeMode.COPY,
         )
@@ -458,7 +459,7 @@ async def test_scrape_by_id_115_to_115_writes_local_metadata(temp_db: Path, tmp_
     season_folder = series_folder / "Season 1"
     assert season_folder.exists()
     nfo_files = sorted(p.name for p in season_folder.glob("*.nfo"))
-    assert nfo_files == ["Test Show - S01E01 -.nfo", "season.nfo"]
+    assert nfo_files == ["Test Show - S01E01 - Episode 1.nfo", "season.nfo"]
     assert (series_folder / "tvshow.nfo").exists()
 
 

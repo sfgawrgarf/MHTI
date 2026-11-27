@@ -5,7 +5,7 @@ import type { DirectoryEntry, StorageLocator } from '@/shared/types/common'
 import { useManualJobForm } from '@/modules/scrape/hooks/useManualJobForm'
 
 /** 预览可识别的视频扩展名（原 TaskWizard 内联清单） */
-const VIDEO_EXTS = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'rmvb', 'm4v']
+const VIDEO_EXTS = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'rmvb', 'm4v', 'm2ts', 'bdmv', '3gp', 'mpg', 'mpeg', 'vob', 'iso', 'strm']
 
 /**
  * 创建任务向导（TaskWizard）

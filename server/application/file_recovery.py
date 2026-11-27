@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 
 from server.application.file_io import run_file_io
-from server.common.path_security import validate_media_file_entry
 from server.infrastructure import file_journal as journal
 from server.models.history import HistoryConflictType, TaskStatus
 from server.models.scrape_job import ScrapeJobStatus
@@ -19,11 +18,10 @@ def _finish_move(record):
     if record['mode'] != 'move' or record['source'] == record['destination']:
         return
     source = Path(record['source'])
-    if not source.exists() and not source.is_symlink():
-        return
-    if journal.signature(source) != record['source_signature']:
-        raise journal.RecoveryConflict(f'移动源文件已被其他任务修改: {source}')
-    validate_media_file_entry(str(source)).unlink()
+    from server.common.path_security import validate_media_path
+    from server.infrastructure.file_operations import remove_moved_source
+    safe_parent = validate_media_path(str(source.parent))
+    remove_moved_source(safe_parent / source.name, record['source_signature'], record['id'])
 
 
 def _consume_stage(record, outputs):

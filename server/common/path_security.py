@@ -89,6 +89,12 @@ def validate_media_path(
     return resolved
 
 
+def validate_output_entry(path: Path) -> Path:
+    """Validate the output namespace while retaining the final directory entry."""
+    validate_media_path(str(path))
+    return validate_media_path(str(path.parent)) / path.name
+
+
 def validate_media_directory(raw_path: str) -> Path:
     """Return an existing directory confined to an allowed media root."""
     resolved = validate_media_path(raw_path, must_exist=True)

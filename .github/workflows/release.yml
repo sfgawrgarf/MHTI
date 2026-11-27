@@ -77,20 +77,17 @@ jobs:
 
           if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
             VERSION="$DISPATCH_VERSION"
-            IS_PRERELEASE="$DISPATCH_PRERELEASE"
           else
             VERSION="${GITHUB_REF#refs/tags/v}"
-            IS_PRERELEASE="false"
-            if [[ "$VERSION" == *"alpha"* ]] || [[ "$VERSION" == *"beta"* ]] || [[ "$VERSION" == *"rc"* ]]; then
-              IS_PRERELEASE="true"
-            fi
           fi
 
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
             echo "版本号格式无效: $VERSION" >&2
             exit 1
           fi
-          if [[ "$IS_PRERELEASE" != "true" && "$IS_PRERELEASE" != "false" ]]; then
+          IS_PRERELEASE=false
+          if [[ "$VERSION" == *-* ]]; then IS_PRERELEASE=true; fi
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_PRERELEASE" != "$IS_PRERELEASE" ]]; then
             echo "预发布标记无效" >&2
             exit 1
           fi
@@ -221,6 +218,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.DOCKER_IMAGE }}
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}

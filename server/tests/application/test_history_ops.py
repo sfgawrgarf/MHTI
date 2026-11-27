@@ -250,8 +250,10 @@ async def test_list_files_falls_back_to_folder_path_without_registration(env):
         str(env["source_file"]),
         str(env["target_file"]),
     }
-    # 源目录与产物目录都在允许范围内，两侧都能删
-    assert all(entry.deletable for entry in listing.files)
+    # 老记录没有源文件身份，仍允许清理已整理的产物。
+    by_role = {entry.role: entry for entry in listing.files}
+    assert not by_role[HistoryFileRole.SOURCE].deletable
+    assert by_role[HistoryFileRole.ORGANIZED].deletable
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,10 @@ class DatabaseLogHandler(logging.Handler):
         self._batch: list[dict[str, Any]] = []
         self._batch_size = batch_size
         self._flush_interval = flush_interval
+        self._flush_lock = asyncio.Lock()
+        self._retry_at = 0.0
+        self._capacity = max(batch_size, 4096)
+        self.dropped_count = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._flush_task: asyncio.Task | None = None
         self._started = False
@@ -99,6 +104,11 @@ class DatabaseLogHandler(logging.Handler):
 
     async def _flush(self) -> None:
         """将缓冲的日志批量写入数据库。"""
+        async with self._flush_lock:
+            if time.monotonic() >= self._retry_at:
+                await self._flush_pending()
+
+    async def _flush_pending(self) -> None:
         # emit() can run in file-I/O workers. Share the logging handler's
         # reentrant lock so an append cannot be lost between copy and clear.
         self.acquire()
@@ -112,9 +122,19 @@ class DatabaseLogHandler(logging.Handler):
 
         try:
             await self._log_service.batch_insert(batch)
-        except Exception as e:
-            # 写入失败时，尝试恢复部分日志
-            logger.error("Failed to flush logs to database: %s", e)
+        except (Exception, asyncio.CancelledError) as exc:
+            self.acquire()
+            try:
+                pending = batch + self._batch
+                self.dropped_count += max(0, len(pending) - self._capacity)
+                self._batch = pending[-self._capacity:]
+                self._retry_at = time.monotonic() + self._flush_interval
+            finally:
+                self.release()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            logger.warning("数据库日志写入失败，将重试，累计丢弃 %d 条", self.dropped_count,
+                           extra={"skip_database_handler": True})
 
     def emit(self, record: logging.LogRecord) -> None:
         """
@@ -123,6 +143,8 @@ class DatabaseLogHandler(logging.Handler):
         Args:
             record: 日志记录对象
         """
+        if getattr(record, 'skip_database_handler', False):
+            return
         try:
             # 提取日志信息
             entry = {
@@ -137,8 +159,11 @@ class DatabaseLogHandler(logging.Handler):
 
             self.acquire()
             try:
+                if len(self._batch) >= self._capacity:
+                    self.dropped_count += 1
+                    return
                 self._batch.append(entry)
-                should_flush = len(self._batch) >= self._batch_size
+                should_flush = len(self._batch) == self._batch_size
             finally:
                 self.release()
 

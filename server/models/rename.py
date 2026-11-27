@@ -17,6 +17,8 @@ class RenameRequest(BaseModel):
     season: int
     episode: int
     episode_title: str | None = None
+    original_title: str | None = None
+    air_date: str | None = None
     year: int | None = None
     output_dir: str | None = None  # If None, rename in place
     link_mode: OrganizeMode | None = None  # 整理模式：copy/move/hardlink/symlink

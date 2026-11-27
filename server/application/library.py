@@ -50,6 +50,9 @@ class FolderScanUseCase:
         if not folder_path.strip() and not is_p115:
             raise validation_error("folder_path 不能为空", field="folder_path")
 
+        if locator and folder_path and locator.path.rstrip("/") != folder_path.rstrip("/"):
+            raise validation_error("目录路径与存储定位不一致", field="folder_path")
+
         if is_p115:
             files = await self._file_service.scan_folder_async(
                 locator.path or folder_path,

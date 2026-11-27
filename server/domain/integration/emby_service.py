@@ -271,6 +271,23 @@ class EmbyService:
             "Fields": "ProviderIds,Path",  # 需要获取 ProviderIds
         }
 
+        async def search_pages(query: dict) -> list[dict]:
+            found = []
+            while True:
+                page_params = {**query, "StartIndex": str(len(found))} if found else query
+                resp = await client.get("/Items", params=page_params)
+                resp.raise_for_status()
+                page = resp.json()
+                entries = page.get("Items", [])
+                if not entries:
+                    break
+                if found and len(entries) <= len(found) and entries == found[-len(entries):]:
+                    raise ValueError("Emby 未推进搜索分页")
+                found.extend(entries)
+                if len(found) >= page.get("TotalRecordCount", len(found)):
+                    break
+            return found
+
         items: list[dict] = []
         if config.library_ids:
             # Emby only accepts one ParentId per request. Query every selected
@@ -278,17 +295,13 @@ class EmbyService:
             seen_ids: set[str] = set()
             for library_id in dict.fromkeys(config.library_ids):
                 library_params = {**params, "ParentId": library_id}
-                resp = await client.get("/Items", params=library_params)
-                resp.raise_for_status()
-                for item in resp.json().get("Items", []):
+                for item in await search_pages(library_params):
                     item_id = str(item.get("Id") or "")
                     if item_id and item_id not in seen_ids:
                         seen_ids.add(item_id)
                         items.append(item)
         else:
-            resp = await client.get("/Items", params=params)
-            resp.raise_for_status()
-            items = resp.json().get("Items", [])
+            items = await search_pages(params)
         # name is converted to a bounded single-line value.
         logger.info("Emby 搜索 '%s' 找到 %d 个结果", safe_log_value(name), len(items))
 

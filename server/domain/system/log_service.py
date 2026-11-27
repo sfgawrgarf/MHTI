@@ -103,7 +103,9 @@ class LogService:
             ]
             await self._repo.insert_batch(rows)
         except Exception as e:
-            logger.error(f"Failed to flush logs to database: {e}")
+            async with self._batch_lock:
+                self._batch = (batch + self._batch)[-4096:]
+            logger.warning("日志暂存写入失败，将重试: %s", e, extra={"skip_database_handler": True})
 
     async def add_log(self, entry: LogEntryCreate) -> None:
         """添加一条日志到缓冲区。"""
@@ -119,12 +121,10 @@ class LogService:
             })
 
             # 达到批量大小时立即刷新
-            if len(self._batch) >= self._batch_size:
-                batch = self._batch.copy()
-                self._batch.clear()
+            should_flush = len(self._batch) >= self._batch_size
 
         # 在锁外执行数据库操作
-        if len(batch) >= self._batch_size if 'batch' in dir() else False:
+        if should_flush:
             await self._flush()
 
     async def batch_insert(self, entries: list[dict[str, Any]]) -> None:
@@ -132,22 +132,19 @@ class LogService:
         if not entries:
             return
 
-        try:
-            rows = [
-                (
-                    entry["timestamp"].isoformat() if isinstance(entry["timestamp"], datetime) else entry["timestamp"],
-                    entry["level"],
-                    entry["logger"],
-                    entry["message"],
-                    json.dumps(entry["extra_data"]) if entry.get("extra_data") else None,
-                    entry.get("request_id"),
-                    entry.get("user_id"),
-                )
-                for entry in entries
-            ]
-            await self._repo.insert_batch(rows)
-        except Exception as e:
-            logger.error(f"Failed to batch insert logs: {e}")
+        rows = [
+            (
+                entry["timestamp"].isoformat() if isinstance(entry["timestamp"], datetime) else entry["timestamp"],
+                entry["level"],
+                entry["logger"],
+                entry["message"],
+                json.dumps(entry["extra_data"]) if entry.get("extra_data") else None,
+                entry.get("request_id"),
+                entry.get("user_id"),
+            )
+            for entry in entries
+        ]
+        await self._repo.insert_batch(rows)
 
     async def get_logs(self, query: LogQuery) -> tuple[list[LogEntry], int]:
         """查询日志列表。"""

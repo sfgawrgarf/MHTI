@@ -277,17 +277,17 @@ class HistoryRepository(BaseRepository):
         placeholders = ",".join("?" * len(fingerprints))
         rows = await self._fetch_all(
             f"""SELECT DISTINCT file_fingerprint FROM history_records
-                WHERE file_fingerprint IN ({placeholders}) AND status != ?""",
-            (*fingerprints, TaskStatus.DELETED.value),
+                WHERE file_fingerprint IN ({placeholders}) AND status = ?""",
+            (*fingerprints, TaskStatus.SUCCESS.value),
         )
         return {row[0] for row in rows if row[0]}
 
-    async def delete_record(self, record_id: str) -> bool:
+    async def delete_record(self, record_id: str, *, snapshot: dict | None = None) -> bool:
         """标记历史记录为 deleted，保留审计记录和关联任务。"""
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
-                "SELECT status, scrape_job_id FROM history_records WHERE id = ?",
+                "SELECT * FROM history_records WHERE id = ?",
                 (record_id,),
             )
             row = await cursor.fetchone()
@@ -307,12 +307,18 @@ class HistoryRepository(BaseRepository):
                   )
                 LIMIT 1
                 """,
-                (record_id, record_id, record_id, row[1]),
+                (record_id, record_id, record_id, row['scrape_job_id']),
             )
-            if row[0] == TaskStatus.RUNNING.value or await cursor.fetchone():
+            if row['status'] == TaskStatus.RUNNING.value or await cursor.fetchone():
                 await db.rollback()
                 raise ValueError("记录关联的任务仍在等待或运行中，请先取消任务")
 
+            job_query = """SELECT * FROM scrape_jobs WHERE history_record_id = ?
+                           OR continuation_history_id = ? OR id = ?"""
+            job_params = (record_id, record_id, row['scrape_job_id'])
+            if snapshot is not None:
+                jobs = await (await db.execute(job_query, job_params)).fetchall()
+                snapshot.update(records=[dict(row)], jobs=[dict(job) for job in jobs])
             cursor = await db.execute(
                 """UPDATE history_records
                    SET status = ?, error_message = ?
@@ -336,9 +342,14 @@ class HistoryRepository(BaseRepository):
                     "用户删除",
                     record_id,
                     record_id,
-                    row[1],
+                    row['scrape_job_id'],
                 ),
             )
+            if snapshot is not None:
+                jobs = await (await db.execute(job_query, job_params)).fetchall()
+                history = await (await db.execute("SELECT * FROM history_records WHERE id = ?", (record_id,))).fetchone()
+                snapshot['deleted_rows'] = {f"scrape_jobs:{job['id']}": dict(job) for job in jobs}
+                snapshot['deleted_rows'][f"history_records:{record_id}"] = dict(history)
 
             await db.commit()
             return deleted
@@ -610,7 +621,7 @@ class HistoryRepository(BaseRepository):
             await db.commit()
             return cursor.rowcount
 
-    async def restore_snapshot(self, records: list[dict], files: list[dict], jobs: list[dict]) -> None:
+    async def restore_snapshot(self, records: list[dict], files: list[dict], jobs: list[dict], deleted_rows: dict | None = None) -> None:
         """Restore complete context atomically, preserving any newer conflicting data."""
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -619,10 +630,12 @@ class HistoryRepository(BaseRepository):
                     for row in rows:
                         cursor = await db.execute(f"SELECT * FROM {table} WHERE id = ?", (row["id"],))
                         current = await cursor.fetchone()
+                        if deleted_rows and (current is None or dict(current) != deleted_rows.get(f"{table}:{row['id']}")):
+                            raise ValueError("记录已被新的操作修改，无法安全撤销")
                         if current is not None:
                             if dict(current) == row:
                                 continue
-                            if table != "history_records" or current["status"] != "deleted" or current["scrape_job_id"] != row.get("scrape_job_id"):
+                            if not deleted_rows and (table != "history_records" or current["status"] != "deleted" or current["scrape_job_id"] != row.get("scrape_job_id")):
                                 raise ValueError("记录已被新的操作修改，无法安全撤销")
                             assignments = ",".join(f"{column} = ?" for column in row if column != "id")
                             await db.execute(f"UPDATE {table} SET {assignments} WHERE id = ?",

@@ -54,7 +54,8 @@ async def preview_scrape(
     Returns:
         Preview with parsed info and search results.
     """
-    return await scraper_service.preview(request.file_path)
+    return await scraper_service.preview(request.file_path, file_locator=request.file_locator,
+                                        advanced_settings=request.advanced_settings)
 
 
 @router.post("/file", response_model=ScrapeResult)

@@ -13,7 +13,6 @@ from server.application.undo_store import UndoSnapshot, UndoStore
 from server.infrastructure.db import DATABASE_PATH
 from server.infrastructure.csv_security import neutralize_csv_formula
 from server.infrastructure.repositories.history_repository import HistoryRepository
-from server.infrastructure.repositories.scraped_file_repository import ScrapedFileRepository
 from server.models.history import (
     HistoryConflictType,
     HistoryRecord,
@@ -103,7 +102,6 @@ class HistoryService:
         """Initialize history service."""
         self.db_path = db_path or DATABASE_PATH
         self._repo = HistoryRepository(db_path)
-        self._scraped_repo = ScrapedFileRepository(db_path)
         # 最近一次可撤销操作（仅记录删除/清空，见 undo_store 说明）
         self._undo = UndoStore()
 
@@ -233,25 +231,12 @@ class HistoryService:
         """Mark a history record as deleted while retaining its audit trail."""
         await self._ensure_db()
 
-        # 先留快照再删：删除是不可逆的 DB 操作，撤销只能靠这份现场
-        raw = await self._repo.get_record_raw(record_id)
-        snapshot = (
-            UndoSnapshot(
-                kind="record_delete",
-                message="已删除 1 条记录",
-                records=[dict(raw)],
-                files=await self._snapshot_files([record_id]),
-            )
-            if raw is not None
-            else None
-        )
-
-        deleted = await self._repo.delete_record(record_id)
+        snapshot: dict = {}
+        deleted = await self._repo.delete_record(record_id, snapshot=snapshot)
 
         # 发送 WebSocket 通知
         if deleted:
-            if snapshot is not None:
-                self._undo.push(snapshot)
+            self._undo.push(UndoSnapshot(kind="record_delete", message="已删除 1 条记录", **snapshot))
             notifier = get_notifier()
             update_data = {"status": TaskStatus.DELETED.value}
             await notifier.notify_history_updated(record_id, update_data)
@@ -377,15 +362,6 @@ class HistoryService:
 
         return count
 
-    async def _snapshot_files(self, record_ids: list[str]) -> list[dict]:
-        """快照与被删记录关联的 scraped_files 行（恢复时一并插回）。"""
-        rows: list[dict] = []
-        for record_id in record_ids:
-            rows.extend(
-                dict(row) for row in await self._scraped_repo.list_by_history_record(record_id)
-            )
-        return rows
-
     async def undo_last(self) -> UndoResponse:
         """撤销最近一次可撤销操作（仅删除/清空记录）。
 
@@ -397,7 +373,7 @@ class HistoryService:
         if snapshot is None:
             return UndoResponse(success=False, undone=False, message="没有可撤销的操作")
 
-        await self._repo.restore_snapshot(snapshot.records, snapshot.files, snapshot.jobs)
+        await self._repo.restore_snapshot(snapshot.records, snapshot.files, snapshot.jobs, snapshot.deleted_rows)
         if self._undo.peek() is snapshot:
             self._undo.pop()
 

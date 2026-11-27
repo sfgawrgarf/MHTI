@@ -25,6 +25,10 @@ class UndoSnapshot:
     jobs: list[dict] = field(default_factory=list)  # 清空时删除的任务及 locator/高级配置
 
 
+    # Exact post-delete rows prevent undo from replacing later writes.
+    deleted_rows: dict[str, dict] = field(default_factory=dict)
+
+
 class UndoStore:
     """只保留最近一条快照的栈。"""
 

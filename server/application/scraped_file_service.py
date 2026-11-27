@@ -120,6 +120,9 @@ class ScrapedFileService:
         """Check whether a source path already has a registration."""
         return await self._repo.get_by_source_path(source_path) is not None
 
+    async def can_delete_source(self, history_record_id: str, path: str) -> bool:
+        return await self._repo.can_delete_source(history_record_id, path)
+
     async def can_delete_target(self, history_record_id: str, path: str, *, allow_missing: bool = False) -> bool:
         return await self._repo.can_delete_target(history_record_id, path, allow_missing=allow_missing)
 

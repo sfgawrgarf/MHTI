@@ -413,8 +413,11 @@ class ScraperService:
         year: int | None = None,
         conflict_action: str | None = None,
         naming_template=None,
+        series: TMDBSeries | None = None,
+        season_info: TMDBSeason | None = None,
     ) -> RenameRequest:
         return self._output_writer.build_rename_request(
+            series=series, season_info=season_info,
             source_path=source_path,
             title=title,
             season=season,
@@ -439,8 +442,11 @@ class ScraperService:
         source_path: str,
         year: int | None = None,
         advanced_settings: ManualJobAdvancedSettings | None = None,
+        series: TMDBSeries | None = None,
+        season_info: TMDBSeason | None = None,
     ) -> StorageLocator:
         return await self._output_writer.finalize_storage_output(
+            series=series, season_info=season_info,
             file_locator=file_locator,
             output_locator=output_locator,
             metadata_locator=metadata_locator,
@@ -796,6 +802,7 @@ class ScraperService:
 
             async def publish_local(local_source: str, *, staged: bool = False):
                 rename_request = self._build_rename_request(
+                    series=series, season_info=season_info,
                     source_path=local_source,
                     title=series.name,
                     season=season_num,
@@ -846,6 +853,7 @@ class ScraperService:
                 )
                 result.nfo_path = nfo_path or None
                 dest = await self._finalize_storage_output(
+                    series=series, season_info=season_info,
                     file_locator=request.file_locator,
                     output_locator=request.output_locator,
                     metadata_locator=request.metadata_locator,
@@ -909,7 +917,8 @@ class ScraperService:
             parsed_title=result.parsed_title,
         )
 
-    async def preview(self, file_path: str) -> ScrapePreview:
+    async def preview(self, file_path: str, *, file_locator: StorageLocator | None = None,
+                      advanced_settings: ManualJobAdvancedSettings | None = None) -> ScrapePreview:
         """Preview scrape operation without executing.
 
         Args:
@@ -918,10 +927,11 @@ class ScraperService:
         Returns:
             ScrapePreview with parsed info and search results.
         """
-        path = validate_media_path(file_path, must_exist=True, require_file=True)
+        path = (Path(file_path) if self._is_provider_source(file_locator)
+                else validate_media_path(file_path, must_exist=True, require_file=True))
 
         # Parse filename
-        parsed_filename = await self._sanitize_scrape_filename(path.name)
+        parsed_filename = await self._sanitize_scrape_filename(path.name, advanced_settings)
         parsed = self.parser_service.parse(parsed_filename, file_path)
 
         preview = ScrapePreview(
@@ -1069,6 +1079,7 @@ class ScraperService:
         try:
             from server.domain.parsing.parsers.cleaner import strip_known_group_prefix
 
+            year_filter = {"first_air_date_year": parsed.year} if parsed.year else {}
             keywords = [parsed.series_name]
             stripped = strip_known_group_prefix(parsed.series_name)
             if stripped and stripped != parsed.series_name:
@@ -1077,7 +1088,7 @@ class ScraperService:
             for keyword in keywords:
                 if keyword != parsed.series_name:
                     search_step.logs.append(ScrapeLogEntry(message=f"去除制作组前缀重试: {keyword}"))
-                search_response = await self.tmdb_service.search_series_by_api(keyword)
+                search_response = await self.tmdb_service.search_series_by_api(keyword, **year_filter)
                 adult_results = [r for r in search_response.results if r.adult]
                 search_step.logs.append(ScrapeLogEntry(
                     message=f"TMDB 返回 {len(search_response.results)} 条，其中成人内容 {len(adult_results)} 条"
@@ -1153,7 +1164,7 @@ class ScraperService:
                             )
                     if not adult_results and ai_result.search_titles:
                         for title in build_search_title_variants(ai_result.search_titles[0]):
-                            retry_response = await self.tmdb_service.search_series_by_api(title)
+                            retry_response = await self.tmdb_service.search_series_by_api(title, **year_filter)
                             adult_results = [
                                 item for item in retry_response.results if item.adult
                             ]
