@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 _SENSITIVE_QUERY = re.compile(r'([?&](?:api_key|access_token|token)=)[^&#\s\'\"]+', re.I)
-from typing import Any
 
 
 def safe_log_value(value: object, *, max_length: int = 512) -> str:

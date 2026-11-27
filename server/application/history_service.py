@@ -13,7 +13,6 @@ from server.application.undo_store import UndoSnapshot, UndoStore
 from server.infrastructure.db import DATABASE_PATH
 from server.infrastructure.csv_security import neutralize_csv_formula
 from server.infrastructure.repositories.history_repository import HistoryRepository
-from server.infrastructure.repositories.scraped_file_repository import ScrapedFileRepository
 from server.models.history import (
     HistoryConflictType,
     HistoryRecord,
@@ -103,7 +102,6 @@ class HistoryService:
         """Initialize history service."""
         self.db_path = db_path or DATABASE_PATH
         self._repo = HistoryRepository(db_path)
-        self._scraped_repo = ScrapedFileRepository(db_path)
         # 最近一次可撤销操作（仅记录删除/清空，见 undo_store 说明）
         self._undo = UndoStore()
 
@@ -363,15 +361,6 @@ class HistoryService:
             await notifier.notify_history_cleared(count)
 
         return count
-
-    async def _snapshot_files(self, record_ids: list[str]) -> list[dict]:
-        """快照与被删记录关联的 scraped_files 行（恢复时一并插回）。"""
-        rows: list[dict] = []
-        for record_id in record_ids:
-            rows.extend(
-                dict(row) for row in await self._scraped_repo.list_by_history_record(record_id)
-            )
-        return rows
 
     async def undo_last(self) -> UndoResponse:
         """撤销最近一次可撤销操作（仅删除/清空记录）。
