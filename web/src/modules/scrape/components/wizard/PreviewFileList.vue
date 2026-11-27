@@ -43,7 +43,7 @@ const formatSize = (bytes?: number | null) => {
         <NIcon :component="FilmOutline" class="header-icon" />
         <span>文件预览</span>
         <NTag v-if="props.previewTotal > 0" type="info" size="small" round class="count-tag">
-          共 {{ props.previewTotal }} 个
+          当前目录 {{ props.previewTotal }} 个条目
         </NTag>
       </div>
     </template>
@@ -67,7 +67,7 @@ const formatSize = (bytes?: number | null) => {
         </div>
       </NScrollbar>
       <div v-if="props.previewTotal > props.previewFiles.length" class="more-hint">
-        还有 {{ props.previewTotal - props.previewFiles.length }} 个文件...
+        仅从当前目录前 10 个条目中展示文件夹和视频。实际任务会递归扫描并应用过滤设置。
       </div>
     </NSpin>
   </NCard>

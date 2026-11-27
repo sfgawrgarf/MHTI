@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useMessage, type DataTableRowKey } from 'naive-ui'
 import { filesApi } from '@/modules/library/api'
 import type { ScannedFile } from '@/modules/library/types'
@@ -29,6 +29,16 @@ export function useFileScan() {
     return scannedFiles.value.slice(start, end)
   })
 
+  let generation = 0
+  watch(scanPath, (path) => {
+    generation++
+    if (scanLocator.value?.path !== path) scanLocator.value = null
+    scannedFiles.value = []
+    checkedRowKeys.value = []
+    total.value = 0
+    loading.value = false
+  }, { flush: 'sync' })
+
   // 扫描目录
   const handleScan = async () => {
     if (!scanPath.value) {
@@ -36,12 +46,16 @@ export function useFileScan() {
       return
     }
 
+    const request = ++generation
     loading.value = true
+    scannedFiles.value = []
+    total.value = 0
     checkedRowKeys.value = []
     page.value = 1
 
     try {
       const response = await filesApi.scan(scanPath.value, true, scanLocator.value)
+      if (generation !== request) return
       scannedFiles.value = response.files
       total.value = response.total_files
 
@@ -51,10 +65,11 @@ export function useFileScan() {
         message.success(`找到 ${response.total_files} 个视频文件`)
       }
     } catch (error) {
+      if (generation !== request) return
       message.error('扫描失败')
       console.error(error)
     } finally {
-      loading.value = false
+      if (generation === request) loading.value = false
     }
   }
 

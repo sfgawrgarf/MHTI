@@ -113,6 +113,9 @@ class HistoryFileService:
                     self._append(entries, seen, target_path, HistoryFileRole.ORGANIZED, roots)
 
         for entry in entries:
+            if entry.deletable and entry.role == HistoryFileRole.SOURCE and not await self._scraped_file_service.can_delete_source(record_id, entry.path):
+                entry.deletable = False
+                entry.reason = "无法核验原始源文件身份，已保留文件"
             if entry.deletable and not await self._scraped_file_service.can_delete_target(record_id, entry.path):
                 entry.deletable = False
                 entry.reason = "该路径已被其他发布替换，不能由旧记录删除"
@@ -374,6 +377,8 @@ class HistoryFileService:
             try:
                 safe_path = validate_media_file_entry(entry.path)
                 expected_signature = signature(safe_path)
+                if entry.role == HistoryFileRole.SOURCE and not await self._scraped_file_service.can_delete_source(record_id, entry.path):
+                    raise OSError("源文件身份已变化，已保留文件")
                 ownership_path = product if entry.role == HistoryFileRole.METADATA else entry.path
                 if ownership_path and not await self._scraped_file_service.can_delete_target(
                     record_id, ownership_path, allow_missing=ownership_path in removed_paths,

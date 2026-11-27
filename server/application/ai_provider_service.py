@@ -44,6 +44,8 @@ class AIProviderService:
 
     @staticmethod
     def _json_from_response(content: str) -> dict[str, Any]:
+        if not isinstance(content, str) or not content.strip():
+            raise AIProviderError("AI 响应缺少文本内容")
         cleaned = content.strip()
         fence = chr(96) * 3
         if cleaned.startswith(fence):

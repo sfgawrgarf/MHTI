@@ -233,25 +233,12 @@ class HistoryService:
         """Mark a history record as deleted while retaining its audit trail."""
         await self._ensure_db()
 
-        # 先留快照再删：删除是不可逆的 DB 操作，撤销只能靠这份现场
-        raw = await self._repo.get_record_raw(record_id)
-        snapshot = (
-            UndoSnapshot(
-                kind="record_delete",
-                message="已删除 1 条记录",
-                records=[dict(raw)],
-                files=await self._snapshot_files([record_id]),
-            )
-            if raw is not None
-            else None
-        )
-
-        deleted = await self._repo.delete_record(record_id)
+        snapshot: dict = {}
+        deleted = await self._repo.delete_record(record_id, snapshot=snapshot)
 
         # 发送 WebSocket 通知
         if deleted:
-            if snapshot is not None:
-                self._undo.push(snapshot)
+            self._undo.push(UndoSnapshot(kind="record_delete", message="已删除 1 条记录", **snapshot))
             notifier = get_notifier()
             update_data = {"status": TaskStatus.DELETED.value}
             await notifier.notify_history_updated(record_id, update_data)
@@ -397,7 +384,7 @@ class HistoryService:
         if snapshot is None:
             return UndoResponse(success=False, undone=False, message="没有可撤销的操作")
 
-        await self._repo.restore_snapshot(snapshot.records, snapshot.files, snapshot.jobs)
+        await self._repo.restore_snapshot(snapshot.records, snapshot.files, snapshot.jobs, snapshot.deleted_rows)
         if self._undo.peek() is snapshot:
             self._undo.pop()
 

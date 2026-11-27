@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import json
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -428,8 +429,26 @@ class P115EventStrategy(WatchStrategy):
 
     @staticmethod
     def _event_key(event: dict) -> str:
-        import json
         return json.dumps(event, sort_keys=True, ensure_ascii=False, default=str)
+
+    async def _read_event_pages(self, client) -> list[dict]:
+        events = []
+        payload = 0
+        cursors = set()
+        while True:
+            response = await client.life_list(payload, async_=True)
+            if not isinstance(response, dict) or not response.get("state"):
+                raise ValueError("115 生活事件读取失败")
+            page = self._extract_events(response)
+            events.extend(page)
+            cursor = (response.get("data") or {}).get("last_data")
+            if not page or not cursor or min(item.get("update_time", 0) for item in page) < self._last_update_time:
+                return events
+            token = cursor if isinstance(cursor, str) else json.dumps(cursor, sort_keys=True)
+            if token in cursors:
+                raise ValueError("115 生活事件分页游标未推进")
+            cursors.add(token)
+            payload = {"last_data": token}
 
     async def _event_loop(self) -> None:
         """定时拉取生活事件，找新增视频文件。"""
@@ -439,8 +458,7 @@ class P115EventStrategy(WatchStrategy):
                 if not self._running:
                     break
                 client = await self._get_client()
-                resp = await client.life_list(0, async_=True)
-                events = self._extract_events(resp)
+                events = await self._read_event_pages(client)
                 if not events:
                     continue
 
@@ -999,8 +1017,11 @@ class WatcherService:
                         stable=True,
                     )
                 )
-            except OSError:
+            except FileNotFoundError:
                 missing_local_paths.add(path)
+            except OSError as exc:
+                pending.detected_at = current_time
+                logger.warning("暂时无法读取监控文件，稍后重试 %s: %s", path, exc)
 
         for path in missing_local_paths:
             self._pending_files.pop(path, None)

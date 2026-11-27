@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import re
+
+_SENSITIVE_QUERY = re.compile(r'([?&](?:api_key|access_token|token)=)[^&#\s\'\"]+', re.I)
 from typing import Any
 
 
 def safe_log_value(value: object, *, max_length: int = 512) -> str:
     """Return a bounded, single-line representation suitable for log arguments."""
-    text = str(value).replace("\r", "\\r").replace("\n", "\\n")
+    text = _SENSITIVE_QUERY.sub(r"\1[redacted]", str(value)).replace("\r", "\\r").replace("\n", "\\n")
     escaped = "".join(
         character
         if (

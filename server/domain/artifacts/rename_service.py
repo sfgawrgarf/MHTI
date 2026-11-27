@@ -8,6 +8,7 @@ from server.common.path_security import (
     PathSecurityError,
     validate_internal_staging_path,
     validate_media_path,
+    validate_output_entry,
 )
 from server.infrastructure.log_security import safe_log_value
 from server.infrastructure.file_operations import publish_file
@@ -95,7 +96,7 @@ class RenameService:
         if not is_p115_virtual_path(str(dest_folder)):
             safe_base_dir = validate_media_path(str(base_dir))
             dest_folder = validate_media_path(str(dest_folder))
-            dest_path = validate_media_path(str(dest_path))
+            dest_path = validate_output_entry(dest_path)
             check_dir = dest_folder
             while check_dir.is_relative_to(safe_base_dir):
                 will_create_dirs.insert(0, str(check_dir))
@@ -125,7 +126,7 @@ class RenameService:
         ):
             dest_path = self._next_available_path(dest_path)
         if not is_p115_virtual_path(str(dest_path)):
-            dest_path = validate_media_path(str(dest_path))
+            dest_path = validate_output_entry(dest_path)
         return dest_path
 
     def execute_rename(
@@ -210,7 +211,7 @@ class RenameService:
 
         if not is_p115_virtual_path(str(dest_path)):
             try:
-                dest_path = validate_media_path(str(dest_path))
+                dest_path = validate_output_entry(dest_path)
                 dest_folder = dest_path.parent
             except PathSecurityError as exc:
                 return RenameResult(
@@ -364,8 +365,8 @@ class RenameService:
             "episode": request.episode,
             "episode_title": request.episode_title or "",
             "year": request.year or "",
-            "original_title": request.title,  # Default to title if not provided
-            "air_date": "",
+            "original_title": request.original_title or request.title,
+            "air_date": request.air_date or "",
         }
         return data
 

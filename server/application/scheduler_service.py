@@ -116,8 +116,8 @@ class SchedulerService:
         try:
             cron = croniter(cron_expression, datetime.now())
             return cron.get_next(datetime)
-        except (ValueError, KeyError):
-            return None
+        except (ValueError, KeyError) as exc:
+            raise ValueError("Cron 表达式没有可执行的下一次时间") from exc
 
     def _validate_cron(self, cron_expression: str) -> bool:
         """Validate cron expression."""

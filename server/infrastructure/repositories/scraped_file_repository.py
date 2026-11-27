@@ -18,6 +18,9 @@ class ScrapedFileRepository(BaseRepository):
         if columns and "target_signature" not in columns:
             await db.execute("ALTER TABLE scraped_files ADD COLUMN target_signature TEXT")
 
+        if columns and "source_signature" not in columns:
+            await db.execute("ALTER TABLE scraped_files ADD COLUMN source_signature TEXT")
+
     @staticmethod
     def _target_signature(path: str | None) -> str | None:
         try:
@@ -25,6 +28,11 @@ class ScrapedFileRepository(BaseRepository):
         except OSError:
             value = None
         return json.dumps(value, sort_keys=True) if value else None
+
+    async def can_delete_source(self, history_record_id: str, path: str) -> bool:
+        row = await self.get_by_source_path(path)
+        return bool(row and row["history_record_id"] == history_record_id
+                    and row["source_signature"] and row["source_signature"] == self._target_signature(path))
 
     async def can_delete_target(self, history_record_id: str, path: str, *, allow_missing: bool = False) -> bool:
         row = await self._fetch_one(
@@ -64,17 +72,17 @@ class ScrapedFileRepository(BaseRepository):
             await db.execute(
                 f"""
                 INSERT OR REPLACE INTO scraped_files
-                (id, source_path, target_path, file_size, tmdb_id, season, episode, title, scraped_at, history_record_id, target_signature)
+                (id, source_path, target_path, file_size, tmdb_id, season, episode, title, scraped_at, history_record_id, target_signature, source_signature)
                 SELECT
                     COALESCE((SELECT id FROM scraped_files WHERE source_path = ?), ?),
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 {ownership}
                 """,
                 (
                     source_path, record_id,
                     source_path, target_path, file_size,
                     tmdb_id, season, episode, title,
-                    scraped_at, history_record_id, self._target_signature(target_path),
+                    scraped_at, history_record_id, self._target_signature(target_path), self._target_signature(source_path),
                 ) + ownership_params,
             )
             await db.commit()
@@ -107,6 +115,7 @@ class ScrapedFileRepository(BaseRepository):
             cursor = await db.execute(
                 f"""
                 UPDATE scraped_files SET
+                    source_signature = CASE WHEN ? != '' AND ? != source_path THEN ? ELSE source_signature END,
                     source_path = COALESCE(NULLIF(?, ''), source_path),
                     target_path = ?, file_size = ?, tmdb_id = ?,
                     season = ?, episode = ?, title = ?, scraped_at = ?, target_signature = ?
@@ -118,6 +127,7 @@ class ScrapedFileRepository(BaseRepository):
                 {ownership}
                 """,
                 (
+                    source_path or "", source_path or "", self._target_signature(source_path),
                     source_path or "", target_path, file_size, tmdb_id,
                     season, episode, title, scraped_at, self._target_signature(target_path),
                     history_record_id,

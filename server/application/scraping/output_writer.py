@@ -18,6 +18,7 @@ from server.models.rename import RenameRequest
 from server.models.scraper import ScrapeResult, ScrapeStatus
 from server.models.storage import StorageLocator, StorageProvider
 from server.models.template import NamingTemplate
+from server.models.tmdb import TMDBSeries, TMDBSeason
 
 if TYPE_CHECKING:
     from server.application.scraping.service import ScraperService
@@ -69,9 +70,16 @@ class OutputWriter:
         year: int | None = None,
         conflict_action: str | None = None,
         naming_template: NamingTemplate | None = None,
+        series: TMDBSeries | None = None,
+        season_info: TMDBSeason | None = None,
     ) -> RenameRequest:
         """构建统一的整理请求。"""
+        episodes = (season_info.episodes or []) if season_info else []
+        details = next((item for item in episodes if item.episode_number == episode), None)
         return RenameRequest(
+            original_title=series.original_name if series else None,
+            episode_title=details.name if details else None,
+            air_date=details.air_date.isoformat() if details and details.air_date else None,
             source_path=source_path,
             title=title,
             season=season,
@@ -96,6 +104,8 @@ class OutputWriter:
         source_path: str,
         year: int | None = None,
         advanced_settings: ManualJobAdvancedSettings | None = None,
+        series: TMDBSeries | None = None,
+        season_info: TMDBSeason | None = None,
     ) -> StorageLocator:
         """处理 115 网盘输出分支。"""
         if file_locator.provider != StorageProvider.P115:
@@ -113,6 +123,7 @@ class OutputWriter:
             link_mode=mode,
             year=year,
             naming_template=naming_template,
+            series=series, season_info=season_info,
         )
         preview = facade.rename_service.preview_rename(rename_request)
         dest_path = Path(preview.dest_path)
@@ -160,6 +171,7 @@ class OutputWriter:
                     link_mode=mode,
                     year=year,
                     naming_template=naming_template,
+                    series=series, season_info=season_info,
                 )
                 rename_result = await run_file_io(facade.rename_service.execute_rename,
                     local_request,
@@ -232,6 +244,7 @@ class OutputWriter:
             )
             preview_request = self.build_rename_request(
                 source_path=preview_source,
+                series=series, season_info=season_info,
                 title=title,
                 season=season,
                 episode=episode,
