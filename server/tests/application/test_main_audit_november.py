@@ -104,3 +104,67 @@ async def test_transient_database_log_failure_preserves_batch():
     assert not handler._batch
     service.batch_insert.assert_awaited_with([{"message": "first"}])
     handler.close()
+
+
+@pytest.mark.asyncio
+async def test_log_service_retries_on_shutdown_and_keeps_searchable_fields(audit_env, monkeypatch):
+    from datetime import datetime, timezone
+
+    from server.domain.system.log_service import LogService
+    from server.infrastructure.repositories.log_repository import LogRepository
+    from server.models.log import LogEntryCreate, LogQuery
+
+    service = LogService()
+    repo = LogRepository(audit_env.db)
+    service._repo = repo
+    service._batch_size = 1
+    entry = LogEntryCreate(timestamp=datetime.now(timezone.utc), level="INFO", logger="audit",
+                           message="retried write", extra_data={"item": 3}, request_id="test")
+    await service.start()
+    with monkeypatch.context() as patch:
+        patch.setattr(repo, "insert_batch", AsyncMock(side_effect=OSError("database busy")))
+        await service.add_log(entry)
+    await service.stop()
+
+    items, total = await service.get_logs(LogQuery(level="INFO", search="retried", logger="audit"))
+    assert total == 1
+    assert items[0].extra_data == {"item": 3}
+    assert items[0].request_id == "test"
+    stats = await service.get_stats()
+    assert stats.by_logger == {"audit": 1}
+    assert stats.oldest_entry == entry.timestamp
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_episode", [True, False])
+async def test_emby_conflict_checks_second_page_in_selected_library(audit_env, monkeypatch, has_episode):
+    from server.domain.integration.emby_service import EmbyService
+    from server.models.emby import ConflictCheckRequest, ConflictType, EmbyConfig
+
+    config = EmbyConfig(enabled=True, server_url="http://emby.test", api_key="test",
+                        library_ids=["library"])
+    service = EmbyService(config_service=audit_env.config)
+    monkeypatch.setattr(service, "get_config", AsyncMock(return_value=config))
+    offsets = []
+
+    def respond(request):
+        params = request.url.params
+        if params["IncludeItemTypes"] == "Series":
+            assert params["ParentId"] == "library"
+            offset = int(params.get("StartIndex", 0))
+            offsets.append(offset)
+            if offset == 0:
+                items = [{"Id": str(i), "Name": "Other"} for i in range(20)]
+            else:
+                items = [{"Id": "show", "Name": "Show", "ProviderIds": {"Tmdb": "123"}}]
+            return httpx.Response(200, json={"Items": items, "TotalRecordCount": 21})
+        assert params["ParentId"] == "show"
+        items = [{"Id": "ep", "Name": "Pilot", "ParentIndexNumber": 1, "IndexNumber": 1}]
+        return httpx.Response(200, json={"Items": items if has_episode else []})
+
+    monkeypatch.setattr(service, "_get_client", lambda _: httpx.AsyncClient(
+        base_url=config.server_url, transport=httpx.MockTransport(respond)))
+    result = await service.check_conflict(ConflictCheckRequest(series_name="Show", tmdb_id=123, season=1, episode=1))
+    assert offsets == [0, 20]
+    assert result.conflict_type == (ConflictType.EPISODE_EXISTS if has_episode else ConflictType.SERIES_EXISTS)
+    assert result.existing_series.id == "show"
