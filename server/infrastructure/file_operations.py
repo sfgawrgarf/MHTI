@@ -60,6 +60,16 @@ def _publish_no_replace(staged: Path, destination: Path) -> None:
     os.link(staged, destination, follow_symlinks=False)
 
 
+def restore_file_entry(staged: Path, original: Path) -> None:
+    """Restore a private entry without replacing a concurrent writer."""
+    with path_operation_lock(original):
+        try:
+            _publish_no_replace(staged, original)
+        except FileExistsError:
+            return
+        staged.unlink(missing_ok=True)
+
+
 def remove_moved_source(source: Path, expected: dict, operation_id: str | None = None) -> None:
     """Claim the directory entry before unlinking it, even with external writers."""
     operation_id = operation_id or uuid.uuid4().hex
@@ -95,6 +105,7 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
                  *, overwrite: bool = False) -> None:
     check_file_cancelled()
     mode = mode or OrganizeMode.MOVE
+    file_journal.check_retry_input(source)
     receipt = file_journal.begin_publish(source, destination, mode)
     source_signature = file_journal.signature(source) if mode == OrganizeMode.MOVE else None
     if receipt and 'source_signature' in receipt:
@@ -118,7 +129,7 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
         elif mode == OrganizeMode.MOVE:
             try:
                 # Preserve same-filesystem rename performance and inode identity.
-                os.link(source, staged)
+                os.link(source, staged, follow_symlinks=False)
             except OSError as exc:
                 if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP}:
                     raise
@@ -130,12 +141,13 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
         file_journal.prepared(receipt, staged)
         check_file_cancelled()
         with path_operation_lock(destination):
+            file_journal.check_retry_input(source)
             if overwrite:
                 os.replace(staged, destination)
             else:
                 # Atomic no-clobber publication, including concurrent writers.
                 _publish_no_replace(staged, destination)
         file_journal.published(receipt)
-        if mode == OrganizeMode.MOVE:
+        if mode == OrganizeMode.MOVE and not (receipt and receipt.get("verified_retry")):
             remove_moved_source(source, source_signature, receipt.get('id') if receipt else None)
         file_journal.completed(receipt)

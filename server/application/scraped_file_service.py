@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from server.infrastructure.db import DATABASE_PATH
+from server.infrastructure.file_journal import signature
 from server.infrastructure.repositories.scraped_file_repository import ScrapedFileRepository
 from server.models.scraped_file import ScrapedFile, ScrapedFileCreate
 
@@ -22,6 +23,10 @@ class ScrapedFileService:
 
     async def add_record(self, data: ScrapedFileCreate, *, expected_job_id: str | None = None) -> ScrapedFile:
         """添加已刮削文件记录（如果已存在则更新）"""
+        return await self._add_record(data, signature(Path(data.source_path)), expected_job_id)
+
+    async def _add_record(self, data: ScrapedFileCreate, source_signature: dict | None,
+                          expected_job_id: str | None) -> ScrapedFile:
         record_id = str(uuid.uuid4())[:8]
         now = datetime.now()
 
@@ -36,6 +41,7 @@ class ScrapedFileService:
             title=data.title,
             scraped_at=now.isoformat(),
             history_record_id=data.history_record_id,
+            source_signature=source_signature,
             expected_job_id=expected_job_id,
         )
 
@@ -63,6 +69,7 @@ class ScrapedFileService:
         episode: int | None,
         title: str | None,
         replace_existing: bool = False,
+        source_signature: dict | None = None,
         expected_job_id: str | None = None,
     ) -> None:
         """登记一次成功刮削的产物（按源路径幂等，重复调用只会刷新同一行）。
@@ -93,11 +100,12 @@ class ScrapedFileService:
                 title=title,
                 scraped_at=datetime.now().isoformat(),
                 expected_job_id=expected_job_id,
+                source_signature=source_signature,
             )
             if updated:
                 return
 
-        await self.add_record(
+        await self._add_record(
             ScrapedFileCreate(
                 source_path=source_path or "",
                 target_path=target_path,
@@ -108,7 +116,7 @@ class ScrapedFileService:
                 title=title,
                 history_record_id=history_record_id,
             ),
-            expected_job_id=expected_job_id,
+            source_signature, expected_job_id,
         )
 
     async def list_by_history_record(self, history_record_id: str) -> list[ScrapedFile]:
@@ -123,8 +131,8 @@ class ScrapedFileService:
     async def can_delete_source(self, history_record_id: str, path: str) -> bool:
         return await self._repo.can_delete_source(history_record_id, path)
 
-    async def can_delete_target(self, history_record_id: str, path: str, *, allow_missing: bool = False) -> bool:
-        return await self._repo.can_delete_target(history_record_id, path, allow_missing=allow_missing)
+    async def can_delete_target(self, history_record_id: str, path: str, *, allow_missing: bool = False, allow_unregistered: bool = False) -> bool:
+        return await self._repo.can_delete_target(history_record_id, path, allow_missing=allow_missing, allow_unregistered=allow_unregistered)
 
     async def get_record(self, source_path: str) -> ScrapedFile | None:
         """Return a registration by source path."""

@@ -856,6 +856,8 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
     scraper = get_scraper_service()
 
     # 计算文件指纹
+    from server.infrastructure.file_journal import signature
+    source_signature = signature(Path(job.file_path))
     file_fingerprint = calculate_fingerprint(job.file_path)
 
     # 冲突解决/重试沿用原历史记录，普通扫描才创建新记录。
@@ -1018,6 +1020,7 @@ async def _run_scrape_job(service: ScrapeJobService, job_id: str) -> None:
                 await scraped_file_service.register_output(
                     history_record_id=record_id,
                     source_path=result.file_path or job.file_path,
+                    source_signature=source_signature,
                     target_path=result.dest_path,
                     tmdb_id=result.selected_id,
                     season=result.parsed_season,

@@ -14,10 +14,10 @@ from server.models.history import (
     HistoryRecord,
     HistoryRecordDetail,
     ScrapeLogEntry,
-    ScrapeLogLevel,
     ScrapeLogStep,
     TaskStatus,
 )
+from server.infrastructure.file_journal import verified_input
 from server.models.scraper import ScrapeByIdRequest
 from server.models.tmdb import TMDBEpisode, TMDBSeries, TMDBSeason
 from server.application.history_service import HistoryService, build_record_folder_path
@@ -140,45 +140,20 @@ class HistoryScrapeActions:
     async def prepare_input(
         self, record, *, remote: bool = False
     ) -> tuple[RescrapeInput, list[ScrapeLogStep], str]:
-        """解析重跑输入 + 输入让位 + 清理旧产物。
+        """验证重跑输入，并暂存可恢复的旧产物。
 
         返回（输入、要追加的日志步骤、登记行该写的源路径）。源文件不可用而改用产物时，
         登记行的 source_path 保持原值（记录的身份是那个源文件），只刷新产物路径。
         """
         resolver = self._resolver()
-        input_ = await resolver.resolve(record, remote=remote)
-        keep = {input_.path}
-        deleted = await resolver.clear_products(record.id, keep_paths=keep)
-
-        # 清理必须发生在让位之前：产物视频仍在原整理路径时，HistoryFileService
-        # 才能沿同构目录发现并删除对应的 NFO/图片；随后再把视频让位给重刮输出。
-        input_ = await resolver.stage(input_)
-
-        steps: list[ScrapeLogStep] = []
-        logs = [
-            ScrapeLogEntry(message=f"源文件: {input_.staged_from or input_.path}"),
-        ]
-        if input_.from_product:
-            logs.append(
-                ScrapeLogEntry(
-                    message="源文件已不存在，改用整理后的产物作为输入",
-                    level=ScrapeLogLevel.WARNING,
-                )
-            )
-        if input_.staged_from:
-            logs.append(
-                ScrapeLogEntry(
-                    message=f"产物已临时移出原路径以保证不与自己冲突: {input_.path}",
-                )
-            )
-        steps.append(ScrapeLogStep(name="准备输入", completed=True, logs=logs))
-
-        cleanup_logs = [
-            ScrapeLogEntry(message=f"已删除旧产物: {path}") for path in deleted
-        ]
-        if not cleanup_logs:
-            cleanup_logs.append(ScrapeLogEntry(message="没有需要清理的旧产物"))
-        steps.append(ScrapeLogStep(name="清理旧产物", completed=True, logs=cleanup_logs))
+        input_ = await resolver.prepare(record, remote=remote)
+        steps = [ScrapeLogStep(name="准备输入", completed=True, logs=[
+            ScrapeLogEntry(message=("改用整理后的产物: " if input_.from_product else "源文件: ") + (input_.staged_from or input_.path)),
+        ])]
+        if input_.prior_product or input_.staged_from:
+            steps.append(ScrapeLogStep(name="保留旧产物", completed=True, logs=[
+                ScrapeLogEntry(message="已暂存旧视频，失败时恢复；原有元数据保留至发布。"),
+            ]))
 
         registration_source = "" if input_.from_product else input_.path
         return input_, steps, registration_source
@@ -213,6 +188,7 @@ class HistoryScrapeActions:
                 folder_path=folder_path,
                 replace_registration=prepared is not None,
                 registration_source=registration_source,
+                source_signature=prepared.expected_signature if prepared else None,
             )
         except Exception:
             await self._release_input(prepared, dest_path=None, success=False)
@@ -507,7 +483,8 @@ class HistoryScrapeActions:
             )
 
             try:
-                result = await scraper.scrape_by_id(scrape_request, on_log_update=on_log_update)
+                with verified_input(prepared.path if prepared else None, prepared.expected_signature if prepared else None):
+                    result = await scraper.scrape_by_id(scrape_request, on_log_update=on_log_update)
             except (asyncio.CancelledError, HTTPException):
                 raise
             except Exception as exc:
@@ -622,15 +599,13 @@ class HistoryScrapeActions:
                 await history_service.update_scrape_logs(record_id, existing_logs + logs)
 
             scraper = get_scraper_service()
-            try:
+            with verified_input(prepared.path, prepared.expected_signature):
                 result = await scraper.reorganize_with_metadata(
                     scrape_request,
                     series=series,
                     season_info=season_info,
                     on_log_update=on_log_update,
                 )
-            except BaseException:
-                raise
 
             return await self._finalize_prepared(
                 record_id=record_id,
@@ -654,6 +629,7 @@ class HistoryScrapeActions:
         folder_path: str | None = None,
         replace_registration: bool = False,
         registration_source: str | None = None,
+        source_signature: dict | None = None,
     ) -> dict:
         """刮削与重新整理共用的收尾：写回状态与元数据、维护手动任务计数。
 
@@ -707,6 +683,7 @@ class HistoryScrapeActions:
                     episode=result.parsed_episode,
                     title=series.name if series else None,
                     replace_existing=replace_registration,
+                    source_signature=source_signature,
                 )
             except Exception as exc:  # noqa: BLE001 - 登记是附带动作，不能拖垮刮削结果
                 logger.warning(f"登记刮削产物失败 {record_id}: {exc}")

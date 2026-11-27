@@ -153,9 +153,16 @@ async function refreshAcrossTabs(): Promise<AccessTokenRefreshResult | null> {
   }
 }
 
+type SessionRequest = InternalAxiosRequestConfig & { _retry?: boolean; authSession?: string | null }
+
 // 请求拦截器
 api.interceptors.request.use(
-  async (config: InternalAxiosRequestConfig) => {
+  async (config: SessionRequest) => {
+    const session = localStorage.getItem(SESSION_ID_KEY)
+    if (config.authSession !== undefined && config.authSession !== session) {
+      throw new Error('登录会话已变更，请重新操作')
+    }
+    config.authSession = session
     // 跳过认证相关接口
     const authPaths = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/status']
     if (authPaths.some((path) => config.url?.includes(path))) {
@@ -176,6 +183,7 @@ api.interceptors.request.use(
       console.log('[API] Token 即将过期，尝试刷新')
       const refreshed = await refreshStoredAccessToken()
       // 刷新失败时使用旧 token 继续，让响应拦截器统一完成登出。
+      if (localStorage.getItem(SESSION_ID_KEY) !== session) throw new Error('登录会话已变更，请重新操作')
       config.headers.Authorization = `Bearer ${refreshed?.accessToken || token}`
     } else {
       config.headers.Authorization = `Bearer ${token}`
@@ -194,10 +202,11 @@ api.interceptors.response.use(
     return response
   },
   async (error: AxiosError) => {
-    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean }
+    const originalRequest = error.config as SessionRequest
 
     // 401 未授权处理
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
+      if (originalRequest.authSession !== localStorage.getItem(SESSION_ID_KEY)) return Promise.reject(error)
       // 如果是 refresh 接口失败，清除 token 并跳转登录
       if (originalRequest.url?.includes('/auth/refresh')) {
         console.log('[API] Refresh Token 失效，跳转登录')
@@ -218,6 +227,7 @@ api.interceptors.response.use(
       // A delayed 401 from the previous login cannot invalidate the current one.
       const authorization = originalRequest.headers.Authorization
       if (accessToken && authorization && authorization !== `Bearer ${accessToken}`) {
+        if (!originalRequest.authSession) return Promise.reject(error)
         originalRequest.headers.Authorization = `Bearer ${accessToken}`
         return api(originalRequest)
       }

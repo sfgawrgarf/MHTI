@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import aiosqlite
 import pytest
+from server.infrastructure.file_journal import signature
 from fastapi import HTTPException
 
 from server.api.v1.ai import save_ai_config
@@ -36,7 +37,7 @@ async def test_unregistered_replacement_is_preserved(audit_env):
     target.parent.mkdir()
     target.write_bytes(b'original')
     record = await record_for(env, f'{env.source} => {target}')
-    await env.scraped.register_output(history_record_id=record.id, source_path=str(env.source),
+    await env.scraped.register_output(history_record_id=record.id, source_path=str(env.source), source_signature=signature(env.source),
                                      target_path=str(target), tmdb_id=1, season=1, episode=1, title='Show')
     replacement = target.with_suffix('.tmp')
     replacement.write_bytes(b'new publication before its database registration')
@@ -54,13 +55,13 @@ async def test_obsolete_record_cannot_use_new_owners_media_as_fallback(audit_env
     target.parent.mkdir()
     target.write_bytes(b'first publication')
     first = await record_for(env, f'{env.source} => {target}')
-    await env.scraped.register_output(history_record_id=first.id, source_path=str(env.source),
+    await env.scraped.register_output(history_record_id=first.id, source_path=str(env.source), source_signature=signature(env.source),
                                      target_path=str(target), tmdb_id=1, season=1, episode=1, title='Show')
     new_source = env.source.with_name('new.mkv')
     new_source.write_bytes(b'new owner')
     second = await record_for(env, f'{new_source} => {target}')
     target.write_bytes(b'new owner')
-    await env.scraped.register_output(history_record_id=second.id, source_path=str(new_source),
+    await env.scraped.register_output(history_record_id=second.id, source_path=str(new_source), source_signature=signature(new_source),
                                      target_path=str(target), tmdb_id=1, season=1, episode=1, title='Show')
     env.source.unlink()
     with pytest.raises(HTTPException) as caught:
@@ -76,7 +77,7 @@ async def test_replacement_during_deletion_ownership_check_is_preserved(audit_en
     target.parent.mkdir()
     target.write_bytes(b'old publication')
     record = await record_for(env, f'{env.source} => {target}')
-    await env.scraped.register_output(history_record_id=record.id, source_path=str(env.source),
+    await env.scraped.register_output(history_record_id=record.id, source_path=str(env.source), source_signature=signature(env.source),
                                      target_path=str(target), tmdb_id=1, season=1, episode=1, title='Show')
     entered, release = asyncio.Event(), asyncio.Event()
     check = env.scraped.can_delete_target
@@ -277,7 +278,7 @@ async def test_other_video_container_keeps_shared_episode_metadata(audit_env):
     metadata = env.metadata / 'Show' / 'Season 1' / 'episode.nfo'
     metadata.parent.mkdir(parents=True)
     metadata.write_text('metadata used by the new container')
-    record = await record_for(env, f'{env.source} => {first}')
+    record = await record_for(env, f'{env.source} => {first}', register_target=True)
     await env.files.delete_files(record.id, 'organized')
     assert not first.exists()
     assert second.exists()

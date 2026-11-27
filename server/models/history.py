@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskStatus(str, Enum):
@@ -134,6 +134,8 @@ class HistoryExportResponse(BaseModel):
 
 class HistoryRecordDetail(HistoryRecord):
     """Detailed history record with metadata."""
+
+    file_fingerprint: str | None = Field(default=None, exclude=True)
 
     # 剧集元数据
     title: str | None = None  # 剧名

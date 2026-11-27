@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import aiosqlite
 import httpx
 import pytest
+from server.infrastructure.file_journal import signature
 from fastapi import HTTPException
 from starlette.requests import Request
 
@@ -99,13 +100,13 @@ async def test_obsolete_record_cannot_delete_new_owner_output(audit_env, operati
     target.parent.mkdir(parents=True)
     target.write_bytes(b'first publication')
     first = await record_for(env, f'{env.source} => {target}')
-    await env.scraped.register_output(history_record_id=first.id, source_path=str(env.source),
+    await env.scraped.register_output(history_record_id=first.id, source_path=str(env.source), source_signature=signature(env.source),
                                      target_path=str(target), tmdb_id=123, season=1, episode=10, title='Show')
     other_source = env.source.with_name('new-version.mkv')
     other_source.write_bytes(b'new publication')
     second = await record_for(env, f'{other_source} => {target}')
     target.write_bytes(other_source.read_bytes())
-    await env.scraped.register_output(history_record_id=second.id, source_path=str(other_source),
+    await env.scraped.register_output(history_record_id=second.id, source_path=str(other_source), source_signature=signature(other_source),
                                      target_path=str(target), tmdb_id=123, season=1, episode=10, title='Show')
     if operation == 'delete':
         await env.files.delete_files(first.id, 'organized')

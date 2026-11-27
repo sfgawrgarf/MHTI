@@ -184,7 +184,7 @@ describe('cross-tab refresh', () => {
     })
     await import('./client')
     const rejected = responseUse.mock.calls[0]![1]!
-    const error = { response: { status: 401 }, config: { url: '/protected', headers: { Authorization: 'Bearer old-access' } } }
+    const error = { response: { status: 401 }, config: { authSession: null, url: '/protected', headers: { Authorization: 'Bearer old-access' } } }
     const pending = rejected(error).catch((value: unknown) => value)
     await started
     localStorage.setItem('access_token', 'new-login-access')
@@ -198,12 +198,13 @@ describe('cross-tab refresh', () => {
     expect(window.location.href).toBe('/settings')
   })
 
-  it('retries a delayed old-login 401 with the current token without rotating it', async () => {
+  it('retries a delayed 401 with a rotated token from the same session', async () => {
     await import('./client')
     const rejected = responseUse.mock.calls[0]![1]!
     localStorage.setItem('access_token', 'new-login-access')
     localStorage.setItem('refresh_token', 'new-login-refresh')
-    const config = { url: '/protected', headers: { Authorization: 'Bearer old-access' } }
+    const config = { authSession: 'same-session', url: '/protected', headers: { Authorization: 'Bearer old-access' } }
+    localStorage.setItem('session_id', 'same-session')
     expect(await rejected({ response: { status: 401 }, config })).toEqual({ data: 'retried' })
     expect(config.headers.Authorization).toBe('Bearer new-login-access')
     expect(post).not.toHaveBeenCalled()
@@ -211,11 +212,21 @@ describe('cross-tab refresh', () => {
     expect(localStorage.getItem('refresh_token')).toBe('new-login-refresh')
   })
 
+  it('rejects a delayed write from a different login', async () => {
+    await import('./client')
+    const rejected = responseUse.mock.calls[0]![1]!
+    const error = { response: { status: 401 }, config: { authSession: 'old-session',
+      method: 'delete', url: '/history/example', headers: { Authorization: 'Bearer old-access' } } }
+    localStorage.setItem('session_id', 'new-session')
+    await expect(rejected(error)).rejects.toBe(error)
+    expect(retryRequest).not.toHaveBeenCalled()
+  })
+
   it('clears unchanged expired credentials when the interceptor refresh fails', async () => {
     post.mockRejectedValue(new Error('expired'))
     await import('./client')
     const rejected = responseUse.mock.calls[0]![1]!
-    const error = { response: { status: 401 }, config: { url: '/protected', headers: { Authorization: 'Bearer old-access' } } }
+    const error = { response: { status: 401 }, config: { authSession: null, url: '/protected', headers: { Authorization: 'Bearer old-access' } } }
     await expect(rejected(error)).rejects.toBe(error)
     expect(localStorage.getItem('access_token')).toBeNull()
     expect(localStorage.getItem('refresh_token')).toBeNull()

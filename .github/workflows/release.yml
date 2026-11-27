@@ -126,6 +126,26 @@ jobs:
             fi
           fi
 
+          git ls-remote --tags origin > "$RUNNER_TEMP/mhti-release-refs"
+          python - "$VERSION" "$(git rev-parse HEAD)" "$RUNNER_TEMP/mhti-release-refs" <<'CHECKREF'
+          import re
+          import sys
+          from pathlib import Path
+
+          version, commit, filename = sys.argv[1:]
+          refs = {ref: sha for sha, ref in (line.split() for line in Path(filename).read_text().splitlines())}
+          tag = f"refs/tags/v{version}"
+          existing = refs.get(tag + "^{}", refs.get(tag))
+          if existing and existing != commit:
+              raise SystemExit(f"版本标签 v{version} 已指向 {existing}，当前提交为 {commit}")
+          if "-" not in version:
+              current = tuple(map(int, version.split(".")))
+              for ref in refs:
+                  match = re.fullmatch(r"refs/tags/v(\d+)\.(\d+)\.(\d+)", ref)
+                  if match and tuple(map(int, match.groups())) > current:
+                      raise SystemExit(f"已有更新的稳定版本 {ref}，不能覆盖滚动镜像标签")
+          CHECKREF
+
           python - "$VERSION" <<'PY'
           import json
           import re

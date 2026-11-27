@@ -1,35 +1,15 @@
-"""重新刮削 / 重新整理的输入文件解析与旧产物清理。
-
-为什么单独一层：记录里的 `folder_path` 在整理成功后是 `源文件 => 产物` 一整串
-（见 history_service.build_record_folder_path），拿去当路径必然报「文件不存在」。
-重刮真正要跑的是**源文件**：源文件没了才退回整理后的产物——这一点要被重刮与
-重新整理共用，否则两处会各自漂移。
-
-顺序（`resolve`）：
-1. 已登记且存在于磁盘的源文件；
-2. 记录 folder_path 里的源文件一侧；
-3. 已登记的产物；
-4. 记录 folder_path 里的产物一侧。
-
-产物被当作输入时**先让位**（同目录改名成 `*.mhti-rescrape<ext>`）再跑，否则
-「输入 == 目标路径」既会让整理步骤报「目标文件已存在」，也会让 copy 模式复制到
-自己身上（shutil 抛 SameFileError）。跑成功就把让位文件删掉（它已是上一轮的旧产物），
-跑失败则改名回原位，磁盘上不留意外文件。
-
-旧产物清理复用 `HistoryFileService` 的清单（视频 + 元数据），因此只会删登记过、
-且在允许目录内的文件；登记行**不删**——重刮收尾会把同一行更新成新路径。
-"""
+"""重刮与重新整理共用的输入校验、旧产物暂存及恢复。"""
 
 from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from fastapi import HTTPException
 
-from server.common.path_security import PathSecurityError, validate_media_path
+from server.common.path_security import PathSecurityError, validate_media_file_entry, validate_output_entry, validate_media_path
 from server.models.storage import is_p115_virtual_path
 from server.infrastructure.file_journal import operation_kind, signature
 from server.infrastructure.file_operations import path_operation_lock
@@ -59,6 +39,8 @@ class RescrapeInput:
     """产物让位前的原始路径；None 表示没有让位动作（源文件输入 / 云端 / 让位失败）。"""
     history_record_id: str | None = None
     expected_signature: dict | None = None
+    prior_product: RescrapeInput | None = None
+    episode_files: dict[Path, dict] = field(default_factory=dict)
 
 
 class RescrapeSource:
@@ -75,8 +57,6 @@ class RescrapeSource:
         """挑出本次要跑的输入文件；源文件与产物都不存在时报 400。"""
         candidates = await self._candidates(record)
         for path, from_product in candidates:
-            if not await self._scraped_file_service.can_delete_target(record.id, path):
-                continue
             if _is_remote_path(path):
                 if remote:
                     return RescrapeInput(path=path, from_product=from_product, history_record_id=record.id)
@@ -89,15 +69,34 @@ class RescrapeSource:
                 )
             except PathSecurityError:
                 continue
-            if str(safe_path) != path and not await self._scraped_file_service.can_delete_target(record.id, str(safe_path)):
+            # A link can retain its inode while its referent is replaced.
+            if Path(path).is_symlink():
+                continue
+            observed = signature(safe_path)
+            if not observed:
+                continue
+            if from_product:
+                owned = await self._scraped_file_service.can_delete_target(record.id, path)
+            else:
+                owned = await self._scraped_file_service.can_delete_source(record.id, path)
+                if (not owned and len(candidates) == 1 and getattr(record, "file_fingerprint", None)
+                        and not await self._scraped_file_service.is_scraped(path)):
+                    from server.application.file_io import run_file_io
+                    from server.domain.media.fingerprint_service import calculate_fingerprint
+                    owned = await run_file_io(calculate_fingerprint, path) == record.file_fingerprint
+                if owned:
+                    owned = await self._scraped_file_service.can_delete_target(
+                        record.id, path, allow_unregistered=True,
+                    )
+            if not owned or signature(safe_path) != observed:
                 continue
             return RescrapeInput(path=str(safe_path), from_product=from_product,
-                                 history_record_id=record.id, expected_signature=signature(safe_path))
+                                 history_record_id=record.id, expected_signature=observed)
 
-        raise HTTPException(status_code=400, detail="源文件与产物都不存在，无法重刮")
+        raise HTTPException(status_code=400, detail="源文件与产物都不存在或无法确认归属，无法重刮")
 
     async def _candidates(self, record) -> list[tuple[str, bool]]:
-        """按「源文件优先、产物兜底」列出候选路径（不去重，由调用方取第一个可用者）。"""
+        """按「源文件优先、产物兜底」列出候选路径（按路径去重）。"""
         from server.application.history_service import split_record_folder_path
 
         registered = await self._scraped_file_service.list_by_history_record(record.id)
@@ -120,6 +119,38 @@ class RescrapeSource:
             result.append((path, from_product))
         return result
 
+    async def prepare(self, record, *, remote: bool) -> RescrapeInput:
+        selected = await self.resolve(record, remote=remote)
+        if _is_remote_path(selected.path):
+            return selected
+        if selected.from_product:
+            return await self._stage_prior(selected)
+        for entry in await self._scraped_file_service.list_by_history_record(record.id):
+            path = entry.target_path
+            if not path or path == selected.path or _is_remote_path(path):
+                continue
+            if not await self._scraped_file_service.can_delete_target(record.id, path):
+                continue
+            previous = RescrapeInput(path=path, from_product=True, history_record_id=record.id,
+                                     expected_signature=signature(Path(path)))
+            selected.prior_product = await self._stage_prior(previous)
+            break
+        return selected
+
+    async def _stage_prior(self, previous: RescrapeInput) -> RescrapeInput:
+        if self._file_service is not None:
+            from server.models.history import HistoryFileRole
+            listing = await self._file_service.list_files(previous.history_record_id)
+            stem = Path(previous.path).stem
+            for entry in listing.files:
+                path = Path(entry.path)
+                if (entry.deletable and entry.role == HistoryFileRole.METADATA
+                        and path.stem in {stem, stem + "-thumb"}):
+                    value = signature(path)
+                    if value is not None:
+                        previous.episode_files[path] = value
+        return await self.stage(previous)
+
     # ---- 让位 ----
 
     async def stage(self, input_: RescrapeInput) -> RescrapeInput:
@@ -131,11 +162,7 @@ class RescrapeSource:
             return input_
 
         try:
-            original = validate_media_path(
-                input_.path,
-                must_exist=True,
-                require_file=True,
-            )
+            original = validate_media_file_entry(input_.path)
         except PathSecurityError:
             return input_
 
@@ -159,10 +186,12 @@ class RescrapeSource:
             return input_
 
         logger.info("重刮输入让位: %s -> %s", original, staged)
-        return replace(input_, path=str(staged), staged_from=str(original))
+        return replace(input_, path=str(staged), staged_from=str(original), expected_signature=signature(staged))
 
     async def release(self, input_: RescrapeInput, *, dest_path: str | None, success: bool) -> None:
         """让位文件收尾：失败改名回原位，成功后删除。"""
+        if input_.prior_product is not None:
+            await self.release(input_.prior_product, dest_path=dest_path, success=success)
         if not input_.staged_from:
             return
 
@@ -170,34 +199,37 @@ class RescrapeSource:
             return
 
         try:
-            staged = validate_media_path(input_.path)
-            original = validate_media_path(input_.staged_from)
+            staged = validate_output_entry(Path(input_.path))
+            original = validate_output_entry(Path(input_.staged_from))
         except PathSecurityError as exc:
             logger.warning("重刮让位路径不在允许目录内: %s", exc)
             return
 
-        if not success:
-            if staged.exists() and not original.exists():
-                try:
-                    safe_staged = validate_media_path(
-                        str(staged),
-                        must_exist=True,
-                        require_file=True,
-                    )
-                    safe_staged.rename(original)
-                    logger.info("重刮失败，产物已放回原位: %s", original)
-                except (OSError, PathSecurityError) as exc:
-                    logger.warning("重刮失败且产物放回原位失败 %s: %s", original, exc)
+        # Remove only unchanged episode-specific sidecars after a successful rename.
+        if success and dest_path and Path(dest_path).stem != original.stem and not original.exists():
+            from server.domain.media.file_service import SUPPORTED_VIDEO_EXTENSIONS
+            occupied = any(p.stem == original.stem and p.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+                           for p in original.parent.iterdir())
+            if not occupied:
+                for sidecar, expected in input_.episode_files.items():
+                    with path_operation_lock(sidecar):
+                        if signature(sidecar) == expected:
+                            validate_media_file_entry(str(sidecar)).unlink()
+        if signature(staged) is None:
             return
-
-        if not staged.exists():
-            # MOVE 模式下新产物就是拿让位文件动的，原路径已经空了
+        if signature(staged) != input_.expected_signature:
+            logger.warning("让位文件已变化，保留文件 %s", staged)
+            return
+        if not success:
+            if not original.exists() and not original.is_symlink():
+                from server.infrastructure.file_operations import restore_file_entry
+                restore_file_entry(staged, original)
             return
 
         if dest_path and Path(dest_path).is_symlink():
             try:
                 validate_media_path(dest_path, must_exist=True)
-                if Path(dest_path).resolve() == staged.resolve():
+                if not staged.is_symlink() and Path(dest_path).resolve() == staged:
                     # 软链接产物指向让位文件，删了就等于把产物删了
                     logger.warning("产物是软链接，保留让位文件 %s", staged)
                     return
@@ -206,12 +238,7 @@ class RescrapeSource:
                 return
 
         try:
-            safe_staged = validate_media_path(
-                str(staged),
-                must_exist=True,
-                require_file=True,
-            )
-            safe_staged.unlink()
+            staged.unlink()
             logger.info("已删除上一轮产物副本: %s", staged)
         except (OSError, PathSecurityError) as exc:
             logger.warning("删除让位文件失败 %s: %s", staged, exc)

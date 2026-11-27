@@ -444,9 +444,10 @@ class ScraperService:
         advanced_settings: ManualJobAdvancedSettings | None = None,
         series: TMDBSeries | None = None,
         season_info: TMDBSeason | None = None,
+        naming_template=None,
     ) -> StorageLocator:
         return await self._output_writer.finalize_storage_output(
-            series=series, season_info=season_info,
+            series=series, season_info=season_info, naming_template=naming_template,
             file_locator=file_locator,
             output_locator=output_locator,
             metadata_locator=metadata_locator,
@@ -835,37 +836,48 @@ class ScraperService:
 
             provider_source = bool(request.file_locator and request.output_locator)
             if provider_source and request.output_locator.provider == StorageProvider.P115:
-                # A failed local metadata write must not move a cloud source.
-                nfo_path, _, _ = await self._write_local_metadata_only(
-                    title=series.name,
-                    season=season_num,
-                    episode=episode_num,
-                    year=year,
-                    metadata_dir=metadata_dir,
-                    output_dir_for_preview=output_dir,
-                    nfo_content=nfo_content,
-                    series=series,
-                    season_info=season_info,
-                    move_step=move_step,
-                    notify_log_update=notify_log_update,
-                    link_mode=request.link_mode,
-                    advanced_settings=request.advanced_settings,
+                cloud_request = self._build_rename_request(
+                    source_path=source_path, output_dir=output_dir, title=series.name,
+                    season=season_num, episode=episode_num, year=year, link_mode=request.link_mode,
+                    naming_template=naming_template, series=series, season_info=season_info,
                 )
-                result.nfo_path = nfo_path or None
-                dest = await self._finalize_storage_output(
-                    series=series, season_info=season_info,
-                    file_locator=request.file_locator,
-                    output_locator=request.output_locator,
-                    metadata_locator=request.metadata_locator,
-                    link_mode=request.link_mode,
-                    title=series.name,
-                    season=season_num,
-                    episode=episode_num,
-                    source_path=source_path,
-                    year=year,
-                    advanced_settings=request.advanced_settings,
-                )
-                result.dest_path = dest.path
+                destination = Path(self.rename_service.preview_rename(cloud_request).dest_path)
+                async with self._output_writer.cloud_metadata(destination, metadata_dir) as plan:
+                    nfo_path, _, _ = await self._write_local_metadata_only(
+                        title=series.name,
+                        season=season_num,
+                        episode=episode_num,
+                        year=year,
+                        metadata_dir=str(plan.content) if plan else None,
+                        dest_path_override=Path(plan.record["destination"]) if plan else None,
+                        output_dir_for_preview=output_dir,
+                        nfo_content=nfo_content,
+                        series=series,
+                        season_info=season_info,
+                        move_step=move_step,
+                        notify_log_update=notify_log_update,
+                        link_mode=request.link_mode,
+                        advanced_settings=request.advanced_settings,
+                    )
+                    if plan:
+                        await run_file_io(plan.prepare)
+                    dest = await self._finalize_storage_output(
+                        series=series, season_info=season_info,
+                        naming_template=naming_template,
+                        file_locator=request.file_locator,
+                        output_locator=request.output_locator,
+                        metadata_locator=request.metadata_locator,
+                        link_mode=request.link_mode,
+                        title=series.name,
+                        season=season_num,
+                        episode=episode_num,
+                        source_path=source_path,
+                        year=year,
+                        advanced_settings=request.advanced_settings,
+                    )
+                    result.dest_path = dest.path
+                    if plan and nfo_path:
+                        result.nfo_path = str(Path(metadata_dir) / Path(nfo_path).relative_to(plan.content))
             elif provider_source:
                 provider = self._get_storage_provider(request.file_locator.provider)
                 with TemporaryDirectory(prefix="mhti-115-download-") as temp_dir:

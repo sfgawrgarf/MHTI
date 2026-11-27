@@ -53,13 +53,19 @@ async def audit_env(temp_db, tmp_path, monkeypatch):
                            history=history, jobs=jobs, scraped=scraped, files=files, config=config)
 
 
-async def record_for(env, path, *, status=TaskStatus.SUCCESS, job_id=None):
+async def record_for(env, path, *, status=TaskStatus.SUCCESS, job_id=None, register_target=False):
+    from server.domain.media.fingerprint_service import calculate_fingerprint
+    from server.models.scraped_file import ScrapedFileCreate
+
+    source, _, target = path.partition(" => ")
     record = await env.history.create_record(HistoryRecordCreate(
-        task_name='audit regression', folder_path=path, status=status,
+        task_name='audit regression', folder_path=path, status=status, file_fingerprint=calculate_fingerprint(source),
         total_files=1, success_count=1, failed_count=0, duration_seconds=0,
         scrape_job_id=job_id,
     ))
     await env.history.update_record(record.id, title='Show', tmdb_id=123, season_number=1, episode_number=10)
+    if register_target:
+        await env.scraped.add_record(ScrapedFileCreate(source_path=source, target_path=target, file_size=0, history_record_id=record.id))
     return await env.history.get_record(record.id)
 
 
@@ -78,7 +84,7 @@ async def test_deleting_organized_symlink_preserves_source_and_other_episode(aud
     other.write_text('other episode')
     shared = metadata.parent / 'tvshow.nfo'
     shared.write_text('shared')
-    record = await record_for(env, f'{env.source} => {target}')
+    record = await record_for(env, f'{env.source} => {target}', register_target=True)
     result = await env.files.delete_files(record.id, 'organized')
     assert any(item.deleted and item.path == str(target) for item in result.results)
     assert env.source.read_bytes() == b'original video'

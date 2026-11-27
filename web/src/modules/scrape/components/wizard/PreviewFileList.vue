@@ -6,13 +6,15 @@
  * library/utils.ts 的 formatSize 口径不同（本处 1 位小数、无 GB 上限分支、
  * falsy 判空），不合并。
  */
-import { NCard, NEmpty, NIcon, NScrollbar, NSpin, NTag } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NIcon, NScrollbar, NSpin, NTag } from 'naive-ui'
 import { FilmOutline, FolderOutline } from '@vicons/ionicons5'
 import type { DirectoryEntry } from '@/shared/types/common'
 
+const emit = defineEmits<{ retry: [] }>()
 const props = defineProps<{
   previewFiles: DirectoryEntry[]
   previewTotal: number
+  error: string
   loading: boolean
 }>()
 
@@ -48,7 +50,11 @@ const formatSize = (bytes?: number | null) => {
       </div>
     </template>
     <NSpin :show="props.loading">
-      <div v-if="props.previewFiles.length === 0 && !props.loading" class="empty-preview">
+      <NAlert v-if="props.error" type="error" title="文件预览失败">
+        {{ props.error }}
+        <NButton size="small" @click="emit('retry')">重试</NButton>
+      </NAlert>
+      <div v-else-if="props.previewFiles.length === 0 && !props.loading" class="empty-preview">
         <NEmpty description="暂无可预览的文件" />
       </div>
       <NScrollbar v-else style="max-height: 200px">

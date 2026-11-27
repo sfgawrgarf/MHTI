@@ -76,8 +76,8 @@ async def _shutdown_application(
 
     if db_log_handler is not None:
         try:
-            db_log_handler.stop()
             logging.getLogger().removeHandler(db_log_handler)
+            await _shutdown_step("database log handler", db_log_handler.drain())
         except Exception:
             logger.exception("Shutdown step failed: database log handler")
 

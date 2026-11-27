@@ -34,18 +34,18 @@ class ScrapedFileRepository(BaseRepository):
         return bool(row and row["history_record_id"] == history_record_id
                     and row["source_signature"] and row["source_signature"] == self._target_signature(path))
 
-    async def can_delete_target(self, history_record_id: str, path: str, *, allow_missing: bool = False) -> bool:
+    async def can_delete_target(self, history_record_id: str, path: str, *, allow_missing: bool = False, allow_unregistered: bool = False) -> bool:
         row = await self._fetch_one(
             "SELECT history_record_id, target_signature FROM scraped_files WHERE target_path = ? "
             "ORDER BY scraped_at DESC, rowid DESC LIMIT 1", (path,),
         )
         if row is None:
-            return True  # Legacy records still use the path-security boundary.
+            return allow_unregistered
         if row["history_record_id"] != history_record_id:
             return False
         current = self._target_signature(path)
-        return (not row["target_signature"] or current == row["target_signature"]
-                or (allow_missing and current is None))
+        return bool(row["target_signature"] and (current == row["target_signature"]
+                    or (allow_missing and current is None)))
 
     async def upsert_record(
         self,
@@ -60,6 +60,7 @@ class ScrapedFileRepository(BaseRepository):
         title: str | None,
         scraped_at: str,
         history_record_id: str | None,
+        source_signature: dict | None = None,
         expected_job_id: str | None = None,
     ) -> None:
         ownership = ""
@@ -82,7 +83,7 @@ class ScrapedFileRepository(BaseRepository):
                     source_path, record_id,
                     source_path, target_path, file_size,
                     tmdb_id, season, episode, title,
-                    scraped_at, history_record_id, self._target_signature(target_path), self._target_signature(source_path),
+                    scraped_at, history_record_id, self._target_signature(target_path), json.dumps(source_signature, sort_keys=True) if source_signature else None,
                 ) + ownership_params,
             )
             await db.commit()
@@ -99,6 +100,7 @@ class ScrapedFileRepository(BaseRepository):
         episode: int | None,
         title: str | None,
         scraped_at: str,
+        source_signature: dict | None = None,
         expected_job_id: str | None = None,
     ) -> int:
         """把某条历史记录的登记行就地更新（重刮用），返回更新行数。
@@ -115,7 +117,7 @@ class ScrapedFileRepository(BaseRepository):
             cursor = await db.execute(
                 f"""
                 UPDATE scraped_files SET
-                    source_signature = CASE WHEN ? != '' AND ? != source_path THEN ? ELSE source_signature END,
+                    source_signature = CASE WHEN ? != '' THEN ? ELSE source_signature END,
                     source_path = COALESCE(NULLIF(?, ''), source_path),
                     target_path = ?, file_size = ?, tmdb_id = ?,
                     season = ?, episode = ?, title = ?, scraped_at = ?, target_signature = ?
@@ -127,7 +129,7 @@ class ScrapedFileRepository(BaseRepository):
                 {ownership}
                 """,
                 (
-                    source_path or "", source_path or "", self._target_signature(source_path),
+                    source_path or "", json.dumps(source_signature, sort_keys=True) if source_signature else None,
                     source_path or "", target_path, file_size, tmdb_id,
                     season, episode, title, scraped_at, self._target_signature(target_path),
                     history_record_id,

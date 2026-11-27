@@ -174,6 +174,10 @@ class SchedulerService:
         if task is None:
             return None
 
+        timing_changed = (
+            update.cron_expression is not None and update.cron_expression != task.cron_expression
+            or update.enabled is not None and update.enabled != task.enabled
+        )
         # Apply updates
         if update.cron_expression is not None and not self._validate_cron(update.cron_expression):
             raise ValueError("无效的 Cron 表达式")
@@ -186,8 +190,9 @@ class SchedulerService:
         if update.enabled is not None:
             task.enabled = update.enabled
 
-        # Recalculate next run
-        next_run = self._calculate_next_run(task.cron_expression) if task.enabled else None
+        next_run = task.next_run
+        if timing_changed:
+            next_run = self._calculate_next_run(task.cron_expression) if task.enabled else None
 
         await self._repo.update_task(
             task_id=task_id,
@@ -196,6 +201,7 @@ class SchedulerService:
             cron_expression=task.cron_expression,
             enabled=1 if task.enabled else 0,
             next_run=next_run.isoformat() if next_run else None,
+            update_timing=timing_changed,
         )
 
         task.next_run = next_run

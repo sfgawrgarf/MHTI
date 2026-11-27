@@ -4,7 +4,7 @@ import type { HistoryRecord } from './types'
 
 const hooks = vi.hoisted(() => ({
   handler: null as ((message: unknown) => void) | null,
-  listFolders: vi.fn(), create: vi.fn(), getOrganizeConfig: vi.fn(),
+  listFolders: vi.fn(), create: vi.fn(), getOrganizeConfig: vi.fn(), browse: vi.fn(),
 }))
 vi.mock('vue', async importOriginal => ({
   ...await importOriginal<typeof import('vue')>(),
@@ -13,6 +13,7 @@ vi.mock('vue', async importOriginal => ({
 }))
 vi.mock('naive-ui', () => ({ useMessage: () => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }) }))
 vi.mock('@/shared/api/watcher', () => ({ watcherApi: { listFolders: hooks.listFolders } }))
+vi.mock('@/shared/api/fs', () => ({ fsApi: { browse: hooks.browse } }))
 vi.mock('@/shared/api/config', () => ({ configApi: { getOrganizeConfig: hooks.getOrganizeConfig } }))
 vi.mock('@/modules/scrape/api', () => ({ manualJobApi: { create: hooks.create } }))
 vi.mock('@/shared/composables/useWebSocket', () => ({
@@ -62,4 +63,19 @@ it('starts a new task wizard at path selection after a successful creation', asy
   show.value = true
   await nextTick()
   expect(wizard.currentStep.value).toBe(1)
+})
+
+it('shows a failed preview and clears the error when an empty directory loads on retry', async () => {
+  const { useTaskWizard } = await import('@/modules/scrape/hooks/useTaskWizard')
+  hooks.browse.mockRejectedValueOnce(new Error('目录暂时不可用')).mockResolvedValueOnce({ entries: [], total: 0 })
+  const wizard = useTaskWizard({ show: () => true, initialScanPath: () => '/media/in',
+    initialScanLocator: () => null, onSuccess: vi.fn(), onClose: vi.fn() })
+  wizard.formData.value.scan_path = '/media/in'
+  wizard.currentStep.value = 2
+  await wizard.nextStep()
+  expect(wizard.previewError.value).toBe('目录暂时不可用')
+  await wizard.loadPreviewFiles()
+  expect(wizard.previewError.value).toBe('')
+  expect(wizard.previewFiles.value).toEqual([])
+  expect(wizard.previewLoading.value).toBe(false)
 })

@@ -31,10 +31,37 @@ def _consume_stage(record, outputs):
             raise journal.RecoveryConflict(f'让位文件已被替换: {staged}')
         # A symlink output may still depend on the staged entry. Restore its
         # original name and retargeting is unsafe, so retain its journal too.
-        if any(Path(item['destination']).is_symlink() and Path(item['destination']).resolve() == staged.resolve() for item in outputs):
+        if not staged.is_symlink() and any(Path(item['destination']).is_symlink() and Path(item['destination']).resolve() == staged for item in outputs):
             raise journal.RecoveryConflict(f'软链接产物仍依赖让位文件，请保留: {staged}')
         staged.unlink()
     journal.finish_record(record)
+
+
+def _rollback_retry_output(item, stages):
+    """Discard a verified retry publication while its MOVE source is still intact."""
+    from server.common.path_security import validate_output_entry
+    from server.infrastructure.file_operations import remove_moved_source
+
+    target = validate_output_entry(Path(item['destination']))
+    if item['source'] != item['destination']:
+        if journal.owns_destination(item):
+            # Failure finalization may already have restored the staged input at
+            # its original name. Keep the output if neither input can be proven.
+            source = Path(item['source'])
+            identity = item['source_signature']
+            restored = any(stage['destination'] == str(source)
+                           and journal.signature(Path(stage['source'])) == identity for stage in stages)
+            if not identity or (journal.signature(source) != identity and not restored):
+                raise journal.RecoveryConflict(f'重刮输入已变化，保留已写入的产物: {target}')
+            item['rollback_started'] = True
+            journal.save(item)
+            remove_moved_source(target, item['payload_signature'], item['id'])
+        elif item.get('rollback_started') and journal.signature(target) is None:
+            # Finish an interrupted unlink, including its private holding directory.
+            remove_moved_source(target, item['payload_signature'], item['id'])
+        elif item['phase'] in {'published', 'complete'}:
+            raise journal.RecoveryConflict(f'重刮产物已变化，保留现场: {target}')
+    journal.finish_record(item)
 
 
 async def _record_cleanup_result(service, job_id, error):
@@ -91,6 +118,20 @@ async def _reconcile_job(service, job_id, records):
         return
     outputs = []
     try:
+        failed_retry = (not job.output_committed_at and job.status not in
+                        {ScrapeJobStatus.SUCCESS, ScrapeJobStatus.RUNNING, ScrapeJobStatus.PENDING}
+                        and any(item.get('verified_retry') for item in media))
+        if failed_retry:
+            for plan in plans:
+                await run_file_io(plan.rollback)
+            for item in reversed(media):
+                if not item.get('verified_retry'):
+                    raise journal.RecoveryConflict('重刮任务含未核实的发布记录')
+                await run_file_io(_rollback_retry_output, item, stages)
+            for stage in reversed(stages):
+                await run_file_io(journal.restore_stage, stage)
+            await _record_cleanup_result(service, job_id, None)
+            return
         for item in media:
             if await run_file_io(journal.owns_destination, item):
                 outputs.append(item)
@@ -125,6 +166,7 @@ async def _reconcile_job(service, job_id, records):
             await ScrapedFileService(db_path=service.db_path).register_output(
                 history_record_id=history_id,
                 source_path='' if job.continuation_history_id else job.file_path,
+                source_signature=(output.get('source_signature') if job.file_path == output['source'] else None),
                 target_path=output['destination'], tmdb_id=data.get('tmdb_id') or job.correction_tmdb_id or record.tmdb_id,
                 title=data.get('title') or record.title,
                 season=data.get('season', record.season_number), episode=data.get('episode', record.episode_number),
@@ -132,7 +174,7 @@ async def _reconcile_job(service, job_id, records):
                 expected_job_id=job_id,
             )
         for plan in plans:
-            if any(item['destination'] == plan.record['destination'] for item in outputs) and not rollback:
+            if plan.record.get('cloud_published') or (any(item['destination'] == plan.record['destination'] for item in outputs) and not rollback):
                 await run_file_io(plan.commit)
             else:
                 await run_file_io(plan.rollback, cleanup=False)
