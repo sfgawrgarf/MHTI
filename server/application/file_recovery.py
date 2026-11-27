@@ -125,6 +125,7 @@ async def _reconcile_job(service, job_id, records):
             await ScrapedFileService(db_path=service.db_path).register_output(
                 history_record_id=history_id,
                 source_path='' if job.continuation_history_id else job.file_path,
+                source_signature=(output.get('source_signature') if job.file_path == output['source'] else None),
                 target_path=output['destination'], tmdb_id=data.get('tmdb_id') or job.correction_tmdb_id or record.tmdb_id,
                 title=data.get('title') or record.title,
                 season=data.get('season', record.season_number), episode=data.get('episode', record.episode_number),
@@ -132,7 +133,7 @@ async def _reconcile_job(service, job_id, records):
                 expected_job_id=job_id,
             )
         for plan in plans:
-            if any(item['destination'] == plan.record['destination'] for item in outputs) and not rollback:
+            if plan.record.get('cloud_published') or (any(item['destination'] == plan.record['destination'] for item in outputs) and not rollback):
                 await run_file_io(plan.commit)
             else:
                 await run_file_io(plan.rollback, cleanup=False)

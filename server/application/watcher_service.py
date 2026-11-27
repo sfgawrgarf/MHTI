@@ -303,6 +303,7 @@ class P115EventStrategy(WatchStrategy):
     def __init__(self, folder: WatchedFolder, on_file_detected: Callable[[str, WatchedFolder], None]):
         super().__init__(folder, on_file_detected)
         self._scan_task: asyncio.Task | None = None
+        self._needs_baseline = False
         self._last_update_time: int = 0  # 已处理的最大 update_time（去重）
         self._boundary_events: set[str] = set()
         self._client: Any = None
@@ -330,6 +331,7 @@ class P115EventStrategy(WatchStrategy):
         try:
             await self._init()
         except Exception as e:
+            self._needs_baseline = True
             logger.warning(f"[115事件] 初始化失败（可能未登录）: {e}")
         self._scan_task = asyncio.create_task(self._event_loop())
         logger.info(f"[115事件] 开始监控: {self.folder.path}")
@@ -353,6 +355,8 @@ class P115EventStrategy(WatchStrategy):
         # 记录当前最大事件时间
         client = await self._get_client()
         resp = await client.life_list(0, async_=True)
+        if not isinstance(resp, dict) or not resp.get("state"):
+            raise ValueError("115 生活事件初始化失败")
         events = self._extract_events(resp)
         if events:
             self._last_update_time = max(e["update_time"] for e in events)
@@ -364,15 +368,15 @@ class P115EventStrategy(WatchStrategy):
         from server.domain.system.config_service import ConfigService
 
         svc = P115Service(ConfigService())
-        self._watched_dir_ids.clear()
-        self._directory_paths = {}
+        paths = {}
         if self.folder.file_id:
-            self._watched_dir_ids.add(str(self.folder.file_id))
-            self._directory_paths[str(self.folder.file_id)] = self.folder.path
-        await self._collect_subdir_ids(svc, self.folder.path, self.folder.file_id)
+            paths[str(self.folder.file_id)] = self.folder.path
+        await self._collect_subdir_ids(svc, self.folder.path, self.folder.file_id, paths=paths)
+        self._directory_paths = paths
+        self._watched_dir_ids = set(paths)
 
     async def _collect_subdir_ids(
-        self, svc: Any, path: str, file_id: str | None, depth: int = 0
+        self, svc: Any, path: str, file_id: str | None, depth: int = 0, *, paths: dict | None = None
     ) -> None:
         """收集任意深度的子目录，并完整遍历每个目录的分页。"""
         queue: list[tuple[str, str | None]] = [(path, file_id)]
@@ -402,15 +406,18 @@ class P115EventStrategy(WatchStrategy):
                         page,
                         exc,
                     )
-                    break
+                    raise
 
                 entries = result.get("entries", [])
                 for entry in entries:
                     if entry.get("is_dir") and entry.get("file_id"):
                         child_id = str(entry["file_id"])
-                        self._watched_dir_ids.add(child_id)
                         child_path = entry.get("path") or f"{current_path}/{entry.get('name', '')}"
-                        self._directory_paths[child_id] = child_path
+                        if paths is None:
+                            self._directory_paths[child_id] = child_path
+                            self._watched_dir_ids.add(child_id)
+                        else:
+                            paths[child_id] = child_path
                         queue.append((child_path, child_id))
 
                 total = result.get("total")
@@ -458,6 +465,10 @@ class P115EventStrategy(WatchStrategy):
                 if not self._running:
                     break
                 client = await self._get_client()
+                if self._needs_baseline:
+                    await self._init()
+                    self._needs_baseline = False
+                    continue
                 events = await self._read_event_pages(client)
                 if not events:
                     continue

@@ -5,12 +5,13 @@
 _get_effective_nfo_config / _get_effective_download_config 等）与薄委托面不变。
 """
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from server.application.file_io import run_file_io
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from server.common.path_security import PathSecurityError, validate_media_path
+from server.common.path_security import PathSecurityError, validate_media_path, validate_output_entry
 from server.models.history import ScrapeLogEntry, ScrapeLogLevel, ScrapeLogStep
 from server.models.manual_job import ManualJobAdvancedSettings
 from server.models.organize import OrganizeMode
@@ -90,6 +91,27 @@ class OutputWriter:
             conflict_action=conflict_action,
             naming_template=naming_template,
         )
+
+    @asynccontextmanager
+    async def cloud_metadata(self, destination: Path, metadata_dir: str | None):
+        """Prepare locally and commit only after the provider acknowledges its write."""
+        from server.infrastructure import file_journal
+
+        if not metadata_dir:
+            yield None
+            return
+        base = validate_media_path(metadata_dir)
+        projected = base / destination.parent.parent.name / destination.parent.name / destination.name
+        plan = await run_file_io(file_journal.MetadataPlan.create, projected, str(base))
+        try:
+            yield plan
+        except BaseException:
+            await run_file_io(plan.rollback)
+            raise
+        plan.record["cloud_published"] = True
+        await run_file_io(file_journal.save, plan.record)
+        await run_file_io(plan.commit)
+        await run_file_io(plan.cleanup)
 
     async def finalize_storage_output(
         self,
@@ -229,7 +251,7 @@ class OutputWriter:
         facade = self._facade
 
         if dest_path_override is not None:
-            dest_path = validate_media_path(str(dest_path_override))
+            dest_path = validate_output_entry(Path(dest_path_override))
             season_folder = dest_path.parent
             series_folder = season_folder.parent
             season_folder.mkdir(parents=True, exist_ok=True)

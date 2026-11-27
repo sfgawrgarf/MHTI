@@ -117,15 +117,16 @@ class SchedulerRepository(BaseRepository):
         cron_expression: str,
         enabled: bool,
         next_run: str | None,
+        update_timing: bool = True,
     ) -> None:
         async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE scheduled_tasks
-                SET name = ?, folder_path = ?, cron_expression = ?, enabled = ?, next_run = ?
+                SET name = ?, folder_path = ?, cron_expression = ?, enabled = ?, next_run = CASE WHEN ? THEN ? ELSE next_run END
                 WHERE id = ?
                 """,
-                (name, folder_path, cron_expression, enabled, next_run, task_id),
+                (name, folder_path, cron_expression, enabled, update_timing, next_run, task_id),
             )
             await db.commit()
 

@@ -47,7 +47,7 @@ async def test_delete_episode_keeps_other_season_with_identical_filename(recover
     shared.write_text('shared series')
     poster = shared.with_name('poster.jpg')
     poster.write_bytes(b'shared poster')
-    record = await record_for(env, f'{env.source} => {target}')
+    record = await record_for(env, f'{env.source} => {target}', register_target=True)
     await env.files.delete_files(record.id, 'organized')
     assert not target.exists() and not own_nfo.exists()
     assert other_nfo.read_text() == 'other season'
@@ -144,7 +144,7 @@ async def test_correction_backs_up_series_metadata_without_season_directory(reco
     assert not (series / 'Season 1').exists()
     old = await env.jobs.create_job(ScrapeJobCreate(file_path=str(env.source), output_dir=str(env.output), metadata_dir=str(env.metadata)))
     await env.jobs.update_job(old.id, status=ScrapeJobStatus.SUCCESS)
-    record = await record_for(env, f'{env.source} => {target}', job_id=old.id)
+    record = await record_for(env, f'{env.source} => {target}', job_id=old.id, register_target=True)
     job = await env.jobs.create_job(ScrapeJobCreate(
         file_path=str(target), output_dir=str(env.output), metadata_dir=str(env.metadata),
         operation='rematch', correction_history_id=record.id, replaces_job_id=old.id,

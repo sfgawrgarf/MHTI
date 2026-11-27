@@ -14,6 +14,7 @@ import type { DirectoryEntry } from '@/shared/types/common'
 import PreviewSummaryCard from '@/modules/scrape/components/wizard/PreviewSummaryCard.vue'
 import PreviewFileList from '@/modules/scrape/components/wizard/PreviewFileList.vue'
 
+const emit = defineEmits<{ retry: [] }>()
 const props = defineProps<{
   formData: {
     scan_path: string
@@ -25,6 +26,7 @@ const props = defineProps<{
   advancedSettings: ManualJobAdvancedSettings | null
   previewFiles: DirectoryEntry[]
   previewTotal: number
+  error: string
   loading: boolean
 }>()
 
@@ -49,6 +51,8 @@ const overwriteEnabled = computed(() => {
       :preview-files="props.previewFiles"
       :preview-total="props.previewTotal"
       :loading="props.loading"
+      :error="props.error"
+      @retry="emit('retry')"
     />
 
     <!-- 警告提示 -->

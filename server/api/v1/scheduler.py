@@ -86,7 +86,10 @@ async def toggle_task(
     scheduler_service: SchedulerService = Depends(get_scheduler_service),
 ) -> ScheduledTaskResponse:
     """Toggle task enabled status."""
-    task = await scheduler_service.toggle_task(task_id)
+    try:
+        task = await scheduler_service.toggle_task(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return ScheduledTaskResponse(**task.model_dump())

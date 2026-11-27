@@ -484,6 +484,7 @@ class HistoryService:
         scrape_job_id = row["scrape_job_id"] if "scrape_job_id" in row.keys() else None
 
         return HistoryRecordDetail(
+            file_fingerprint=row["file_fingerprint"],
             id=row["id"],
             display_id=row["display_id"] or 0,
             task_name=row["task_name"],

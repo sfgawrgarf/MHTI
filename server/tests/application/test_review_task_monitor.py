@@ -38,6 +38,9 @@ async def test_conflict_after_reorganize_queues_real_input(audit_env, action, so
         failed_count=0, duration_seconds=0, scrape_job_id=job.id,
     ))
     await env.history.update_record(record.id, conflict_type=HistoryConflictType.FILE_CONFLICT)
+    from server.models.scraped_file import ScrapedFileCreate
+    await env.scraped.add_record(ScrapedFileCreate(source_path=str(env.source), target_path=str(target),
+                                                   file_size=target.stat().st_size, history_record_id=record.id))
     if not source_exists:
         env.source.unlink()
     request = _build_scrape_request(

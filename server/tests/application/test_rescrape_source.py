@@ -156,15 +156,8 @@ async def test_resolve_reads_source_side_of_folder_path_without_registration(env
         env, f"{env['source_file']} => {env['target_file']}"
     )
 
-    resolved = await _resolver(env).resolve(record)
-
-    assert resolved.path == str(env["source_file"])
-    assert resolved.from_product is False
-
-    env["source_file"].unlink()
-    fallback = await _resolver(env).resolve(record)
-    assert fallback.path == str(env["target_file"])
-    assert fallback.from_product is True
+    with pytest.raises(HTTPException, match="归属"):
+        await _resolver(env).resolve(record)
 
 
 @pytest.mark.asyncio
@@ -181,7 +174,7 @@ async def test_resolve_raises_when_source_and_product_are_both_missing(env):
         await _resolver(env).resolve(record)
 
     assert exc.value.status_code == 400
-    assert exc.value.detail == "源文件与产物都不存在，无法重刮"
+    assert "源文件与产物都不存在" in exc.value.detail
 
 
 @pytest.mark.asyncio
@@ -246,6 +239,7 @@ async def test_release_restores_product_when_run_failed(env):
 async def test_stage_is_a_noop_for_source_input(env):
     """源文件输入不需要让位——它和产物路径本来就不同。"""
     record = await _make_record(env, str(env["source_file"]))
+    await _register(env, record.id)
     resolver = _resolver(env)
 
     staged = await resolver.stage(await resolver.resolve(record))
@@ -399,8 +393,8 @@ async def test_prepare_input_reports_source_and_cleans_products(env):
     assert prepared.path == str(env["source_file"])
     assert registration_source == str(env["source_file"])
     assert env["target_file"].exists() is False
-    assert [step.name for step in steps] == ["准备输入", "清理旧产物"]
-    assert any("已删除旧产物" in entry.message for entry in steps[1].logs)
+    assert [step.name for step in steps] == ["准备输入", "保留旧产物"]
+    assert any("已暂存旧视频" in entry.message for entry in steps[1].logs)
 
 
 @pytest.mark.asyncio
@@ -420,8 +414,8 @@ async def test_prepare_input_uses_product_and_keeps_registration_source(env):
     assert prepared.path != str(env["target_file"])
     assert Path(prepared.path).exists() is True
     assert any("改用整理后的产物" in entry.message for entry in steps[0].logs)
-    # 让位后的路径不能被当成旧产物删掉，只留下元数据这一项
-    assert env["episode_nfo"].exists() is False
+    # 成功之前保留元数据
+    assert env["episode_nfo"].exists()
     assert Path(prepared.path).exists() is True
 
 
@@ -674,6 +668,7 @@ async def test_execute_scrape_and_update_restores_product_when_scrape_fails(env,
     record = await _make_record(
         env, f"{env['source_file']} => {env['target_file']}"
     )
+    await _register(env, record.id)
     env["source_file"].unlink()
     _patch_scraper(monkeypatch, _FailingScraper())
 
@@ -695,6 +690,7 @@ async def test_execute_scrape_and_update_restores_product_when_scrape_fails(env,
 @pytest.mark.asyncio
 async def test_stage_never_overwrites_previous_interrupted_staging_file(env):
     record = await _make_record(env, f"{env['source_file']} => {env['target_file']}")
+    await _register(env, record.id)
     env['source_file'].unlink()
     stale = env['target_file'].with_name(f"{env['target_file'].stem}.mhti-rescrape{env['target_file'].suffix}")
     stale.write_bytes(b'previous recovery copy')

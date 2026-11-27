@@ -86,6 +86,18 @@ class DatabaseLogHandler(logging.Handler):
             except Exception:
                 pass
 
+    async def drain(self) -> None:
+        """Finish the last write before the application closes its database."""
+        self._started = False
+        if self._flush_task:
+            self._flush_task.cancel()
+            await asyncio.gather(self._flush_task, return_exceptions=True)
+            self._flush_task = None
+        async with self._flush_lock:
+            await self._flush_pending()
+            if self._batch:
+                raise RuntimeError(f"数据库关闭前有 {len(self._batch)} 条日志未写入")
+
     async def _periodic_flush(self) -> None:
         """定时刷新日志到数据库。"""
         while self._started:

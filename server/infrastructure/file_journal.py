@@ -33,6 +33,24 @@ def operation_kind(value: str):
         kind.reset(token)
 
 
+_retry_input: ContextVar[tuple[Path, dict] | None] = ContextVar("retry_input", default=None)
+
+
+@contextmanager
+def verified_input(path: str | None, identity: dict | None):
+    token = _retry_input.set((Path(path), identity) if path and identity else None)
+    try:
+        yield
+    finally:
+        _retry_input.reset(token)
+
+
+def check_retry_input(source: Path) -> None:
+    expected = _retry_input.get()
+    if expected and kind.get() == "media" and (source != expected[0] or signature(source) != expected[1]):
+        raise RecoveryConflict(f"重刮输入已经更换，保留文件: {source}")
+
+
 def root() -> Path:
     path = Path(os.environ.get('MHTI_FILE_JOURNAL_DIR') or DATA_DIR / 'file-operations')
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -219,8 +237,9 @@ def owns_destination(record: dict) -> bool:
 
 
 def restore_stage(record: dict) -> None:
-    source = validate_media_path(record['source'])
-    destination = validate_media_path(record['destination'])
+    from server.common.path_security import validate_output_entry
+    source = validate_output_entry(Path(record['source']))
+    destination = validate_output_entry(Path(record['destination']))
     if not destination.exists():
         if signature(source) in (record.get('source_signature'), record.get('payload_signature')):
             finish_record(record)

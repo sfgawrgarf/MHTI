@@ -316,7 +316,7 @@ async def test_colocated_metadata_discovery_keeps_shared_deletion_rules(recovery
     season.write_text('season')
     series = target.parent.parent / 'tvshow.nfo'
     series.write_text('series')
-    record = await record_for(env, f'{env.source} => {target}')
+    record = await record_for(env, f'{env.source} => {target}', register_target=True)
     listing = await env.files.list_files(record.id)
     assert {str(own), str(season), str(series)} <= {item.path for item in listing.files}
     target.with_name('S01E11.mkv').write_bytes(b'other episode')

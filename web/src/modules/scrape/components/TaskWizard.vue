@@ -41,6 +41,8 @@ const {
   currentStep,
   submitting,
   previewLoading,
+  previewError,
+  loadPreviewFiles,
   previewFiles,
   previewTotal,
   advancedSettings,
@@ -145,6 +147,8 @@ const {
           :preview-files="previewFiles"
           :preview-total="previewTotal"
           :loading="previewLoading"
+          :error="previewError"
+          @retry="loadPreviewFiles"
         />
       </div>
 

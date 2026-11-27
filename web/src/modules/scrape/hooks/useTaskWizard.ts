@@ -49,6 +49,7 @@ export function useTaskWizard(options: {
   // 向导状态
   const currentStep = ref(1)
   const previewLoading = ref(false)
+  const previewError = ref('')
   const previewFiles = ref<DirectoryEntry[]>([])
   const previewTotal = ref(0)
   let previewGeneration = 0
@@ -72,6 +73,7 @@ export function useTaskWizard(options: {
   const loadPreviewFiles = async () => {
     if (!formData.value.scan_path) return
 
+    previewError.value = ''
     previewLoading.value = true
     const generation = ++previewGeneration
     try {
@@ -88,7 +90,7 @@ export function useTaskWizard(options: {
       previewTotal.value = response.total
     } catch (error) {
       if (generation !== previewGeneration) return
-      console.error('加载预览失败:', error)
+      previewError.value = error instanceof Error ? error.message : '无法读取目录，请检查连接后重试'
       previewFiles.value = []
       previewTotal.value = 0
     } finally {
@@ -99,6 +101,7 @@ export function useTaskWizard(options: {
   /** 向导自身状态复位（表单与 locator 由 useManualJobForm 复位） */
   const resetWizardState = () => {
     previewGeneration++
+    previewError.value = ''
     previewLoading.value = false
     currentStep.value = 1
     previewFiles.value = []
@@ -146,6 +149,7 @@ export function useTaskWizard(options: {
     // 向导状态
     currentStep,
     previewLoading,
+    previewError,
     previewFiles,
     previewTotal,
     steps,

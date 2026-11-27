@@ -93,7 +93,7 @@ async def test_abrupt_process_loss_after_rescrape_stage_is_recovered(recovery_en
         file_path=str(env.source), output_dir=str(env.output), link_mode=OrganizeMode.COPY,
     ))
     await env.jobs.update_job(old.id, status=ScrapeJobStatus.SUCCESS)
-    record = await record_for(env, f'{env.source} => {target}', job_id=old.id)
+    record = await record_for(env, f'{env.source} => {target}', job_id=old.id, register_target=True)
     actions = HistoryScrapeActions(env.history, env.jobs, env.scraped, env.files)
     queued = await actions.queue_record_operation(record.id, operation='reorganize')
     marker = env.source.parent / 'staged-path.txt'
@@ -135,7 +135,7 @@ async def test_correction_backup_includes_colocated_metadata(recovery_env):
     await env.config.save_organize_config(OrganizeConfig(organize_dir=str(env.output)))
     old = await env.jobs.create_job(ScrapeJobCreate(file_path=str(env.source), output_dir=str(env.output)))
     await env.jobs.update_job(old.id, status=ScrapeJobStatus.SUCCESS)
-    record = await record_for(env, f'{env.source} => {target}', job_id=old.id)
+    record = await record_for(env, f'{env.source} => {target}', job_id=old.id, register_target=True)
     job = await env.jobs.create_job(ScrapeJobCreate(
         file_path=str(target), output_dir=str(env.output), operation='rematch',
         correction_history_id=record.id, replaces_job_id=old.id,
