@@ -227,6 +227,7 @@ api.interceptors.response.use(
       // A delayed 401 from the previous login cannot invalidate the current one.
       const authorization = originalRequest.headers.Authorization
       if (accessToken && authorization && authorization !== `Bearer ${accessToken}`) {
+        if (!originalRequest.authSession) return Promise.reject(error)
         originalRequest.headers.Authorization = `Bearer ${accessToken}`
         return api(originalRequest)
       }

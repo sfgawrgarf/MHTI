@@ -140,7 +140,7 @@ class HistoryScrapeActions:
     async def prepare_input(
         self, record, *, remote: bool = False
     ) -> tuple[RescrapeInput, list[ScrapeLogStep], str]:
-        """解析重跑输入 + 输入让位 + 清理旧产物。
+        """验证重跑输入，并暂存可恢复的旧产物。
 
         返回（输入、要追加的日志步骤、登记行该写的源路径）。源文件不可用而改用产物时，
         登记行的 source_path 保持原值（记录的身份是那个源文件），只刷新产物路径。

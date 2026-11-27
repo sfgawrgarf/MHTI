@@ -444,9 +444,10 @@ class ScraperService:
         advanced_settings: ManualJobAdvancedSettings | None = None,
         series: TMDBSeries | None = None,
         season_info: TMDBSeason | None = None,
+        naming_template=None,
     ) -> StorageLocator:
         return await self._output_writer.finalize_storage_output(
-            series=series, season_info=season_info,
+            series=series, season_info=season_info, naming_template=naming_template,
             file_locator=file_locator,
             output_locator=output_locator,
             metadata_locator=metadata_locator,
@@ -848,6 +849,7 @@ class ScraperService:
                         episode=episode_num,
                         year=year,
                         metadata_dir=str(plan.content) if plan else None,
+                        dest_path_override=Path(plan.record["destination"]) if plan else None,
                         output_dir_for_preview=output_dir,
                         nfo_content=nfo_content,
                         series=series,
@@ -861,6 +863,7 @@ class ScraperService:
                         await run_file_io(plan.prepare)
                     dest = await self._finalize_storage_output(
                         series=series, season_info=season_info,
+                        naming_template=naming_template,
                         file_locator=request.file_locator,
                         output_locator=request.output_locator,
                         metadata_locator=request.metadata_locator,

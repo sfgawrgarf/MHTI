@@ -368,3 +368,31 @@ async def test_unconfirmed_publication_keeps_only_surviving_payload(recovery_env
     assert payload.read_bytes() == b'original video'
     assert journal.read_records(job.id)
     assert (await env.jobs.get_job(job.id)).status == ScrapeJobStatus.PENDING_ACTION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [ScrapeJobStatus.FAILED, ScrapeJobStatus.CANCELLED, ScrapeJobStatus.TIMEOUT])
+async def test_failed_retry_after_media_publish_restores_library(recovery_env, status):
+    env = recovery_env
+    job, _ = await running_job(env, operation='retry')
+    target = env.output / 'previous.mkv'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b'previous library video')
+    backup = target.with_name('previous.mhti-rescrape-test.mkv')
+    token = journal.owner.set(job.id)
+    try:
+        with journal.operation_kind('stage'):
+            publish_file(target, backup, OrganizeMode.MOVE)
+        with journal.verified_input(str(env.source), journal.signature(env.source)):
+            publish_file(env.source, target, OrganizeMode.MOVE)
+    finally:
+        journal.owner.reset(token)
+    assert target.read_bytes() == b'original video'
+    await env.jobs.update_job(job.id, status=status)
+    for _ in range(2):
+        await reconcile_file_operations(env.jobs, job.id)
+    assert target.read_bytes() == b'previous library video'
+    assert env.source.read_bytes() == b'original video'
+    assert not backup.exists()
+    assert not journal.read_records(job.id)
+    assert (await env.jobs.get_job(job.id)).status == status

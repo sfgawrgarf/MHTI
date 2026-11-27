@@ -128,6 +128,7 @@ class OutputWriter:
         advanced_settings: ManualJobAdvancedSettings | None = None,
         series: TMDBSeries | None = None,
         season_info: TMDBSeason | None = None,
+        naming_template: NamingTemplate | None = None,
     ) -> StorageLocator:
         """处理 115 网盘输出分支。"""
         if file_locator.provider != StorageProvider.P115:
@@ -135,7 +136,8 @@ class OutputWriter:
 
         facade = self._facade
         mode = link_mode or OrganizeMode.MOVE
-        naming_template = await facade._get_effective_naming_config(advanced_settings)
+        if naming_template is None:
+            naming_template = await facade._get_effective_naming_config(advanced_settings)
         rename_request = self.build_rename_request(
             source_path=source_path,
             title=title,

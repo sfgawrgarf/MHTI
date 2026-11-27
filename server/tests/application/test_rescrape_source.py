@@ -150,8 +150,8 @@ async def test_resolve_falls_back_to_product_when_source_is_gone(env):
 
 
 @pytest.mark.asyncio
-async def test_resolve_reads_source_side_of_folder_path_without_registration(env):
-    """老记录没有登记行：源侧与产物侧都从 folder_path 里拆，且源侧优先。"""
+async def test_resolve_rejects_display_paths_without_proof_of_ownership(env):
+    """老记录仅有展示路径时，两侧的当前文件均不可作为输入。"""
     record = await _make_record(
         env, f"{env['source_file']} => {env['target_file']}"
     )

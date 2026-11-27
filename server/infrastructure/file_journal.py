@@ -112,7 +112,7 @@ def begin_publish(source: Path, destination: Path, mode) -> dict | None:
         return None
     return new_record(kind.get(), source=str(source), destination=str(destination),
                       mode=getattr(mode, 'value', mode), source_signature=signature(source),
-                      details=details.get())
+                      details=details.get(), verified_retry=kind.get() == 'media' and _retry_input.get() is not None)
 
 
 def _identity(path: Path) -> dict | None:
@@ -240,8 +240,9 @@ def restore_stage(record: dict) -> None:
     from server.common.path_security import validate_output_entry
     source = validate_output_entry(Path(record['source']))
     destination = validate_output_entry(Path(record['destination']))
-    if not destination.exists():
-        if signature(source) in (record.get('source_signature'), record.get('payload_signature')):
+    if not destination.exists() and not destination.is_symlink():
+        current = signature(source)
+        if current is not None and current in (record.get('source_signature'), record.get('payload_signature')):
             finish_record(record)
             return
         raise RecoveryConflict(f'让位文件和原路径无法核对: {source} / {destination}')

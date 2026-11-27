@@ -1,24 +1,4 @@
-"""重新刮削 / 重新整理的输入文件解析与旧产物清理。
-
-为什么单独一层：记录里的 `folder_path` 在整理成功后是 `源文件 => 产物` 一整串
-（见 history_service.build_record_folder_path），拿去当路径必然报「文件不存在」。
-重刮真正要跑的是**源文件**：源文件没了才退回整理后的产物——这一点要被重刮与
-重新整理共用，否则两处会各自漂移。
-
-顺序（`resolve`）：
-1. 已登记且存在于磁盘的源文件；
-2. 记录 folder_path 里的源文件一侧；
-3. 已登记的产物；
-4. 记录 folder_path 里的产物一侧。
-
-产物被当作输入时**先让位**（同目录改名成 `*.mhti-rescrape<ext>`）再跑，否则
-「输入 == 目标路径」既会让整理步骤报「目标文件已存在」，也会让 copy 模式复制到
-自己身上（shutil 抛 SameFileError）。跑成功就把让位文件删掉（它已是上一轮的旧产物），
-跑失败则改名回原位，磁盘上不留意外文件。
-
-旧产物清理复用 `HistoryFileService` 的清单（视频 + 元数据），因此只会删登记过、
-且在允许目录内的文件；登记行**不删**——重刮收尾会把同一行更新成新路径。
-"""
+"""重刮与重新整理共用的输入校验、旧产物暂存及恢复。"""
 
 from __future__ import annotations
 
@@ -116,7 +96,7 @@ class RescrapeSource:
         raise HTTPException(status_code=400, detail="源文件与产物都不存在或无法确认归属，无法重刮")
 
     async def _candidates(self, record) -> list[tuple[str, bool]]:
-        """按「源文件优先、产物兜底」列出候选路径（不去重，由调用方取第一个可用者）。"""
+        """按「源文件优先、产物兜底」列出候选路径（按路径去重）。"""
         from server.application.history_service import split_record_folder_path
 
         registered = await self._scraped_file_service.list_by_history_record(record.id)
@@ -249,7 +229,7 @@ class RescrapeSource:
         if dest_path and Path(dest_path).is_symlink():
             try:
                 validate_media_path(dest_path, must_exist=True)
-                if Path(dest_path).resolve() == staged.resolve():
+                if not staged.is_symlink() and Path(dest_path).resolve() == staged:
                     # 软链接产物指向让位文件，删了就等于把产物删了
                     logger.warning("产物是软链接，保留让位文件 %s", staged)
                     return

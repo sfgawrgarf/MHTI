@@ -148,6 +148,6 @@ def publish_file(source: Path, destination: Path, mode: OrganizeMode | None,
                 # Atomic no-clobber publication, including concurrent writers.
                 _publish_no_replace(staged, destination)
         file_journal.published(receipt)
-        if mode == OrganizeMode.MOVE:
+        if mode == OrganizeMode.MOVE and not (receipt and receipt.get("verified_retry")):
             remove_moved_source(source, source_signature, receipt.get('id') if receipt else None)
         file_journal.completed(receipt)
